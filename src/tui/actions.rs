@@ -335,6 +335,9 @@ fn handle_wizard_taskname(app: &mut App, key: KeyEvent) {
                 wiz.stage = WizardStage::Options;
             }
         }
+        KeyCode::BackTab => {
+            wiz.stage = WizardStage::Category;
+        }
         KeyCode::Backspace => {
             wiz.task_name.pop();
         }
@@ -351,6 +354,9 @@ fn handle_wizard_options(app: &mut App, key: KeyEvent) {
         KeyCode::Enter | KeyCode::Tab => {
             wiz.stage = WizardStage::Preview;
             wiz.preview_scroll = 0;
+        }
+        KeyCode::BackTab => {
+            wiz.stage = WizardStage::TaskName;
         }
         KeyCode::Up => {
             wiz.active_toggle = wiz.active_toggle.saturating_sub(1);
@@ -373,6 +379,11 @@ fn handle_wizard_options(app: &mut App, key: KeyEvent) {
 fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
     let wiz = app.wizard.as_ref().unwrap();
     match key.code {
+        KeyCode::BackTab => {
+            let wiz = app.wizard.as_mut().unwrap();
+            wiz.stage = WizardStage::Options;
+            return Ok(());
+        }
         KeyCode::Up => {
             let wiz = app.wizard.as_mut().unwrap();
             wiz.preview_scroll = wiz.preview_scroll.saturating_sub(1);

@@ -53,6 +53,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.mode == AppMode::Help {
         draw_help(f);
     }
+
+    if app.mode == AppMode::Wizard {
+        draw_wizard(f, app);
+    }
 }
 
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
@@ -153,9 +157,7 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(style);
 
-    let content = if app.mode == AppMode::Wizard {
-        format_wizard(app)
-    } else if app.mode == AppMode::Running {
+    let content = if app.mode == AppMode::Running {
         format_live_progress(app)
     } else if app.mode == AppMode::ViewingLogs {
         format_logs(&app.viewing_logs)
@@ -207,22 +209,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             format!("Search: {}_ | ESC cancel", app.search_query)
         }
         AppMode::Running => "Running... (output in footer below)".to_string(),
-        AppMode::Wizard => {
-            if let Some(ref wiz) = app.wizard {
-                if wiz.save_message.is_some() {
-                    "Task saved! Press any key to continue".to_string()
-                } else {
-                    match wiz.stage {
-                        WizardStage::Category => "Category: type name or Up/Down to pick | Tab/Enter:next  Esc:cancel".to_string(),
-                        WizardStage::TaskName => "Task name: type name | Tab/Enter:next  Esc:cancel".to_string(),
-                        WizardStage::Options => "Space:toggle  Up/Down:select  Tab/Enter:next  Esc:cancel".to_string(),
-                        WizardStage::Preview => "Up/Down:scroll  Enter:save  Esc:cancel".to_string(),
-                    }
-                }
-            } else {
-                String::new()
-            }
-        }
+        AppMode::Wizard => " New Task Wizard ".to_string(),
         _ => {
             "arrows:nav  +/-:collapse  r:run  d:dry-run  e:edit  w:wizard  L:logs  /:search  h:help  q:quit"
                 .to_string()
@@ -238,66 +225,274 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(bar, area);
 }
 
-fn format_wizard(app: &App) -> String {
+fn draw_wizard(f: &mut Frame, app: &App) {
     let wiz = match app.wizard.as_ref() {
         Some(w) => w,
-        None => return "Wizard not active".to_string(),
+        None => return,
     };
 
-    if let Some(ref msg) = wiz.save_message {
-        return format!("  {}\n\n  Press any key to continue.", msg);
-    }
+    let area = f.area();
+    let w = 64.min(area.width.saturating_sub(6));
+    let h = 26.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
 
-    let mut out = String::new();
-    out.push_str("  Create Task from Template\n");
-    out.push_str(&format!("  Source: {}\n\n", wiz.source_task_ref));
+    f.render_widget(Clear, popup);
+
+    // Outer block
+    let block = Block::default()
+        .title(" New Task ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    f.render_widget(block, popup);
+
+    // Inner area
+    let inner = Rect::new(popup.x + 2, popup.y + 1, popup.width.saturating_sub(4), popup.height.saturating_sub(2));
+
+    // Build lines
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Progress bar
+    let stages = ["Category", "Name", "Options", "Preview"];
+    let current_idx = match wiz.stage {
+        WizardStage::Category => 0,
+        WizardStage::TaskName => 1,
+        WizardStage::Options => 2,
+        WizardStage::Preview => 3,
+    };
+
+    let mut progress_spans: Vec<Span> = Vec::new();
+    for (i, label) in stages.iter().enumerate() {
+        if i > 0 {
+            let sep_color = if i <= current_idx { Color::Cyan } else { Color::DarkGray };
+            progress_spans.push(Span::styled(" > ", Style::default().fg(sep_color)));
+        }
+        let style = if i == current_idx {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if i < current_idx {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let prefix = if i < current_idx { "\u{2713} " } else { "" };
+        progress_spans.push(Span::styled(format!("{prefix}{label}"), style));
+    }
+    lines.push(Line::from(progress_spans));
+
+    // Separator
+    let sep_w = inner.width as usize;
+    lines.push(Line::from(Span::styled(
+        "\u{2500}".repeat(sep_w),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Source info
+    lines.push(Line::from(vec![
+        Span::styled("Source  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&wiz.source_task_ref, Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(""));
+
+    // Handle save confirmation
+    if let Some(ref msg) = wiz.save_message {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "\u{2713} Task created successfully",
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            msg.as_str(),
+            Style::default().fg(Color::White),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Press any key to close",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+        f.render_widget(para, inner);
+        return;
+    }
 
     match wiz.stage {
         WizardStage::Category => {
-            out.push_str("  Step 1/4: Category\n\n");
-            out.push_str(&format!("  > {}_ \n\n", wiz.category));
-            out.push_str("  Existing categories:\n");
-            for (i, cat) in app.categories.iter().enumerate() {
-                let marker = if wiz.category_cursor == Some(i) {
-                    ">"
-                } else {
-                    " "
-                };
-                out.push_str(&format!("  {} {}\n", marker, cat.name));
+            lines.push(Line::from(Span::styled(
+                "Choose a category for the new task",
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                "Type a new name or use arrow keys to select",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+
+            // Input field
+            lines.push(Line::from(vec![
+                Span::styled(" Category ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{}_", wiz.category),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(""));
+
+            // Category list
+            if !app.categories.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "Existing categories:",
+                    Style::default().fg(Color::DarkGray),
+                )));
+                for (i, cat) in app.categories.iter().enumerate() {
+                    let is_sel = wiz.category_cursor == Some(i);
+                    let style = if is_sel {
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    let marker = if is_sel { "\u{25b8} " } else { "  " };
+                    lines.push(Line::from(Span::styled(
+                        format!("  {}{} ({} tasks)", marker, cat.name, cat.tasks.len()),
+                        style,
+                    )));
+                }
             }
-            out.push_str("\n  Type a new name or Up/Down to pick existing\n");
+
+            // Footer
+            push_wizard_footer(&mut lines, inner.height, &[
+                ("Enter", "Confirm"), ("Up/Down", "Select"), ("Esc", "Cancel"),
+            ]);
         }
+
         WizardStage::TaskName => {
-            out.push_str("  Step 2/4: Task Name\n\n");
-            out.push_str(&format!("  Category: {}\n", wiz.category));
-            out.push_str(&format!("  > {}_ \n", wiz.task_name));
+            lines.push(Line::from(Span::styled(
+                "Name the new task",
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                "This will be the filename (without .yaml extension)",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+
+            // Show confirmed category
+            lines.push(Line::from(vec![
+                Span::styled(" Category ", Style::default().fg(Color::Black).bg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(&wiz.category, Style::default().fg(Color::Green)),
+            ]));
+            lines.push(Line::from(""));
+
+            // Input field
+            lines.push(Line::from(vec![
+                Span::styled(" Name ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{}_", wiz.task_name),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(""));
+
+            // Preview path
+            lines.push(Line::from(vec![
+                Span::styled("  Output  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{}/{}.yaml", wiz.category, wiz.task_name),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+
+            push_wizard_footer(&mut lines, inner.height, &[
+                ("Enter", "Confirm"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
+            ]);
         }
+
         WizardStage::Options => {
-            out.push_str("  Step 3/4: Optimization Options\n\n");
-            out.push_str(&format!("  Category: {}\n", wiz.category));
-            out.push_str(&format!("  Task:     {}\n\n", wiz.task_name));
+            lines.push(Line::from(Span::styled(
+                "Configure optimizations",
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                "Toggle options with Space, navigate with arrow keys",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+
+            // Summary
+            lines.push(Line::from(vec![
+                Span::styled(" Category ", Style::default().fg(Color::Black).bg(Color::Green)),
+                Span::styled(format!(" {}  ", wiz.category), Style::default().fg(Color::Green)),
+                Span::styled(" Name ", Style::default().fg(Color::Black).bg(Color::Green)),
+                Span::styled(format!(" {}", wiz.task_name), Style::default().fg(Color::Green)),
+            ]));
+            lines.push(Line::from(""));
 
             let has_run = wiz.source_run.is_some();
-            let opts = [
-                ("Remove failed steps", wiz.remove_failed, has_run),
-                ("Remove skipped steps", wiz.remove_skipped, has_run),
-                ("Parallelize independent steps", wiz.parallelize, true),
+            let opts: &[(&str, &str, bool, bool)] = &[
+                ("Remove failed steps", "Drop steps that failed in the last run", wiz.remove_failed, has_run),
+                ("Remove skipped steps", "Drop steps that were skipped", wiz.remove_skipped, has_run),
+                ("Parallelize steps", "Remove sequential deps between independent steps", wiz.parallelize, true),
             ];
 
-            for (i, (label, checked, enabled)) in opts.iter().enumerate() {
-                let marker = if i == wiz.active_toggle { ">" } else { " " };
-                let check = if *checked { "x" } else { " " };
-                let suffix = if !enabled { " (no run data)" } else { "" };
-                out.push_str(&format!("  {} [{}] {}{}\n", marker, check, label, suffix));
-            }
-        }
-        WizardStage::Preview => {
-            out.push_str("  Step 4/4: Preview\n\n");
-            out.push_str(&format!(
-                "  Will save to: {}/{}.yaml\n\n",
-                wiz.category, wiz.task_name
-            ));
+            for (i, (label, desc, checked, enabled)) in opts.iter().enumerate() {
+                let is_active = i == wiz.active_toggle;
+                let check_icon = if *checked { "\u{25c9}" } else { "\u{25cb}" };
 
+                let label_style = if !enabled {
+                    Style::default().fg(Color::DarkGray)
+                } else if is_active {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+
+                let check_style = if !enabled {
+                    Style::default().fg(Color::DarkGray)
+                } else if *checked {
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+
+                let pointer = if is_active { "\u{25b8}" } else { " " };
+
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {} ", pointer), label_style),
+                    Span::styled(format!("{} ", check_icon), check_style),
+                    Span::styled(*label, label_style),
+                ]));
+                lines.push(Line::from(Span::styled(
+                    format!("      {}{}", desc, if !enabled { " (no run data)" } else { "" }),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+
+            push_wizard_footer(&mut lines, inner.height, &[
+                ("Enter", "Next"), ("Space", "Toggle"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
+            ]);
+        }
+
+        WizardStage::Preview => {
+            lines.push(Line::from(Span::styled(
+                "Review and save",
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Saving to  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{}/{}.yaml", wiz.category, wiz.task_name),
+                    Style::default().fg(Color::White),
+                ),
+            ]));
+            lines.push(Line::from(""));
+
+            // YAML preview with syntax-like coloring
             let optimized = wizard::optimize_workflow(
                 &wiz.source_workflow,
                 wiz.source_run.as_ref(),
@@ -308,12 +503,65 @@ fn format_wizard(app: &App) -> String {
             let yaml = wizard::generate_yaml(&optimized);
 
             for line in yaml.lines() {
-                out.push_str(&format!("  {}\n", line));
+                let owned = line.to_string();
+                let color = if line.starts_with("name:") || line.starts_with("env:") || line.starts_with("workdir:") || line.starts_with("steps:") {
+                    Color::Cyan
+                } else if line.trim_start().starts_with("- id:") {
+                    Color::Yellow
+                } else if line.trim_start().starts_with("cmd:") {
+                    Color::Green
+                } else if line.trim_start().starts_with("needs:") || line.trim_start().starts_with("parallel:") {
+                    Color::Magenta
+                } else {
+                    Color::White
+                };
+                lines.push(Line::from(Span::styled(owned, Style::default().fg(color))));
             }
+
+            push_wizard_footer(&mut lines, inner.height, &[
+                ("Enter", "Save"), ("Up/Down", "Scroll"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
+            ]);
         }
     }
 
-    out
+    let scroll = if wiz.stage == WizardStage::Preview {
+        wiz.preview_scroll
+    } else {
+        0
+    };
+
+    let para = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    f.render_widget(para, inner);
+}
+
+/// Push a bottom-aligned footer with key hints into the lines vec.
+fn push_wizard_footer(lines: &mut Vec<Line>, available_height: u16, hints: &[(&str, &str)]) {
+    let target = (available_height as usize).saturating_sub(2);
+    while lines.len() < target {
+        lines.push(Line::from(""));
+    }
+
+    // Separator
+    lines.push(Line::from(Span::styled(
+        "\u{2500}".repeat(40),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Key hints
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, (key, action)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("   ", Style::default()));
+        }
+        spans.push(Span::styled(
+            format!(" {} ", key),
+            Style::default().fg(Color::Black).bg(Color::White),
+        ));
+        spans.push(Span::styled(format!(" {}", action), Style::default().fg(Color::DarkGray)));
+    }
+    lines.push(Line::from(spans));
 }
 
 fn format_live_progress(app: &App) -> String {
