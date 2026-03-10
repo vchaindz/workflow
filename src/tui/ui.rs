@@ -63,8 +63,6 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let mut items: Vec<ListItem> = Vec::new();
 
     for (i, cat) in app.categories.iter().enumerate() {
-        let collapsed = app.is_collapsed(i);
-        let tree_icon = if collapsed { "+" } else { "-" };
         let marker = if i == app.selected_category {
             ">"
         } else {
@@ -79,25 +77,12 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         };
         items.push(
             ListItem::new(format!(
-                "{marker} {tree_icon} {} ({})",
+                "{marker} {} ({})",
                 cat.name,
                 cat.tasks.len()
             ))
             .style(cat_style),
         );
-
-        if !collapsed {
-            for task in &cat.tasks {
-                let kind = match task.kind {
-                    TaskKind::ShellScript => "sh",
-                    TaskKind::YamlWorkflow => "yaml",
-                };
-                items.push(
-                    ListItem::new(format!("    {} [{kind}]", task.name))
-                        .style(Style::default().fg(Color::DarkGray)),
-                );
-            }
-        }
     }
 
     let block = Block::default()
