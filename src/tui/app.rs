@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::mpsc;
 
 use crate::core::config::Config;
-use crate::core::models::{Category, ExecutionEvent, RunLog, StepStatus, Task};
+use crate::core::models::{Category, ExecutionEvent, RunLog, StepStatus, Task, Workflow};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -18,6 +18,32 @@ pub enum AppMode {
     ViewingLogs,
     Search,
     Help,
+    Wizard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WizardStage {
+    Category,
+    TaskName,
+    Options,
+    Preview,
+}
+
+#[derive(Debug, Clone)]
+pub struct WizardState {
+    pub stage: WizardStage,
+    pub source_task_ref: String,
+    pub source_workflow: Workflow,
+    pub source_run: Option<RunLog>,
+    pub category: String,
+    pub task_name: String,
+    pub category_cursor: Option<usize>,
+    pub remove_failed: bool,
+    pub remove_skipped: bool,
+    pub parallelize: bool,
+    pub preview_scroll: u16,
+    pub active_toggle: usize,
+    pub save_message: Option<String>,
 }
 
 pub struct App {
@@ -50,15 +76,15 @@ pub struct App {
     // Collapsed categories (by index)
     pub collapsed: HashSet<usize>,
 
-    // Expanded tasks in task list (by task index) — shows steps inline
-    pub expanded_tasks: HashSet<usize>,
-
     // Async execution state
     pub event_rx: Option<mpsc::Receiver<ExecutionEvent>>,
     pub footer_log: Vec<String>,
     pub is_executing: bool,
     pub executing_task_ref: Option<String>,
     pub step_states: Vec<StepState>,
+
+    // Wizard state
+    pub wizard: Option<WizardState>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,12 +112,12 @@ impl App {
             running_message: None,
             viewing_logs: Vec::new(),
             collapsed: HashSet::new(),
-            expanded_tasks: HashSet::new(),
             event_rx: None,
             footer_log: Vec::new(),
             is_executing: false,
             executing_task_ref: None,
             step_states: Vec::new(),
+            wizard: None,
         }
     }
 
@@ -151,12 +177,13 @@ impl App {
                 if self.selected_category > 0 {
                     self.selected_category -= 1;
                     self.selected_task = 0;
-                    self.expanded_tasks.clear();
                 }
             }
             Focus::TaskList => {
                 if self.selected_task > 0 {
                     self.selected_task -= 1;
+                    self.run_output = None;
+                    self.detail_scroll = 0;
                 }
             }
             Focus::Details => {
@@ -171,12 +198,13 @@ impl App {
                 if self.selected_category + 1 < self.category_count() {
                     self.selected_category += 1;
                     self.selected_task = 0;
-                    self.expanded_tasks.clear();
                 }
             }
             Focus::TaskList => {
                 if self.selected_task + 1 < self.task_count() {
                     self.selected_task += 1;
+                    self.run_output = None;
+                    self.detail_scroll = 0;
                 }
             }
             Focus::Details => {

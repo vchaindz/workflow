@@ -1,7 +1,8 @@
 pub mod config;
+pub mod db;
 pub mod discovery;
 pub mod executor;
-pub mod logger;
 pub mod models;
 pub mod parser;
 pub mod template;
+pub mod wizard;

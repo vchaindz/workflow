@@ -4,10 +4,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
+use crate::core::db;
 use crate::core::models::{StepStatus, TaskKind};
 use crate::core::parser::{parse_shell_task, parse_workflow};
+use crate::core::wizard;
 
-use super::app::{App, AppMode, Focus};
+use super::app::{App, AppMode, Focus, WizardStage};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let has_footer = !app.footer_log.is_empty();
@@ -111,13 +113,6 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             TaskKind::ShellScript => "sh",
             TaskKind::YamlWorkflow => "yaml",
         };
-        let expanded = app.expanded_tasks.contains(&i);
-        let tree_icon = if task.kind == TaskKind::YamlWorkflow {
-            if expanded { "-" } else { "+" }
-        } else {
-            " "
-        };
-
         let s = if i == app.selected_task {
             Style::default()
                 .fg(Color::Green)
@@ -127,27 +122,8 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         };
 
         items.push(
-            ListItem::new(format!("{marker} {tree_icon} {} [{kind}]", task.name)).style(s),
+            ListItem::new(format!("{marker} {} [{kind}]", task.name)).style(s),
         );
-
-        if expanded {
-            if let Ok(wf) = match task.kind {
-                TaskKind::YamlWorkflow => parse_workflow(&task.path),
-                TaskKind::ShellScript => parse_shell_task(&task.path),
-            } {
-                for (si, step) in wf.steps.iter().enumerate() {
-                    let cmd = if step.cmd.len() > 40 {
-                        format!("{}...", &step.cmd[..37])
-                    } else {
-                        step.cmd.clone()
-                    };
-                    items.push(
-                        ListItem::new(format!("    {}. {} — {}", si + 1, step.id, cmd))
-                            .style(Style::default().fg(Color::DarkGray)),
-                    );
-                }
-            }
-        }
     }
 
     let title = if app.filtered_indices.is_some() {
@@ -177,22 +153,50 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(style);
 
-    let content = if app.mode == AppMode::Running {
+    let content = if app.mode == AppMode::Wizard {
+        format_wizard(app)
+    } else if app.mode == AppMode::Running {
         format_live_progress(app)
     } else if app.mode == AppMode::ViewingLogs {
         format_logs(&app.viewing_logs)
     } else if let Some(ref run_log) = app.run_output {
         format_run_log(run_log)
     } else if let Some(task) = app.selected_task_ref() {
-        format_task_preview(task)
+        let task_ref = format!("{}/{}", task.category, task.name);
+        let last_run = db::open_db(&app.config.db_path())
+            .ok()
+            .and_then(|conn| db::get_task_history(&conn, &task_ref, 1).ok())
+            .and_then(|mut v| if v.is_empty() { None } else { Some(v.remove(0)) });
+        let mut preview = format_task_preview(task);
+        if let Some(run_log) = last_run {
+            preview.push_str("\n--- Last Run ---\n");
+            preview.push_str(&format_run_log(&run_log));
+        }
+        preview
     } else {
         "Select a task to preview".to_string()
     };
 
+    // Approximate line count (including wraps) to clamp scroll
+    let inner_width = area.width.saturating_sub(2) as usize; // borders
+    let content_lines: u16 = content
+        .lines()
+        .map(|l| {
+            if inner_width == 0 {
+                1u16
+            } else {
+                1 + (l.len() / inner_width.max(1)) as u16
+            }
+        })
+        .sum();
+    let inner_height = area.height.saturating_sub(2); // borders
+    let max_scroll = content_lines.saturating_sub(inner_height);
+    let scroll = app.detail_scroll.min(max_scroll);
+
     let para = Paragraph::new(content)
         .block(block)
         .wrap(Wrap { trim: false })
-        .scroll((app.detail_scroll, 0));
+        .scroll((scroll, 0));
 
     f.render_widget(para, area);
 }
@@ -203,8 +207,24 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             format!("Search: {}_ | ESC cancel", app.search_query)
         }
         AppMode::Running => "Running... (output in footer below)".to_string(),
+        AppMode::Wizard => {
+            if let Some(ref wiz) = app.wizard {
+                if wiz.save_message.is_some() {
+                    "Task saved! Press any key to continue".to_string()
+                } else {
+                    match wiz.stage {
+                        WizardStage::Category => "Category: type name or Up/Down to pick | Tab/Enter:next  Esc:cancel".to_string(),
+                        WizardStage::TaskName => "Task name: type name | Tab/Enter:next  Esc:cancel".to_string(),
+                        WizardStage::Options => "Space:toggle  Up/Down:select  Tab/Enter:next  Esc:cancel".to_string(),
+                        WizardStage::Preview => "Up/Down:scroll  Enter:save  Esc:cancel".to_string(),
+                    }
+                }
+            } else {
+                String::new()
+            }
+        }
         _ => {
-            "arrows:nav  +/-:expand  r:run  d:dry-run  e:edit  L:logs  /:search  h:help  q:quit"
+            "arrows:nav  +/-:collapse  r:run  d:dry-run  e:edit  w:wizard  L:logs  /:search  h:help  q:quit"
                 .to_string()
         }
     };
@@ -216,6 +236,84 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             .bg(Color::White),
     )]));
     f.render_widget(bar, area);
+}
+
+fn format_wizard(app: &App) -> String {
+    let wiz = match app.wizard.as_ref() {
+        Some(w) => w,
+        None => return "Wizard not active".to_string(),
+    };
+
+    if let Some(ref msg) = wiz.save_message {
+        return format!("  {}\n\n  Press any key to continue.", msg);
+    }
+
+    let mut out = String::new();
+    out.push_str("  Create Task from Template\n");
+    out.push_str(&format!("  Source: {}\n\n", wiz.source_task_ref));
+
+    match wiz.stage {
+        WizardStage::Category => {
+            out.push_str("  Step 1/4: Category\n\n");
+            out.push_str(&format!("  > {}_ \n\n", wiz.category));
+            out.push_str("  Existing categories:\n");
+            for (i, cat) in app.categories.iter().enumerate() {
+                let marker = if wiz.category_cursor == Some(i) {
+                    ">"
+                } else {
+                    " "
+                };
+                out.push_str(&format!("  {} {}\n", marker, cat.name));
+            }
+            out.push_str("\n  Type a new name or Up/Down to pick existing\n");
+        }
+        WizardStage::TaskName => {
+            out.push_str("  Step 2/4: Task Name\n\n");
+            out.push_str(&format!("  Category: {}\n", wiz.category));
+            out.push_str(&format!("  > {}_ \n", wiz.task_name));
+        }
+        WizardStage::Options => {
+            out.push_str("  Step 3/4: Optimization Options\n\n");
+            out.push_str(&format!("  Category: {}\n", wiz.category));
+            out.push_str(&format!("  Task:     {}\n\n", wiz.task_name));
+
+            let has_run = wiz.source_run.is_some();
+            let opts = [
+                ("Remove failed steps", wiz.remove_failed, has_run),
+                ("Remove skipped steps", wiz.remove_skipped, has_run),
+                ("Parallelize independent steps", wiz.parallelize, true),
+            ];
+
+            for (i, (label, checked, enabled)) in opts.iter().enumerate() {
+                let marker = if i == wiz.active_toggle { ">" } else { " " };
+                let check = if *checked { "x" } else { " " };
+                let suffix = if !enabled { " (no run data)" } else { "" };
+                out.push_str(&format!("  {} [{}] {}{}\n", marker, check, label, suffix));
+            }
+        }
+        WizardStage::Preview => {
+            out.push_str("  Step 4/4: Preview\n\n");
+            out.push_str(&format!(
+                "  Will save to: {}/{}.yaml\n\n",
+                wiz.category, wiz.task_name
+            ));
+
+            let optimized = wizard::optimize_workflow(
+                &wiz.source_workflow,
+                wiz.source_run.as_ref(),
+                wiz.remove_failed,
+                wiz.remove_skipped,
+                wiz.parallelize,
+            );
+            let yaml = wizard::generate_yaml(&optimized);
+
+            for line in yaml.lines() {
+                out.push_str(&format!("  {}\n", line));
+            }
+        }
+    }
+
+    out
 }
 
 fn format_live_progress(app: &App) -> String {
@@ -367,7 +465,7 @@ fn format_run_log(log: &crate::core::models::RunLog) -> String {
 fn draw_help(f: &mut Frame) {
     let area = f.area();
     let w = 50.min(area.width.saturating_sub(4));
-    let h = 18.min(area.height.saturating_sub(4));
+    let h = 20.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
@@ -389,6 +487,7 @@ fn draw_help(f: &mut Frame) {
         Line::from("  r           Run selected task"),
         Line::from("  d           Dry-run selected task"),
         Line::from("  e           Edit task in $EDITOR"),
+        Line::from("  w           Create task from template"),
         Line::from("  L           View run logs"),
         Line::from("  /           Search tasks"),
         Line::from("  q           Quit / close"),
