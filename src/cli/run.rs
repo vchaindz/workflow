@@ -38,7 +38,7 @@ pub fn cmd_run(
     };
 
     let canonical_ref = format!("{}/{}", task.category, task.name);
-    let run_log = execute_workflow(&workflow, &canonical_ref, &opts)?;
+    let run_log = execute_workflow(&workflow, &canonical_ref, &opts, None)?;
     let exit_code = run_log.exit_code;
 
     if !dry_run {

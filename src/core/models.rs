@@ -3,6 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// An env value can be a plain string or a dynamic command to execute.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum EnvValue {
+    Static(String),
+    Dynamic { cmd: String },
+}
+
 /// Deserialization-only types for flexible YAML step formats.
 /// Supports: bare string, map without id, full map with id/needs.
 #[derive(Debug, Deserialize)]
@@ -24,7 +32,7 @@ pub(crate) struct RawWorkflow {
     pub name: String,
     pub steps: Vec<RawStep>,
     #[serde(default)]
-    pub env: HashMap<String, String>,
+    pub env: HashMap<String, EnvValue>,
     #[serde(default)]
     pub workdir: Option<PathBuf>,
 }
@@ -97,6 +105,15 @@ pub struct RunLog {
     pub ended: Option<DateTime<Utc>>,
     pub steps: Vec<StepResult>,
     pub exit_code: i32,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExecutionEvent {
+    StepStarted { step_id: String, cmd_preview: String },
+    StepCompleted { step_id: String, status: StepStatus, duration_ms: u64 },
+    StepSkipped { step_id: String },
+    WorkflowFinished { run_log: RunLog },
+    WorkflowError { message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-use crate::core::models::{RawStep, RawWorkflow, Step, Workflow};
+use crate::core::models::{EnvValue, RawStep, RawWorkflow, Step, Workflow};
 use crate::error::{DzError, Result};
 
 /// Parse a YAML workflow file into a Workflow struct.
@@ -10,10 +10,11 @@ pub fn parse_workflow(path: &Path) -> Result<Workflow> {
     let contents = std::fs::read_to_string(path)?;
     let raw: RawWorkflow = serde_yaml::from_str(&contents)?;
     let steps = normalize_steps(raw.steps)?;
+    let env = resolve_env(raw.env)?;
     let workflow = Workflow {
         name: raw.name,
         steps,
-        env: raw.env,
+        env,
         workdir: raw.workdir,
     };
 
@@ -54,6 +55,36 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
     }
 
     Ok(steps)
+}
+
+/// Resolve env values: static strings pass through, dynamic `cmd` values are executed via bash.
+fn resolve_env(raw_env: HashMap<String, EnvValue>) -> Result<HashMap<String, String>> {
+    let mut resolved = HashMap::new();
+    for (key, val) in raw_env {
+        match val {
+            EnvValue::Static(s) => {
+                resolved.insert(key, s);
+            }
+            EnvValue::Dynamic { cmd } => {
+                let output = std::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(&cmd)
+                    .output()
+                    .map_err(|e| DzError::Execution(format!("env '{key}': {e}")))?;
+                if !output.status.success() {
+                    return Err(DzError::Execution(format!(
+                        "env '{key}' cmd failed: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    )));
+                }
+                resolved.insert(
+                    key,
+                    String::from_utf8_lossy(&output.stdout).trim().to_string(),
+                );
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 /// Wrap a shell script as a single-step workflow.
@@ -406,6 +437,52 @@ steps:
         assert_eq!(wf.steps[1].needs, vec!["build"]);
         assert_eq!(wf.steps[2].id, "deploy");
         assert_eq!(wf.steps[2].needs, vec!["test"]);
+    }
+
+    #[test]
+    fn test_dynamic_env_resolution() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("dynenv.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Dynamic Env
+env:
+  STATIC_VAR: hello
+  DYNAMIC_VAR:
+    cmd: "echo world"
+steps:
+  - echo $STATIC_VAR $DYNAMIC_VAR
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.env.get("STATIC_VAR").unwrap(), "hello");
+        assert_eq!(wf.env.get("DYNAMIC_VAR").unwrap(), "world");
+    }
+
+    #[test]
+    fn test_dynamic_env_failure() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("dynfail.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Failing Env
+env:
+  BAD:
+    cmd: "exit 1"
+steps:
+  - echo should not run
+"#,
+        )
+        .unwrap();
+
+        let result = parse_workflow(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("BAD"), "error was: {err}");
     }
 
     #[test]

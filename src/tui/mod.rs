@@ -51,6 +51,7 @@ fn run_app(
     app: &mut App,
 ) -> Result<()> {
     loop {
+        app.drain_execution_events();
         terminal.draw(|f| ui::draw(f, app))?;
 
         match poll_event(TICK_RATE)? {

@@ -5,7 +5,7 @@ use std::time::Instant;
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::core::models::{RunLog, Step, StepResult, StepStatus, Workflow};
+use crate::core::models::{ExecutionEvent, RunLog, Step, StepResult, StepStatus, Workflow};
 use crate::core::parser::topological_sort;
 use crate::core::template::expand_template;
 use crate::error::Result;
@@ -28,7 +28,14 @@ pub fn execute_workflow(
     workflow: &Workflow,
     task_ref: &str,
     opts: &ExecuteOpts,
+    event_tx: Option<&std::sync::mpsc::Sender<ExecutionEvent>>,
 ) -> Result<RunLog> {
+    let send = |evt: ExecutionEvent| {
+        if let Some(tx) = event_tx {
+            let _ = tx.send(evt);
+        }
+    };
+
     let order = topological_sort(&workflow.steps)?;
     let started = Utc::now();
     let mut step_results: Vec<StepResult> = Vec::new();
@@ -58,6 +65,7 @@ pub fn execute_workflow(
             .any(|dep| failed_steps.contains(dep.as_str()));
 
         if dep_failed {
+            send(ExecutionEvent::StepSkipped { step_id: step.id.clone() });
             step_results.push(StepResult {
                 id: step.id.clone(),
                 status: StepStatus::Skipped,
@@ -78,6 +86,10 @@ pub fn execute_workflow(
         let expanded_cmd = expand_template(&step.cmd, &template_vars);
 
         if opts.dry_run {
+            send(ExecutionEvent::StepStarted {
+                step_id: step.id.clone(),
+                cmd_preview: format!("[dry-run] {expanded_cmd}"),
+            });
             if let Some(ref dir) = workflow.workdir {
                 println!("[dry-run] step '{}' (in {}): {}", step.id, dir.display(), expanded_cmd);
             } else {
@@ -89,8 +101,18 @@ pub fn execute_workflow(
                 output: format!("[dry-run] {expanded_cmd}"),
                 duration_ms: 0,
             });
+            send(ExecutionEvent::StepCompleted {
+                step_id: step.id.clone(),
+                status: StepStatus::Success,
+                duration_ms: 0,
+            });
             continue;
         }
+
+        send(ExecutionEvent::StepStarted {
+            step_id: step.id.clone(),
+            cmd_preview: truncate_cmd(&expanded_cmd, 60),
+        });
 
         let timer = Instant::now();
         let mut cmd = Command::new("bash");
@@ -115,6 +137,11 @@ pub fn execute_workflow(
                         output: combined,
                         duration_ms,
                     });
+                    send(ExecutionEvent::StepCompleted {
+                        step_id: step.id.clone(),
+                        status: StepStatus::Success,
+                        duration_ms,
+                    });
                 } else {
                     let code = output.status.code().unwrap_or(1);
                     overall_exit = code;
@@ -123,6 +150,11 @@ pub fn execute_workflow(
                         id: step.id.clone(),
                         status: StepStatus::Failed,
                         output: combined,
+                        duration_ms,
+                    });
+                    send(ExecutionEvent::StepCompleted {
+                        step_id: step.id.clone(),
+                        status: StepStatus::Failed,
                         duration_ms,
                     });
                 }
@@ -134,6 +166,11 @@ pub fn execute_workflow(
                     id: step.id.clone(),
                     status: StepStatus::Failed,
                     output: format!("failed to execute: {e}"),
+                    duration_ms,
+                });
+                send(ExecutionEvent::StepCompleted {
+                    step_id: step.id.clone(),
+                    status: StepStatus::Failed,
                     duration_ms,
                 });
             }
@@ -148,6 +185,15 @@ pub fn execute_workflow(
         steps: step_results,
         exit_code: overall_exit,
     })
+}
+
+fn truncate_cmd(cmd: &str, max_len: usize) -> String {
+    let first_line = cmd.lines().next().unwrap_or(cmd);
+    if first_line.len() > max_len {
+        format!("{}...", &first_line[..max_len])
+    } else {
+        first_line.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -184,7 +230,7 @@ mod tests {
             dry_run: true,
             ..Default::default()
         };
-        let log = execute_workflow(&wf, "test/echo", &opts).unwrap();
+        let log = execute_workflow(&wf, "test/echo", &opts, None).unwrap();
         assert_eq!(log.exit_code, 0);
         assert_eq!(log.steps.len(), 2);
         assert!(log.steps[0].output.contains("[dry-run]"));
@@ -194,7 +240,7 @@ mod tests {
     fn test_real_execution() {
         let wf = echo_workflow();
         let opts = ExecuteOpts::default();
-        let log = execute_workflow(&wf, "test/echo", &opts).unwrap();
+        let log = execute_workflow(&wf, "test/echo", &opts, None).unwrap();
         assert_eq!(log.exit_code, 0);
         assert!(log.steps[0].output.contains("hello"));
         assert!(log.steps[1].output.contains("world"));
@@ -228,7 +274,7 @@ mod tests {
             workdir: None,
         };
 
-        let log = execute_workflow(&wf, "test/fail", &ExecuteOpts::default()).unwrap();
+        let log = execute_workflow(&wf, "test/fail", &ExecuteOpts::default(), None).unwrap();
         assert_ne!(log.exit_code, 0);
 
         let dep = log.steps.iter().find(|s| s.id == "dependent").unwrap();
@@ -257,7 +303,7 @@ mod tests {
             ..Default::default()
         };
 
-        let log = execute_workflow(&wf, "test/env", &opts).unwrap();
+        let log = execute_workflow(&wf, "test/env", &opts, None).unwrap();
         assert!(log.steps[0].output.contains("overridden"));
     }
 
@@ -275,7 +321,7 @@ mod tests {
             workdir: Some(std::path::PathBuf::from("/tmp")),
         };
 
-        let log = execute_workflow(&wf, "test/workdir", &ExecuteOpts::default()).unwrap();
+        let log = execute_workflow(&wf, "test/workdir", &ExecuteOpts::default(), None).unwrap();
         assert_eq!(log.exit_code, 0);
         assert!(log.steps[0].output.trim().starts_with("/tmp"));
     }
