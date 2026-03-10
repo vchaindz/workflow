@@ -1,0 +1,27 @@
+{
+  "id": "30c36b8e-570e-4603-b620-47a0ad82dd9b",
+  "task_ref": "deploy/staging",
+  "started": "2026-03-10T07:54:18.166385472Z",
+  "ended": "2026-03-10T07:54:18.168406366Z",
+  "steps": [
+    {
+      "id": "build",
+      "status": "Success",
+      "output": "Building application...\n",
+      "duration_ms": 0
+    },
+    {
+      "id": "test",
+      "status": "Success",
+      "output": "Running tests...\n",
+      "duration_ms": 0
+    },
+    {
+      "id": "deploy",
+      "status": "Success",
+      "output": "Deploying to staging...\n",
+      "duration_ms": 0
+    }
+  ],
+  "exit_code": 0
+}

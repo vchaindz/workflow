@@ -1,0 +1,12 @@
+name: MySQL Daily Backup
+steps:
+  - id: dump
+    cmd: echo "Dumping database..."
+  - id: compress
+    cmd: echo "Compressing dump..."
+    needs: [dump]
+  - id: verify
+    cmd: echo "Verifying backup integrity"
+    needs: [compress]
+env:
+  BACKUP_DIR: /tmp/backups

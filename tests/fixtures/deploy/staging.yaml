@@ -1,0 +1,10 @@
+name: Deploy to Staging
+steps:
+  - id: build
+    cmd: echo "Building application..."
+  - id: test
+    cmd: echo "Running tests..."
+    needs: [build]
+  - id: deploy
+    cmd: echo "Deploying to staging..."
+    needs: [test]
