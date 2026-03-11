@@ -277,6 +277,62 @@ Each run produces a JSON log in `~/.config/workflow/logs/` and a record in `hist
 
 Logs older than `log_retention_days` (default 30) are automatically cleaned up on startup.
 
+## Claude Code Skill
+
+A [Claude Code](https://claude.ai/code) skill is included for managing workflows directly from Claude Code conversations. The skill teaches Claude how to create, edit, run, and inspect workflow tasks using the CLI.
+
+### Installing the Skill
+
+Copy the skill into your Claude Code skills directory:
+
+```bash
+mkdir -p ~/.claude/skills/workflow-manager
+cp -r skills/workflow-manager/* ~/.claude/skills/workflow-manager/
+```
+
+Or symlink it from the repo:
+
+```bash
+mkdir -p ~/.claude/skills
+ln -s "$(pwd)/skills/workflow-manager" ~/.claude/skills/workflow-manager
+```
+
+### What the Skill Provides
+
+Once installed, Claude Code can:
+
+- **Create workflows** — generate YAML or shell script tasks in the correct directory structure
+- **List and inspect** — browse categories, tasks, and their configurations
+- **Run and dry-run** — execute tasks or preview commands without running them
+- **Validate** — check workflow syntax and DAG dependencies
+- **View logs** — inspect run history and compare consecutive runs
+- **Browse templates** — list bundled templates or fetch community ones from GitHub
+- **Export/import** — archive and restore workflow collections
+
+### Usage in Claude Code
+
+Invoke the skill with `/workflow-manager` followed by a command:
+
+```
+/workflow-manager list                          # List all workflows
+/workflow-manager create backup/db-snapshot     # Create a new task
+/workflow-manager run deploy/staging --dry-run  # Dry-run a task
+/workflow-manager validate                      # Validate all workflows
+/workflow-manager templates --fetch             # Fetch community templates
+/workflow-manager logs backup/db-full           # View run logs
+```
+
+Or just ask Claude naturally — the skill triggers on mentions of workflows, tasks, categories, and the workflow CLI.
+
+### Skill Files
+
+```
+skills/workflow-manager/
+├── SKILL.md              # Skill definition and instructions
+└── references/
+    └── api_reference.md  # Complete YAML schema and CLI reference
+```
+
 ## Building from Source
 
 ```bash
