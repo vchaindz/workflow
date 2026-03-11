@@ -444,6 +444,7 @@ fn launch_workflow(
     thread::spawn(move || {
         let opts = ExecuteOpts {
             dry_run,
+            force: false,
             env_overrides,
             default_timeout,
             secrets,

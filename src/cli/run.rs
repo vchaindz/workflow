@@ -15,6 +15,7 @@ pub fn cmd_run(
     env_vars: &[String],
     timeout: Option<u64>,
     background: bool,
+    force: bool,
 ) -> Result<i32> {
     // Background mode: re-exec self without --background, detached from terminal
     if background {
@@ -76,6 +77,7 @@ pub fn cmd_run(
 
     let opts = ExecuteOpts {
         dry_run,
+        force,
         env_overrides,
         default_timeout: effective_timeout,
         secrets,

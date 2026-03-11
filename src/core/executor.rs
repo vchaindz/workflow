@@ -14,6 +14,56 @@ use crate::core::parser::topological_sort;
 use crate::core::template::expand_template;
 use crate::error::Result;
 
+/// Check if a command matches known dangerous patterns.
+/// Returns a warning message if dangerous, None if safe.
+pub fn check_dangerous(cmd: &str) -> Option<&'static str> {
+    let trimmed = cmd.trim();
+
+    // Fork bomb
+    if trimmed.contains(":(){ :|:& };:") || trimmed.contains(":(){:|:&};:") {
+        return Some("Fork bomb detected — will crash the system");
+    }
+
+    // rm -rf / or rm -rf /* (but not rm -rf /tmp/something)
+    let rm_re = regex::Regex::new(r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+(-[a-zA-Z]*r[a-zA-Z]*\s+)?|(-[a-zA-Z]*r[a-zA-Z]*\s+)?-[a-zA-Z]*f[a-zA-Z]*\s+)/\*?\s*$").unwrap();
+    if rm_re.is_match(trimmed) {
+        return Some("Recursive force-delete of root filesystem detected");
+    }
+
+    // dd writing to block devices
+    if trimmed.contains("dd ") && trimmed.contains("of=/dev/sd") {
+        return Some("Direct write to block device via dd detected");
+    }
+    if trimmed.contains("dd ") && trimmed.contains("of=/dev/nvme") {
+        return Some("Direct write to block device via dd detected");
+    }
+
+    // mkfs on real devices (not loop or files)
+    let mkfs_re = regex::Regex::new(r"mkfs[\.\s]\S*\s+/dev/sd").unwrap();
+    if mkfs_re.is_match(trimmed) {
+        return Some("Filesystem creation on real device detected");
+    }
+
+    // Redirect to block device
+    let dev_redirect_re = regex::Regex::new(r">\s*/dev/sd[a-z]").unwrap();
+    if dev_redirect_re.is_match(trimmed) {
+        return Some("Output redirect to block device detected");
+    }
+
+    // chmod -R 777 /
+    let chmod_re = regex::Regex::new(r"chmod\s+(-[a-zA-Z]*R[a-zA-Z]*\s+)?777\s+/\s*$").unwrap();
+    if chmod_re.is_match(trimmed) {
+        return Some("Recursive chmod 777 on root filesystem detected");
+    }
+
+    // mv /* /dev/null
+    if trimmed.contains("mv") && trimmed.contains("/dev/null") && trimmed.contains("/*") {
+        return Some("Moving filesystem contents to /dev/null detected");
+    }
+
+    None
+}
+
 /// Request from the executor to the TUI to suspend for an interactive step.
 pub struct InteractiveRequest {
     pub step_id: String,
@@ -31,6 +81,7 @@ pub struct StreamingRequest {
 
 pub struct ExecuteOpts {
     pub dry_run: bool,
+    pub force: bool,
     pub env_overrides: HashMap<String, String>,
     pub default_timeout: Option<u64>,
     pub secrets: Vec<String>,
@@ -42,6 +93,7 @@ impl Default for ExecuteOpts {
     fn default() -> Self {
         Self {
             dry_run: false,
+            force: false,
             env_overrides: HashMap::new(),
             default_timeout: None,
             secrets: Vec::new(),
@@ -113,7 +165,7 @@ pub fn execute_workflow(
         .collect();
 
     // Expand templates in env values
-    let template_vars: HashMap<String, String> = env.clone();
+    let mut template_vars: HashMap<String, String> = env.clone();
 
     let step_map: HashMap<&str, &Step> = workflow
         .steps
@@ -190,6 +242,35 @@ pub fn execute_workflow(
 
         let expanded_cmd = expand_template(&step.cmd, &template_vars);
         let masked_cmd = mask_secrets(&expanded_cmd, &secret_values);
+
+        // Dangerous command detection
+        if !opts.force && !opts.dry_run {
+            if let Some(warning) = check_dangerous(&expanded_cmd) {
+                send(ExecutionEvent::DangerousCommand {
+                    step_id: step.id.clone(),
+                    warning: warning.to_string(),
+                });
+                // In CLI mode (no event sender), block the step
+                if event_tx.is_none() {
+                    eprintln!("WARNING: {warning}");
+                    eprintln!("Blocked: dangerous command detected in step '{}'. Use --force to override.", step.id);
+                }
+                step_results.push(StepResult {
+                    id: step.id.clone(),
+                    status: StepStatus::Failed,
+                    output: format!("Blocked: {warning}. Use --force to override."),
+                    duration_ms: 0,
+                });
+                overall_exit = 1;
+                failed_steps.insert(step.id.clone());
+                send(ExecutionEvent::StepCompleted {
+                    step_id: step.id.clone(),
+                    status: StepStatus::Failed,
+                    duration_ms: 0,
+                });
+                continue;
+            }
+        }
 
         if opts.dry_run {
             send(ExecutionEvent::StepStarted {
@@ -550,15 +631,24 @@ pub fn execute_workflow(
         let masked_output = mask_secrets(&last_output, &secret_values);
 
         if step_succeeded {
-            let output = if max_attempts > 1 {
-                masked_output
-            } else {
-                masked_output
-            };
+            // Capture step outputs as template variables
+            if !step.outputs.is_empty() {
+                for out_def in &step.outputs {
+                    if let Ok(re) = regex::Regex::new(&out_def.pattern) {
+                        if let Some(caps) = re.captures(&last_output) {
+                            if let Some(val) = caps.get(1) {
+                                let key = format!("{}.{}", step.id, out_def.name);
+                                template_vars.insert(key, val.as_str().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
             step_results.push(StepResult {
                 id: step.id.clone(),
                 status: StepStatus::Success,
-                output,
+                output: masked_output,
                 duration_ms,
             });
             send(ExecutionEvent::StepCompleted {
@@ -603,6 +693,81 @@ pub fn execute_workflow(
         }
     }
 
+    // Execute cleanup steps (run regardless of success/failure)
+    for cleanup_step in &workflow.cleanup {
+        let expanded_cmd = expand_template(&cleanup_step.cmd, &template_vars);
+        let masked_cmd = mask_secrets(&expanded_cmd, &secret_values);
+
+        send(ExecutionEvent::StepStarted {
+            step_id: cleanup_step.id.clone(),
+            cmd_preview: format!("(cleanup) {}", mask_secrets(&truncate_cmd(&expanded_cmd, 60), &secret_values)),
+        });
+
+        let timer = Instant::now();
+
+        if opts.dry_run {
+            println!("[dry-run] cleanup '{}': {}", cleanup_step.id, masked_cmd);
+            step_results.push(StepResult {
+                id: cleanup_step.id.clone(),
+                status: StepStatus::Success,
+                output: format!("[dry-run] {masked_cmd}"),
+                duration_ms: 0,
+            });
+            send(ExecutionEvent::StepCompleted {
+                step_id: cleanup_step.id.clone(),
+                status: StepStatus::Success,
+                duration_ms: 0,
+            });
+            continue;
+        }
+
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&expanded_cmd).envs(&env);
+        if let Some(ref dir) = workflow.workdir {
+            cmd.current_dir(dir);
+        }
+
+        match cmd.output() {
+            Ok(output) => {
+                let duration_ms = timer.elapsed().as_millis() as u64;
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let combined = format!("{stdout}{stderr}");
+                let status = if output.status.success() {
+                    StepStatus::Success
+                } else {
+                    StepStatus::Failed
+                };
+                step_results.push(StepResult {
+                    id: cleanup_step.id.clone(),
+                    status: status.clone(),
+                    output: mask_secrets(&combined, &secret_values),
+                    duration_ms,
+                });
+                send(ExecutionEvent::StepCompleted {
+                    step_id: cleanup_step.id.clone(),
+                    status,
+                    duration_ms,
+                });
+            }
+            Err(e) => {
+                let duration_ms = timer.elapsed().as_millis() as u64;
+                step_results.push(StepResult {
+                    id: cleanup_step.id.clone(),
+                    status: StepStatus::Failed,
+                    output: format!("cleanup failed: {e}"),
+                    duration_ms,
+                });
+                send(ExecutionEvent::StepCompleted {
+                    step_id: cleanup_step.id.clone(),
+                    status: StepStatus::Failed,
+                    duration_ms,
+                });
+            }
+        }
+        // Cleanup failures do NOT affect overall exit code
+    }
+
     Ok(RunLog {
         id: Uuid::new_v4().to_string(),
         task_ref: task_ref.to_string(),
@@ -640,7 +805,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
                 Step {
                     id: "s2".into(),
@@ -651,7 +816,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
             ],
             env: HashMap::new(),
@@ -660,6 +825,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         }
     }
 
@@ -700,7 +866,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
                 Step {
                     id: "dependent".into(),
@@ -711,7 +877,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
                 Step {
                     id: "independent".into(),
@@ -722,7 +888,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
             ],
             env: HashMap::new(),
@@ -731,6 +897,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/fail", &ExecuteOpts::default(), None).unwrap();
@@ -756,7 +923,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             }],
             env: HashMap::from([("MY_VAR".to_string(), "original".to_string())]),
             workdir: None,
@@ -764,6 +931,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let opts = ExecuteOpts {
@@ -788,7 +956,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             }],
             env: HashMap::new(),
             workdir: Some(std::path::PathBuf::from("/tmp")),
@@ -796,6 +964,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/workdir", &ExecuteOpts::default(), None).unwrap();
@@ -816,7 +985,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             }],
             env: HashMap::new(),
             workdir: None,
@@ -824,6 +993,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/timeout", &ExecuteOpts::default(), None).unwrap();
@@ -845,7 +1015,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             }],
             env: HashMap::new(),
             workdir: None,
@@ -853,6 +1023,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let opts = ExecuteOpts {
@@ -878,7 +1049,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             }],
             env: HashMap::new(),
             workdir: None,
@@ -886,6 +1057,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let opts = ExecuteOpts {
@@ -911,7 +1083,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
                 Step {
                     id: "dependent".into(),
@@ -922,7 +1094,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
             ],
             env: HashMap::new(),
@@ -931,6 +1103,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/timeout-deps", &ExecuteOpts::default(), None).unwrap();
@@ -951,7 +1124,7 @@ mod tests {
                 run_if: Some("true".to_string()),
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             }],
             env: HashMap::new(),
             workdir: None,
@@ -959,6 +1132,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/run-if", &ExecuteOpts::default(), None).unwrap();
@@ -980,7 +1154,7 @@ mod tests {
                     run_if: Some("false".to_string()),
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
                 Step {
                     id: "after".into(),
@@ -991,7 +1165,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
             ],
             env: HashMap::new(),
@@ -1000,6 +1174,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/run-if-false", &ExecuteOpts::default(), None).unwrap();
@@ -1033,7 +1208,7 @@ mod tests {
                 run_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1041,6 +1216,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/retry", &ExecuteOpts::default(), None).unwrap();
@@ -1061,7 +1237,7 @@ mod tests {
                 run_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1069,6 +1245,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/retry-fail", &ExecuteOpts::default(), None).unwrap();
@@ -1090,7 +1267,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             }],
             env: HashMap::from([("MY_PASS".to_string(), "hunter2".to_string())]),
             workdir: None,
@@ -1098,6 +1275,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
         };
 
         let opts = ExecuteOpts {

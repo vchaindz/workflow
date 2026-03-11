@@ -82,6 +82,12 @@ const PORT_SCAN: &str = include_str!("../../templates/sysadmin/port-scan.yaml");
 const USER_AUDIT: &str = include_str!("../../templates/sysadmin/user-audit.yaml");
 const BACKUP_VERIFY: &str = include_str!("../../templates/sysadmin/backup-verify.yaml");
 const CPU_LOAD: &str = include_str!("../../templates/sysadmin/cpu-load.yaml");
+const SSL_CERT_EXPIRY: &str = include_str!("../../templates/sysadmin/ssl-cert-expiry.yaml");
+const SMART_DISK_HEALTH: &str = include_str!("../../templates/sysadmin/smart-disk-health.yaml");
+const NTP_SYNC_CHECK: &str = include_str!("../../templates/sysadmin/ntp-sync-check.yaml");
+const CRON_AUDIT: &str = include_str!("../../templates/sysadmin/cron-audit.yaml");
+const SSH_KEY_AUDIT: &str = include_str!("../../templates/sysadmin/ssh-key-audit.yaml");
+const FIREWALL_REVIEW: &str = include_str!("../../templates/sysadmin/firewall-review.yaml");
 
 /// Parse template metadata (name, description, variables) from YAML text.
 fn parse_template_meta(yaml: &str) -> (String, Option<String>, Vec<TemplateVariable>) {
@@ -167,6 +173,12 @@ pub fn bundled_templates() -> Vec<TemplateEntry> {
         ("sysadmin", "service-status", SERVICE_STATUS),
         ("sysadmin", "system-update", SYSTEM_UPDATE),
         ("sysadmin", "user-audit", USER_AUDIT),
+        ("sysadmin", "cron-audit", CRON_AUDIT),
+        ("sysadmin", "firewall-review", FIREWALL_REVIEW),
+        ("sysadmin", "ntp-sync-check", NTP_SYNC_CHECK),
+        ("sysadmin", "smart-disk-health", SMART_DISK_HEALTH),
+        ("sysadmin", "ssh-key-audit", SSH_KEY_AUDIT),
+        ("sysadmin", "ssl-cert-expiry", SSL_CERT_EXPIRY),
     ];
 
     registry

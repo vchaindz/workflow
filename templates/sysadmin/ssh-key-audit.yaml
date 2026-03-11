@@ -1,0 +1,59 @@
+name: SSH Key Audit
+description: Audit SSH keys for weak algorithms, incorrect permissions, and age
+variables:
+  - name: scan_path
+    description: Base path to scan for SSH keys
+    default: "/home"
+steps:
+  - id: find-keys
+    cmd: |
+      echo "=== SSH Key Files ==="
+      find "$DZ_SCAN_PATH" -name "*.pub" -o -name "authorized_keys" -o -name "id_*" 2>/dev/null | grep -v '.pub$' | head -50
+    timeout: 30
+  - id: check-algorithms
+    cmd: |
+      echo "=== Key Algorithm Check ==="
+      echo "(Weak: DSA, RSA<2048; OK: RSA>=2048, Ed25519, ECDSA)"
+      echo ""
+      find "$DZ_SCAN_PATH" -name "*.pub" 2>/dev/null | while read -r pubkey; do
+        if [ -f "$pubkey" ]; then
+          TYPE=$(ssh-keygen -lf "$pubkey" 2>/dev/null | awk '{print $NF}' | tr -d '()')
+          BITS=$(ssh-keygen -lf "$pubkey" 2>/dev/null | awk '{print $1}')
+          if [ "$TYPE" = "DSA" ] || { [ "$TYPE" = "RSA" ] && [ "${BITS:-0}" -lt 2048 ]; }; then
+            echo "  WEAK: $pubkey ($BITS $TYPE)"
+          else
+            echo "  OK:   $pubkey ($BITS $TYPE)"
+          fi
+        fi
+      done
+    timeout: 30
+  - id: check-permissions
+    cmd: |
+      echo "=== SSH Directory Permissions ==="
+      find "$DZ_SCAN_PATH" -name ".ssh" -type d 2>/dev/null | while read -r sshdir; do
+        PERMS=$(stat -c '%a' "$sshdir" 2>/dev/null || stat -f '%Lp' "$sshdir" 2>/dev/null)
+        if [ "$PERMS" != "700" ]; then
+          echo "  WARNING: $sshdir has permissions $PERMS (should be 700)"
+        else
+          echo "  OK: $sshdir ($PERMS)"
+        fi
+        for f in "$sshdir"/authorized_keys "$sshdir"/id_*; do
+          if [ -f "$f" ]; then
+            FPERMS=$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null)
+            if [ "$FPERMS" != "600" ] && [ "$FPERMS" != "644" ]; then
+              echo "  WARNING: $f has permissions $FPERMS"
+            fi
+          fi
+        done
+      done
+    timeout: 30
+  - id: check-authorized-keys
+    cmd: |
+      echo "=== Authorized Keys Summary ==="
+      find "$DZ_SCAN_PATH" -name "authorized_keys" 2>/dev/null | while read -r akf; do
+        COUNT=$(wc -l < "$akf" 2>/dev/null)
+        echo "  $akf: $COUNT keys"
+      done
+    timeout: 30
+env:
+  DZ_SCAN_PATH: "{{scan_path}}"

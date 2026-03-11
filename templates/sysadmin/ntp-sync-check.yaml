@@ -1,0 +1,32 @@
+name: NTP Sync Check
+description: Check time synchronization status via chronyd, timedatectl, or ntpd
+steps:
+  - id: timedatectl-status
+    cmd: |
+      echo "=== System Time Status ==="
+      timedatectl status 2>/dev/null || echo "timedatectl not available"
+  - id: chrony-or-ntp
+    cmd: |
+      if command -v chronyc &>/dev/null; then
+        echo "=== Chrony Tracking ==="
+        chronyc tracking 2>/dev/null
+        echo ""
+        echo "=== Chrony Sources ==="
+        chronyc sources -v 2>/dev/null
+      elif command -v ntpq &>/dev/null; then
+        echo "=== NTP Peers ==="
+        ntpq -p 2>/dev/null
+      else
+        echo "Neither chronyc nor ntpq found"
+      fi
+  - id: clock-offset
+    cmd: |
+      echo "=== Clock Offset Check ==="
+      if command -v chronyc &>/dev/null; then
+        OFFSET=$(chronyc tracking 2>/dev/null | grep "Last offset" | awk '{print $4}')
+        echo "Chrony last offset: ${OFFSET:-unknown}"
+      elif command -v ntpq &>/dev/null; then
+        ntpq -c rv 2>/dev/null | grep -oP 'offset=[\d.-]+' || echo "Could not read NTP offset"
+      else
+        echo "No NTP client available to check offset"
+      fi

@@ -10,7 +10,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 
 | | |
 |---|---|
-| **30 bundled templates** | Sysadmin, Docker, and Kubernetes — ready to use out of the box |
+| **36 bundled templates** | Sysadmin, Docker, and Kubernetes — ready to use out of the box |
 | **Real-world tasks** | Disk reports, systemd health checks, container security audits, k8s pod diagnostics |
 | **Overdue reminders** | Set `overdue: 7` on any task and get notified when maintenance is late |
 | **Cron-friendly CLI** | `workflow run backup/db-full` with proper exit codes for automation |
@@ -22,7 +22,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 |---|---|
 | **AI workflow generation** | Describe a task in English — Claude, Codex, or Gemini writes the YAML |
 | **Shell history wizard** | Turn past commands into reusable, parameterized workflows |
-| **DAG execution engine** | Retries, timeouts, conditionals, parallelism, and dependency graphs |
+| **DAG execution engine** | Retries, timeouts, conditionals, cleanup steps, output capture, and dependency graphs |
 | **Interactive TUI** | Browse, run, and monitor workflows with real-time progress |
 | **Hot/cold sorting** | Tasks ranked by run frequency — hot tasks float to the top |
 | **Export/import** | Share workflows across machines with `workflow export` / `workflow import` |
@@ -53,6 +53,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 
 ## Highlights
 
+- **Dangerous command safety** — blocks `rm -rf /`, fork bombs, and other destructive patterns before execution (override with `--force`)
 - **Shell history wizard** — browse your recent shell commands, pick the ones you want, and save them as a workflow in seconds
 - **AI task generation** — describe a task in natural language, and Claude, Codex, or Gemini generates the workflow steps automatically
 - **AI task update** — select an existing task, describe what to change, and AI rewrites the workflow for you
@@ -63,6 +64,10 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **Hot/cold task sorting** — tasks show heat indicators (▲/·/▽) based on run frequency; press `f` to sort hot tasks to the top
 - **Bookmarked tasks** — save frequently-used tasks for quick access with a single keypress
 - **Run comparison** — diff two runs of the same task side-by-side, with optional AI analysis
+- **Cleanup steps** — `cleanup:` section runs regardless of success/failure, like a `finally` block
+- **Step output capture** — capture step stdout via regex and use as `{{step_id.var}}` in subsequent steps
+- **Content-aware search** — TUI search (`/`) matches task names, categories, and step commands
+- **Fish shell support** — history wizard reads fish shell history alongside zsh and bash
 - **DAG execution** — multi-step YAML workflows with dependency ordering, conditional steps, retries, and timeouts
 - **Interactive TUI** — three-pane browser with real-time execution progress, search, and log viewing
 - **CLI for automation** — every operation works headless for cron, CI, and scripting
@@ -92,7 +97,7 @@ workflow
 
 ## Creating Tasks from Shell History
 
-Press `w` in the TUI to open the history wizard. It reads your shell history (zsh or bash), deduplicates and filters noise, and presents a searchable list:
+Press `w` in the TUI to open the history wizard. It reads your shell history (zsh, bash, or fish), deduplicates and filters noise, and presents a searchable list:
 
 ```
 ┌─ New Task from History ──────────────────────────────────┐
@@ -169,7 +174,7 @@ workflow templates
 workflow templates --fetch
 ```
 
-Bundled templates include security scanning (Trivy CVE checks), monitoring (website content checks), and tool management (Claude/Codex updates).
+Bundled templates include security scanning (Trivy CVE checks), monitoring (website content checks), tool management (Claude/Codex updates), and sysadmin tasks (SSL cert expiry, SMART disk health, NTP sync, cron audit, SSH key audit, firewall review).
 
 ## Clone & Optimize
 
@@ -292,6 +297,50 @@ env:
 
 Steps run in dependency order (topological sort). If a step fails, its dependents are skipped while independent branches continue. Template variables like `{{date}}`, `{{datetime}}`, and `{{hostname}}` are expanded in commands.
 
+### Cleanup Steps
+
+Add a `cleanup` section to run steps regardless of workflow success or failure (similar to a `finally` block):
+
+```yaml
+name: Deploy with Cleanup
+steps:
+  - id: deploy
+    cmd: ./deploy.sh
+cleanup:
+  - id: remove-tmpfiles
+    cmd: rm -rf /tmp/deploy-*
+  - id: unlock
+    cmd: rm -f /tmp/deploy.lock
+```
+
+Cleanup step failures are logged but do not affect the workflow's exit code.
+
+### Step Output Capture
+
+Capture step output as variables for use in subsequent steps:
+
+```yaml
+steps:
+  - id: get-version
+    cmd: cat VERSION
+    outputs:
+      - name: version
+        pattern: "^(\\S+)"
+  - id: tag
+    cmd: git tag v{{get-version.version}}
+    needs: [get-version]
+```
+
+Each output defines a `name` and a regex `pattern` with a capture group. The captured value is available as `{{step_id.output_name}}` in subsequent steps.
+
+### Dangerous Command Safety
+
+Commands matching known destructive patterns (e.g., `rm -rf /`, `dd` to block devices, fork bombs) are automatically blocked. Override with `--force`:
+
+```bash
+workflow run dangerous-task --force
+```
+
 ## TUI
 
 Launch with `workflow` (no arguments):
@@ -342,6 +391,9 @@ workflow run backup.db-full
 
 # Dry-run to preview commands
 workflow run deploy/staging --dry-run
+
+# Force-run (bypass dangerous command safety checks)
+workflow run risky-task --force
 
 # Run with a step timeout (seconds)
 workflow run deploy/staging --timeout 60

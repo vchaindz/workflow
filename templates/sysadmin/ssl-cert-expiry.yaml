@@ -1,0 +1,44 @@
+name: SSL Certificate Expiry Check
+description: Check SSL certificate expiry dates for domains and warn if expiring soon
+variables:
+  - name: domains
+    description: Comma-separated list of domains to check
+    default: "example.com"
+  - name: warn_days
+    description: Number of days before expiry to trigger warning
+    default: "30"
+steps:
+  - id: check-certs
+    cmd: |
+      echo "=== SSL Certificate Expiry Check ==="
+      echo "Warning threshold: ${DZ_WARN_DAYS} days"
+      echo ""
+      IFS=',' read -ra DOMAIN_LIST <<< "$DZ_DOMAINS"
+      EXIT_CODE=0
+      for domain in "${DOMAIN_LIST[@]}"; do
+        domain=$(echo "$domain" | xargs)
+        echo "--- $domain ---"
+        EXPIRY=$(echo | openssl s_client -servername "$domain" -connect "$domain:443" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+        if [ -z "$EXPIRY" ]; then
+          echo "  ERROR: Could not retrieve certificate"
+          EXIT_CODE=1
+          continue
+        fi
+        EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null || date -jf "%b %d %T %Y %Z" "$EXPIRY" +%s 2>/dev/null)
+        NOW_EPOCH=$(date +%s)
+        DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+        if [ "$DAYS_LEFT" -lt 0 ]; then
+          echo "  EXPIRED: $EXPIRY ($DAYS_LEFT days ago)"
+          EXIT_CODE=1
+        elif [ "$DAYS_LEFT" -lt "$DZ_WARN_DAYS" ]; then
+          echo "  WARNING: Expires $EXPIRY ($DAYS_LEFT days left)"
+          EXIT_CODE=1
+        else
+          echo "  OK: Expires $EXPIRY ($DAYS_LEFT days left)"
+        fi
+      done
+      exit $EXIT_CODE
+    timeout: 60
+env:
+  DZ_DOMAINS: "{{domains}}"
+  DZ_WARN_DAYS: "{{warn_days}}"

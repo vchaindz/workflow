@@ -1,0 +1,43 @@
+name: Firewall Review
+description: Dump firewall rules from ufw, firewalld, or iptables
+steps:
+  - id: detect-firewall
+    cmd: |
+      echo "=== Firewall Detection ==="
+      if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "active"; then
+        echo "Active firewall: ufw"
+      elif command -v firewall-cmd &>/dev/null && firewall-cmd --state 2>/dev/null | grep -q "running"; then
+        echo "Active firewall: firewalld"
+      elif command -v iptables &>/dev/null; then
+        echo "Active firewall: iptables (raw)"
+      else
+        echo "No recognized firewall found"
+      fi
+  - id: ufw-rules
+    cmd: |
+      if command -v ufw &>/dev/null; then
+        echo "=== UFW Status ==="
+        sudo ufw status verbose 2>/dev/null || echo "ufw not active or no permissions"
+      fi
+    run_if: "command -v ufw &>/dev/null"
+  - id: firewalld-rules
+    cmd: |
+      if command -v firewall-cmd &>/dev/null; then
+        echo "=== Firewalld Zones ==="
+        sudo firewall-cmd --list-all-zones 2>/dev/null || echo "firewalld not active or no permissions"
+      fi
+    run_if: "command -v firewall-cmd &>/dev/null"
+  - id: iptables-rules
+    cmd: |
+      echo "=== iptables Rules ==="
+      sudo iptables -L -n -v --line-numbers 2>/dev/null || echo "Cannot read iptables rules"
+      echo ""
+      echo "=== iptables NAT Table ==="
+      sudo iptables -t nat -L -n -v 2>/dev/null || echo "Cannot read NAT rules"
+  - id: nftables-rules
+    cmd: |
+      if command -v nft &>/dev/null; then
+        echo "=== nftables Ruleset ==="
+        sudo nft list ruleset 2>/dev/null || echo "Cannot read nftables rules"
+      fi
+    run_if: "command -v nft &>/dev/null"

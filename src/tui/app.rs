@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::mpsc;
 
 use crate::core::ai::{AiResult, AiResponse, AiTool};
@@ -194,6 +195,9 @@ pub struct App {
     // Heat-based sorting
     pub sort_by_heat: bool,
 
+    // Step command cache for content-aware search (path -> lowercased content)
+    pub step_cmd_cache: HashMap<PathBuf, String>,
+
     // Variable prompt modal state
     pub var_prompt_vars: Vec<RuntimeVariable>,
     pub var_prompt_index: usize,
@@ -261,6 +265,7 @@ impl App {
             overdue_tasks: Vec::new(),
             overdue_cursor: 0,
             sort_by_heat: false,
+            step_cmd_cache: HashMap::new(),
             var_prompt_vars: Vec::new(),
             var_prompt_index: 0,
             var_prompt_choices: Vec::new(),
@@ -336,6 +341,36 @@ impl App {
             }
         }
         self.selected_task = 0;
+    }
+
+    /// Build a cache of step commands/content per task path for search.
+    pub fn build_step_cmd_cache(&mut self) {
+        self.step_cmd_cache.clear();
+        for cat in &self.categories {
+            for task in &cat.tasks {
+                let path = &task.path;
+                if self.step_cmd_cache.contains_key(path) {
+                    continue;
+                }
+                let content = match task.kind {
+                    crate::core::models::TaskKind::YamlWorkflow => {
+                        if let Ok(wf) = crate::core::parser::parse_workflow(path) {
+                            wf.steps.iter().map(|s| s.cmd.as_str()).collect::<Vec<_>>().join("\n").to_lowercase()
+                        } else if let Ok(raw) = std::fs::read_to_string(path) {
+                            raw.to_lowercase()
+                        } else {
+                            String::new()
+                        }
+                    }
+                    crate::core::models::TaskKind::ShellScript => {
+                        std::fs::read_to_string(path)
+                            .unwrap_or_default()
+                            .to_lowercase()
+                    }
+                };
+                self.step_cmd_cache.insert(path.clone(), content);
+            }
+        }
     }
 
     pub fn toggle_collapse(&mut self) {
@@ -467,6 +502,10 @@ impl App {
                     || cat.name.to_lowercase().contains(&query)
                 {
                     indices.push((ci, ti));
+                } else if let Some(content) = self.step_cmd_cache.get(&task.path) {
+                    if content.contains(&query) {
+                        indices.push((ci, ti));
+                    }
                 }
             }
         }
@@ -563,6 +602,14 @@ impl App {
                             let total = self.streaming_lines.len() as u16;
                             self.streaming_scroll = total.saturating_sub(1);
                         }
+                    }
+                    ExecutionEvent::DangerousCommand { step_id, warning } => {
+                        self.footer_log.push(format!(
+                            "[{}] ⚠ {} BLOCKED: {}",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            step_id,
+                            warning,
+                        ));
                     }
                     ExecutionEvent::StepRetrying { step_id, attempt, max, delay_secs } => {
                         self.footer_log.push(format!(

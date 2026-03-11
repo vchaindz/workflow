@@ -24,6 +24,11 @@ fn history_file_path() -> Option<PathBuf> {
                 return Some(p);
             }
         }
+        // Fish shell history
+        let fish_path = home.join(".local/share/fish/fish_history");
+        if fish_path.is_file() {
+            return Some(fish_path);
+        }
     }
 
     None
@@ -42,14 +47,15 @@ pub fn load_shell_history(max_entries: usize) -> Vec<HistoryEntry> {
         Err(_) => return Vec::new(),
     };
 
-    let is_zsh = path
+    let filename = path
         .file_name()
         .and_then(|n| n.to_str())
-        .map(|n| n.contains("zsh"))
-        .unwrap_or(false);
+        .unwrap_or("");
 
-    let raw = if is_zsh {
+    let raw = if filename.contains("zsh") {
         parse_zsh_history(&content)
+    } else if filename.contains("fish") {
+        parse_fish_history(&content)
     } else {
         parse_bash_history(&content)
     };
@@ -175,6 +181,44 @@ fn parse_bash_history(content: &str) -> Vec<HistoryEntry> {
                 timestamp: None,
             });
         }
+    }
+
+    entries
+}
+
+/// Parse fish shell history format.
+/// Fish history uses `- cmd: <command>` with optional `  when: <timestamp>` lines.
+/// Multiline commands use `\n` escape sequences within the cmd value.
+fn parse_fish_history(content: &str) -> Vec<HistoryEntry> {
+    let mut entries = Vec::new();
+    let mut current_cmd: Option<String> = None;
+    let mut current_ts: Option<i64> = None;
+
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("- cmd: ") {
+            // Flush previous entry
+            if let Some(cmd) = current_cmd.take() {
+                entries.push(HistoryEntry {
+                    command: cmd,
+                    timestamp: current_ts.take(),
+                });
+            }
+            // Fish uses \n for literal newlines in commands
+            let cmd = rest.replace("\\n", "\n");
+            current_cmd = Some(cmd);
+            current_ts = None;
+        } else if let Some(rest) = line.strip_prefix("  when: ") {
+            current_ts = rest.trim().parse::<i64>().ok();
+        }
+        // Ignore other lines (e.g., `  paths: ...`)
+    }
+
+    // Flush last entry
+    if let Some(cmd) = current_cmd {
+        entries.push(HistoryEntry {
+            command: cmd,
+            timestamp: current_ts,
+        });
     }
 
     entries

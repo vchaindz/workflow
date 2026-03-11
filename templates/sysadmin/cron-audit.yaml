@@ -1,0 +1,40 @@
+name: Cron Job Audit
+description: List all user crontabs and system cron directories for a complete audit
+steps:
+  - id: user-crontabs
+    cmd: |
+      echo "=== User Crontabs ==="
+      for user in $(cut -f1 -d: /etc/passwd 2>/dev/null); do
+        CRON=$(crontab -l -u "$user" 2>/dev/null)
+        if [ -n "$CRON" ]; then
+          echo "--- $user ---"
+          echo "$CRON"
+          echo ""
+        fi
+      done
+  - id: system-cron
+    cmd: |
+      echo "=== /etc/crontab ==="
+      cat /etc/crontab 2>/dev/null || echo "(not found)"
+      echo ""
+      echo "=== /etc/cron.d/ ==="
+      ls -la /etc/cron.d/ 2>/dev/null || echo "(not found)"
+      for f in /etc/cron.d/*; do
+        if [ -f "$f" ]; then
+          echo "--- $f ---"
+          cat "$f"
+          echo ""
+        fi
+      done
+  - id: periodic-cron
+    cmd: |
+      echo "=== Cron Directories ==="
+      for dir in /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly; do
+        echo "--- $dir ---"
+        ls -la "$dir" 2>/dev/null || echo "(not found)"
+        echo ""
+      done
+  - id: systemd-timers
+    cmd: |
+      echo "=== Systemd Timers ==="
+      systemctl list-timers --all --no-pager 2>/dev/null || echo "systemctl not available"

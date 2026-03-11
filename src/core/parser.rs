@@ -10,6 +10,11 @@ pub fn parse_workflow(path: &Path) -> Result<Workflow> {
     let contents = std::fs::read_to_string(path)?;
     let raw: RawWorkflow = serde_yaml::from_str(&contents)?;
     let steps = normalize_steps(raw.steps)?;
+    let cleanup = if raw.cleanup.is_empty() {
+        Vec::new()
+    } else {
+        normalize_steps(raw.cleanup)?
+    };
     let env = resolve_env(raw.env)?;
     let workflow = Workflow {
         name: raw.name,
@@ -20,6 +25,7 @@ pub fn parse_workflow(path: &Path) -> Result<Workflow> {
         notify: raw.notify,
         overdue: raw.overdue,
         variables: raw.variables,
+        cleanup,
     };
 
     validate_workflow(&workflow)?;
@@ -38,17 +44,17 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, retry: None, retry_delay: None, interactive: None }
+                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, retry: None, retry_delay: None, interactive: None, outputs: Vec::new() }
             }
-            RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, retry, retry_delay, interactive } => {
+            RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, retry, retry_delay, interactive, outputs } => {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive }
+                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs }
             }
-            RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive } => {
+            RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs } => {
                 // Explicit id: no implicit chaining, but don't break the chain for others
-                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive }
+                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs }
             }
         };
 
@@ -113,13 +119,14 @@ pub fn parse_shell_task(path: &Path) -> Result<Workflow> {
             run_if: None,
             retry: None,
             retry_delay: None,
-            interactive: None,
+            interactive: None, outputs: Vec::new(),
         }],
         env: HashMap::new(),
         secrets: Vec::new(),
         notify: Default::default(),
         overdue: None,
         variables: Vec::new(),
+        cleanup: Vec::new(),
     })
 }
 
@@ -256,7 +263,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             },
             Step {
                 id: "b".into(),
@@ -267,7 +274,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             },
             Step {
                 id: "c".into(),
@@ -278,7 +285,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             },
         ];
 
@@ -304,7 +311,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             },
             Step {
                 id: "b".into(),
@@ -315,7 +322,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             },
             Step {
                 id: "c".into(),
@@ -326,7 +333,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             },
             Step {
                 id: "d".into(),
@@ -337,7 +344,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             },
         ];
 

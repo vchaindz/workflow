@@ -1,0 +1,29 @@
+name: SMART Disk Health
+description: Check SMART attributes and health status for storage devices
+variables:
+  - name: device
+    description: Block device to check
+    default: "/dev/sda"
+steps:
+  - id: smart-health
+    cmd: |
+      echo "=== SMART Health Status for ${DZ_DEVICE} ==="
+      if ! command -v smartctl &>/dev/null; then
+        echo "ERROR: smartctl not found. Install smartmontools."
+        exit 1
+      fi
+      sudo smartctl -H "$DZ_DEVICE" 2>/dev/null || echo "Could not read SMART health"
+  - id: smart-attributes
+    cmd: |
+      echo "=== SMART Attributes ==="
+      sudo smartctl -A "$DZ_DEVICE" 2>/dev/null || echo "Could not read SMART attributes"
+  - id: smart-errors
+    cmd: |
+      echo "=== SMART Error Log (last 5) ==="
+      sudo smartctl -l error "$DZ_DEVICE" 2>/dev/null | tail -20 || echo "No error log available"
+  - id: smart-selftest
+    cmd: |
+      echo "=== SMART Self-Test Log ==="
+      sudo smartctl -l selftest "$DZ_DEVICE" 2>/dev/null | head -20 || echo "No self-test log available"
+env:
+  DZ_DEVICE: "{{device}}"

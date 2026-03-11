@@ -41,6 +41,10 @@ pub enum Commands {
         /// Run in background, detach from terminal
         #[arg(long)]
         background: bool,
+
+        /// Override dangerous command safety checks
+        #[arg(long)]
+        force: bool,
     },
 
     /// List all discovered workflows and tasks

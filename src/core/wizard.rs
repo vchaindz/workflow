@@ -177,7 +177,7 @@ pub fn workflow_from_commands(name: &str, commands: &[String]) -> Workflow {
             run_if: None,
             retry: None,
             retry_delay: None,
-            interactive: None,
+            interactive: None, outputs: Vec::new(),
         });
     }
 
@@ -190,6 +190,7 @@ pub fn workflow_from_commands(name: &str, commands: &[String]) -> Workflow {
         notify: Default::default(),
         overdue: None,
         variables: Vec::new(),
+        cleanup: Vec::new(),
     }
 }
 
@@ -294,6 +295,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
             steps: vec![
                 Step {
                     id: "step-1".to_string(),
@@ -304,7 +306,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
                 Step {
                     id: "step-2".to_string(),
@@ -315,7 +317,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
                 Step {
                     id: "step-3".to_string(),
@@ -326,7 +328,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
                 Step {
                     id: "deploy".to_string(),
@@ -337,7 +339,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
             ],
         }
@@ -436,6 +438,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
             steps: vec![
                 Step {
                     id: "step-1".to_string(),
@@ -446,7 +449,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
                 Step {
                     id: "step-2".to_string(),
@@ -457,7 +460,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
             ],
         };
@@ -480,6 +483,7 @@ mod tests {
             notify: Default::default(),
             overdue: None,
             variables: Vec::new(),
+            cleanup: Vec::new(),
             steps: vec![
                 Step {
                     id: "build".to_string(),
@@ -490,7 +494,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
                 Step {
                     id: "test".to_string(),
@@ -501,7 +505,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None,
+                    interactive: None, outputs: Vec::new(),
                 },
             ],
         };
@@ -575,7 +579,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             },
             Step {
                 id: "step-5".to_string(),
@@ -586,7 +590,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None,
+                interactive: None, outputs: Vec::new(),
             },
         ];
         renumber_steps(&mut steps);

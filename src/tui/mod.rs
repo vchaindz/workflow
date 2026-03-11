@@ -30,6 +30,7 @@ pub fn run_tui(config: Config) -> Result<()> {
     let mut app = App::new(categories, config);
     app.refresh_stats();
     app.load_heat_data();
+    app.build_step_cmd_cache();
     app.check_overdue();
 
     // Setup terminal
@@ -128,6 +129,7 @@ fn rescan(app: &mut App) {
 
     app.categories = new_categories;
     app.load_heat_data();
+    app.build_step_cmd_cache();
     if app.sort_by_heat {
         app.apply_sort();
     }

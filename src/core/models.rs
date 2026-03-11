@@ -13,6 +13,12 @@ pub enum EnvValue {
 
 /// Deserialization-only types for flexible YAML step formats.
 /// Supports: bare string, map without id, full map with id/needs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepOutput {
+    pub name: String,
+    pub pattern: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum RawStep {
@@ -34,6 +40,8 @@ pub(crate) enum RawStep {
         retry_delay: Option<u64>,
         #[serde(default)]
         interactive: Option<bool>,
+        #[serde(default)]
+        outputs: Vec<StepOutput>,
     },
 }
 
@@ -64,6 +72,8 @@ pub(crate) struct RawWorkflow {
     pub overdue: Option<u32>,
     #[serde(default)]
     pub variables: Vec<RuntimeVariable>,
+    #[serde(default)]
+    pub cleanup: Vec<RawStep>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -122,6 +132,8 @@ pub struct Workflow {
     pub overdue: Option<u32>,
     #[serde(default)]
     pub variables: Vec<RuntimeVariable>,
+    #[serde(default)]
+    pub cleanup: Vec<Step>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +154,8 @@ pub struct Step {
     pub retry_delay: Option<u64>,
     #[serde(default)]
     pub interactive: Option<bool>,
+    #[serde(default)]
+    pub outputs: Vec<StepOutput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -187,6 +201,7 @@ pub enum ExecutionEvent {
     StepCompleted { step_id: String, status: StepStatus, duration_ms: u64 },
     StepSkipped { step_id: String },
     StepRetrying { step_id: String, attempt: u32, max: u32, delay_secs: u64 },
+    DangerousCommand { step_id: String, warning: String },
     StepOutput { step_id: String, line: String },
     WorkflowFinished { run_log: RunLog },
     StepTimedOut { step_id: String, timeout_secs: u64, duration_ms: u64 },

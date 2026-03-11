@@ -22,7 +22,8 @@ pub fn dispatch(config: &Config, command: Commands) -> Result<i32> {
             env_vars,
             timeout,
             background,
-        } => run::cmd_run(config, &task, dry_run, &env_vars, timeout, background),
+            force,
+        } => run::cmd_run(config, &task, dry_run, &env_vars, timeout, background, force),
 
         Commands::List { json } => {
             list::cmd_list(config, json)?;
