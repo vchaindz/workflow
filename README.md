@@ -17,10 +17,12 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **Interactive TUI** — three-pane browser with real-time execution progress, search, and log viewing
 - **CLI for automation** — every operation works headless for cron, CI, and scripting
 
-## Quick Start
+## Install
+
+Download the latest Linux binary from the [releases page](https://github.com/vchaindz/workflow/releases), or build from source:
 
 ```bash
-# Install
+# From source
 cargo install --path .
 
 # Create your first workflow
@@ -285,6 +287,10 @@ cargo build --release
 ```
 
 Requires Rust 2021 edition (1.56+).
+
+## Releases
+
+Pre-built binaries are available on the [GitHub releases page](https://github.com/vchaindz/workflow/releases).
 
 ## License
 
