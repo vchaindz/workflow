@@ -22,6 +22,8 @@ pub struct Config {
     pub secrets: Vec<String>,
     #[serde(default)]
     pub notify: NotifyConfig,
+    #[serde(default)]
+    pub bookmarks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -55,6 +57,7 @@ impl Default for Config {
             default_timeout: None,
             secrets: Vec::new(),
             notify: NotifyConfig::default(),
+            bookmarks: Vec::new(),
         }
     }
 }
@@ -87,5 +90,27 @@ impl Config {
 
     pub fn db_path(&self) -> PathBuf {
         self.workflows_dir.join("history.db")
+    }
+
+    /// Toggle a bookmark. Returns true if added, false if removed.
+    pub fn toggle_bookmark(&mut self, task_ref: &str) -> bool {
+        if let Some(pos) = self.bookmarks.iter().position(|b| b == task_ref) {
+            self.bookmarks.remove(pos);
+            false
+        } else {
+            self.bookmarks.push(task_ref.to_string());
+            true
+        }
+    }
+
+    /// Persist bookmarks to config.toml, preserving other fields.
+    pub fn save_bookmarks(&self) -> Result<()> {
+        let config_path = self.workflows_dir.join("config.toml");
+
+        // Re-serialize the full config to preserve all fields
+        let contents = toml::to_string_pretty(self)
+            .map_err(|e| DzError::Config(e.to_string()))?;
+        std::fs::write(&config_path, contents)?;
+        Ok(())
     }
 }

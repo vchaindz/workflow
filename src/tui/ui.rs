@@ -73,6 +73,18 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.mode == AppMode::ConfirmDelete {
         draw_confirm_delete(f, app);
     }
+
+    if app.mode == AppMode::StreamingOutput {
+        draw_streaming_modal(f, app);
+    }
+
+    if app.mode == AppMode::RecentRuns {
+        draw_recent_runs(f, app);
+    }
+
+    if app.mode == AppMode::SavedTasks {
+        draw_saved_tasks(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -178,6 +190,8 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             TaskKind::ShellScript => "sh",
             TaskKind::YamlWorkflow => "yaml",
         };
+        let task_ref = format!("{}/{}", task.category, task.name);
+        let star = if app.config.bookmarks.contains(&task_ref) { "★ " } else { "" };
         let s = if i == app.selected_task {
             Style::default()
                 .fg(Color::Green)
@@ -187,7 +201,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         };
 
         items.push(
-            ListItem::new(format!("{marker} {} [{kind}]", task.name)).style(s),
+            ListItem::new(format!("{marker} {star}{} [{kind}]", task.name)).style(s),
         );
     }
 
@@ -280,6 +294,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             format!("Search: {}_ | ESC cancel", app.search_query)
         }
         AppMode::Running => "Running... (output in footer below)".to_string(),
+        AppMode::StreamingOutput => "Streaming output — Esc/q to close".to_string(),
         AppMode::Comparing => "c:compare | ESC:back | Up/Down:scroll".to_string(),
         AppMode::Wizard => " New Task Wizard ".to_string(),
         _ => {
@@ -1332,7 +1347,7 @@ fn format_run_log(log: &crate::core::models::RunLog) -> String {
 fn draw_help(f: &mut Frame) {
     let area = f.area();
     let w = 50.min(area.width.saturating_sub(4));
-    let h = 22.min(area.height.saturating_sub(4));
+    let h = 25.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
@@ -1362,6 +1377,9 @@ fn draw_help(f: &mut Frame) {
         Line::from("  Del         Delete selected task"),
         Line::from("  c           Compare last 2 runs"),
         Line::from("  L           View run logs"),
+        Line::from("  R           Recent runs (last 10)"),
+        Line::from("  s           Saved/bookmarked tasks"),
+        Line::from("  S           Toggle bookmark on task"),
         Line::from("  /           Search tasks"),
         Line::from("  q           Quit / close"),
         Line::from("  Esc         Cancel / dismiss"),
@@ -1383,6 +1401,94 @@ fn draw_help(f: &mut Frame) {
     f.render_widget(para, popup);
 }
 
+fn draw_streaming_modal(f: &mut Frame, app: &App) {
+    let area = f.area();
+    // Use ~80% of the screen for the modal (10% margin on each side)
+    let margin_x = (area.width / 10).max(2);
+    let margin_y = (area.height / 10).max(1);
+    let w = area.width.saturating_sub(margin_x * 2);
+    let h = area.height.saturating_sub(margin_y * 2);
+    let popup = Rect::new(margin_x, margin_y, w, h);
+
+    let title = if let Some(ref cmd) = app.streaming_cmd {
+        let max_len = (w as usize).saturating_sub(20);
+        let label = if cmd.len() > max_len {
+            format!("{}...", &cmd[..max_len])
+        } else {
+            cmd.clone()
+        };
+        format!(" {} ", label)
+    } else {
+        " Streaming Output ".to_string()
+    };
+
+    let status = if app.is_executing {
+        Span::styled(" LIVE ", Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled(" DONE ", Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD))
+    };
+
+    let block = Block::default()
+        .title(title)
+        .title_alignment(Alignment::Left)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    // Inner area for content
+    let inner = block.inner(popup);
+    let content_height = inner.height.saturating_sub(1) as usize; // -1 for status line
+
+    // Build output lines
+    let lines: Vec<Line> = app.streaming_lines.iter().map(|l| {
+        Line::from(Span::raw(l.as_str()))
+    }).collect();
+
+    // Calculate scroll offset
+    let total = lines.len();
+    let scroll_offset = if app.streaming_auto_scroll {
+        total.saturating_sub(content_height)
+    } else {
+        (app.streaming_scroll as usize).min(total.saturating_sub(content_height))
+    };
+
+    // Split inner area: content + status bar
+    let inner_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let para = Paragraph::new(lines)
+        .scroll((scroll_offset as u16, 0))
+        .wrap(Wrap { trim: false });
+
+    // Status bar
+    let line_info = format!(
+        " Lines: {} | Scroll: {}/{} ",
+        total,
+        scroll_offset + 1,
+        total.saturating_sub(content_height).max(1),
+    );
+    let status_line = Line::from(vec![
+        status,
+        Span::raw("  "),
+        Span::styled(line_info, Style::default().fg(Color::DarkGray)),
+        Span::raw("  "),
+        Span::styled(
+            "Esc/q: close  ↑↓: scroll  Home/End: top/bottom",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+    let status_bar = Paragraph::new(status_line);
+
+    f.render_widget(Clear, popup);
+    f.render_widget(block, popup);
+    f.render_widget(para, inner_chunks[0]);
+    f.render_widget(status_bar, inner_chunks[1]);
+}
+
 fn format_logs(logs: &[crate::core::models::RunLog]) -> String {
     if logs.is_empty() {
         return "No logs available".to_string();
@@ -1398,6 +1504,147 @@ fn format_logs(logs: &[crate::core::models::RunLog]) -> String {
         ));
     }
     out
+}
+
+fn draw_recent_runs(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let w = 65.min(area.width.saturating_sub(4));
+    let h = 14.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" Recent Runs (last 10) ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    if app.recent_runs.is_empty() {
+        let para = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No recent runs found.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ])
+        .block(block);
+        f.render_widget(para, popup);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .recent_runs
+        .iter()
+        .enumerate()
+        .map(|(i, run)| {
+            let icon = if run.exit_code == 0 { "✓" } else { "✗" };
+            let icon_color = if run.exit_code == 0 { Color::Green } else { Color::Red };
+            let ts = run.started.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M");
+            let duration = run
+                .ended
+                .map(|e| {
+                    let ms = (e - run.started).num_milliseconds();
+                    if ms >= 1000 {
+                        format!("{:.1}s", ms as f64 / 1000.0)
+                    } else {
+                        format!("{}ms", ms)
+                    }
+                })
+                .unwrap_or_else(|| "—".to_string());
+
+            let style = if i == app.recent_runs_cursor {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(format!(" {} ", icon), Style::default().fg(icon_color)),
+                Span::styled(
+                    format!("{:<30}", run.task_ref),
+                    style,
+                ),
+                Span::styled(format!("{}", ts), Style::default().fg(Color::DarkGray)),
+                Span::raw("  "),
+                Span::styled(format!("{:>8}", duration), Style::default().fg(Color::Cyan)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, popup);
+}
+
+fn draw_saved_tasks(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let w = 55.min(area.width.saturating_sub(4));
+    let bookmark_count = app.config.bookmarks.len();
+    let h = (bookmark_count as u16 + 4).max(6).min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" Saved Tasks ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    if app.config.bookmarks.is_empty() {
+        let para = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No bookmarked tasks. Press S on a task to bookmark it.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ])
+        .block(block);
+        f.render_widget(para, popup);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .config
+        .bookmarks
+        .iter()
+        .enumerate()
+        .map(|(i, task_ref)| {
+            // Find the task kind
+            let kind_str = app
+                .categories
+                .iter()
+                .flat_map(|c| c.tasks.iter())
+                .find(|t| format!("{}/{}", t.category, t.name) == *task_ref)
+                .map(|t| match t.kind {
+                    TaskKind::ShellScript => "sh",
+                    TaskKind::YamlWorkflow => "yaml",
+                })
+                .unwrap_or("?");
+
+            let style = if i == app.saved_tasks_cursor {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(" ★ ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("{:<35}", task_ref),
+                    style,
+                ),
+                Span::styled(format!("[{}]", kind_str), Style::default().fg(Color::DarkGray)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, popup);
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - [Clone & Optimize](#clone--optimize)
 - [File Structure](#file-structure)
 - [YAML Workflow Format](#yaml-workflow-format)
+- [Recent Runs & Bookmarks](#recent-runs--bookmarks)
 - [TUI](#tui)
 - [CLI](#cli)
 - [Run Comparison](#run-comparison)
@@ -34,6 +35,8 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **AI task update** — select an existing task, describe what to change, and AI rewrites the workflow for you
 - **Template catalog** — start from bundled or community templates with variable substitution
 - **Clone & optimize** — duplicate an existing task, strip failed/skipped steps, and parallelize independent branches
+- **Recent runs** — see the last 10 runs across all tasks at a glance, jump to any task from the list
+- **Bookmarked tasks** — save frequently-used tasks for quick access with a single keypress
 - **Run comparison** — diff two runs of the same task side-by-side, with optional AI analysis
 - **DAG execution** — multi-step YAML workflows with dependency ordering, conditional steps, retries, and timeouts
 - **Interactive TUI** — three-pane browser with real-time execution progress, search, and log viewing
@@ -153,6 +156,34 @@ Press `W` (shift-w) on any task to clone it. The clone wizard lets you:
 
 This is useful for iterating on a workflow after a partial failure — clone it, remove what broke, and save a clean version.
 
+## Recent Runs & Bookmarks
+
+### Recent Runs (`R`)
+
+Press `R` in the TUI to see the last 10 runs across all tasks, newest first:
+
+```
+┌─────────────── Recent Runs (last 10) ───────────────┐
+│  ✓ backup/db-full                2026-03-11 14:32     1.2s │
+│  ✗ deploy/staging                2026-03-11 14:30     3.5s │
+│  ✓ docker/cleanup                2026-03-11 13:15     0.8s │
+│                                                            │
+│  Up/Down: navigate  Enter: go to task  Esc: close          │
+└────────────────────────────────────────────────────────────┘
+```
+
+Press `Enter` on any run to jump directly to that task in the main view.
+
+### Bookmarked Tasks (`S` / `s`)
+
+Press `S` on any task to bookmark it. Bookmarked tasks show a ★ indicator in the task list and are persisted in `config.toml`:
+
+```toml
+bookmarks = ["backup/db-full", "deploy/staging"]
+```
+
+Press `s` to open the saved tasks modal and quickly jump to any bookmarked task. Press `S` again to remove the bookmark.
+
 ## File Structure
 
 ```
@@ -210,7 +241,7 @@ Launch with `workflow` (no arguments):
 │ [14:32:01] ▶ dump — mysqldump --all-databases > /tmp/db.sql  │
 │ [14:32:03] ✓ dump (1850ms)                                   │
 └───────────────────────────────────────────────────────────────┘
- j/k:nav  Tab:pane  r:run  e:edit  w:wizard  a:ai  A:update  t:templates
+ j/k:nav  Tab:pane  r:run  e:edit  w:wizard  a:ai  A:update  t:templates  R:recent  s/S:bookmarks
 ```
 
 | Key | Action |
@@ -221,6 +252,9 @@ Launch with `workflow` (no arguments):
 | `d` | Dry-run (preview commands) |
 | `e` | Open in `$EDITOR` |
 | `L` | View run logs |
+| `R` | Recent runs (last 10) |
+| `s` | Saved/bookmarked tasks |
+| `S` | Toggle bookmark on task |
 | `/` | Search tasks |
 | `w` | New task from shell history |
 | `a` | New task from AI prompt |
@@ -312,6 +346,8 @@ editor = "vim"
 [hooks]
 pre_run = "echo 'starting'"
 post_run = "echo 'done'"
+
+bookmarks = ["backup/db-full", "deploy/staging"]
 ```
 
 All fields are optional and have sensible defaults.

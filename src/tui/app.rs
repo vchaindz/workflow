@@ -5,7 +5,7 @@ use crate::core::ai::{AiResult, AiResponse, AiTool};
 use crate::core::compare::CompareResult;
 use crate::core::config::Config;
 use crate::core::history::HistoryEntry;
-use crate::core::executor::InteractiveRequest;
+use crate::core::executor::{InteractiveRequest, StreamingRequest};
 use crate::core::models::{Category, ExecutionEvent, RunLog, StepStatus, Task, Workflow};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -19,12 +19,15 @@ pub enum Focus {
 pub enum AppMode {
     Normal,
     Running,
+    StreamingOutput,
     ViewingLogs,
     Search,
     Help,
     Comparing,
     Wizard,
     ConfirmDelete,
+    RecentRuns,
+    SavedTasks,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +159,15 @@ pub struct App {
     // Interactive step channel (executor → TUI suspend request)
     pub interactive_rx: Option<mpsc::Receiver<InteractiveRequest>>,
 
+    // Streaming output modal state
+    pub streaming_rx: Option<mpsc::Receiver<StreamingRequest>>,
+    pub streaming_lines: Vec<String>,
+    pub streaming_scroll: u16,
+    pub streaming_auto_scroll: bool,
+    pub streaming_step_id: Option<String>,
+    pub streaming_cmd: Option<String>,
+    pub streaming_kill_tx: Option<mpsc::Sender<()>>,
+
     // Compare state
     pub compare_result: Option<CompareResult>,
 
@@ -164,6 +176,13 @@ pub struct App {
 
     // Delete confirmation state
     pub delete_state: Option<DeleteState>,
+
+    // Recent runs modal
+    pub recent_runs: Vec<RunLog>,
+    pub recent_runs_cursor: usize,
+
+    // Saved tasks modal
+    pub saved_tasks_cursor: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -204,9 +223,19 @@ impl App {
             executing_task_ref: None,
             step_states: Vec::new(),
             interactive_rx: None,
+            streaming_rx: None,
+            streaming_lines: Vec::new(),
+            streaming_scroll: 0,
+            streaming_auto_scroll: true,
+            streaming_step_id: None,
+            streaming_cmd: None,
+            streaming_kill_tx: None,
             compare_result: None,
             wizard: None,
             delete_state: None,
+            recent_runs: Vec::new(),
+            recent_runs_cursor: 0,
+            saved_tasks_cursor: 0,
         }
     }
 
@@ -366,6 +395,26 @@ impl App {
         self.filtered_indices = None;
     }
 
+    /// Navigate to a task by its "category/name" ref. Returns true if found.
+    pub fn navigate_to_task(&mut self, task_ref: &str) -> bool {
+        for (ci, cat) in self.categories.iter().enumerate() {
+            for (ti, task) in cat.tasks.iter().enumerate() {
+                let tr = format!("{}/{}", cat.name, task.name);
+                if tr == task_ref {
+                    self.filtered_indices = None;
+                    self.search_query.clear();
+                    self.selected_category = ci;
+                    self.selected_task = ti;
+                    self.focus = Focus::TaskList;
+                    self.run_output = None;
+                    self.detail_scroll = 0;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn drain_execution_events(&mut self) {
         let rx = match self.event_rx.as_ref() {
             Some(rx) => rx,
@@ -421,6 +470,14 @@ impl App {
                             duration_ms,
                         ));
                     }
+                    ExecutionEvent::StepOutput { step_id: _, line } => {
+                        self.streaming_lines.push(line);
+                        // Auto-scroll if enabled
+                        if self.streaming_auto_scroll {
+                            let total = self.streaming_lines.len() as u16;
+                            self.streaming_scroll = total.saturating_sub(1);
+                        }
+                    }
                     ExecutionEvent::StepRetrying { step_id, attempt, max, delay_secs } => {
                         self.footer_log.push(format!(
                             "[{}] ↻ {} retry {}/{} (wait {}s)",
@@ -453,12 +510,18 @@ impl App {
                             run_log.exit_code,
                         ));
                         self.run_output = Some(run_log);
-                        self.mode = AppMode::Normal;
+                        if self.mode == AppMode::StreamingOutput {
+                            // Stay in streaming mode so user can see final output
+                            // They'll press Esc/q to close
+                        } else {
+                            self.mode = AppMode::Normal;
+                        }
                         self.focus = Focus::TaskList;
                         self.detail_scroll = 0;
                         self.is_executing = false;
                         self.event_rx = None;
                         self.interactive_rx = None;
+                        self.streaming_rx = None;
                         return;
                     }
                     ExecutionEvent::WorkflowError { message } => {
@@ -467,10 +530,13 @@ impl App {
                             chrono::Local::now().format("%H:%M:%S"),
                             message,
                         ));
-                        self.mode = AppMode::Normal;
+                        if self.mode != AppMode::StreamingOutput {
+                            self.mode = AppMode::Normal;
+                        }
                         self.is_executing = false;
                         self.event_rx = None;
                         self.interactive_rx = None;
+                        self.streaming_rx = None;
                         return;
                     }
                 },
@@ -481,11 +547,14 @@ impl App {
                             "[{}] ✗ Execution thread disconnected unexpectedly",
                             chrono::Local::now().format("%H:%M:%S"),
                         ));
-                        self.mode = AppMode::Normal;
+                        if self.mode != AppMode::StreamingOutput {
+                            self.mode = AppMode::Normal;
+                        }
                         self.is_executing = false;
                     }
                     self.event_rx = None;
                     self.interactive_rx = None;
+                    self.streaming_rx = None;
                     return;
                 }
             }
@@ -495,6 +564,39 @@ impl App {
         if self.footer_log.len() > 100 {
             let start = self.footer_log.len() - 50;
             self.footer_log = self.footer_log[start..].to_vec();
+        }
+    }
+
+    pub fn check_streaming_requests(&mut self) {
+        let rx = match self.streaming_rx.as_ref() {
+            Some(rx) => rx,
+            None => return,
+        };
+
+        if let Ok(req) = rx.try_recv() {
+            self.streaming_lines.clear();
+            self.streaming_scroll = 0;
+            self.streaming_auto_scroll = true;
+            self.streaming_step_id = Some(req.step_id);
+            self.streaming_cmd = Some(req.cmd_preview);
+            self.streaming_kill_tx = Some(req.kill_tx);
+            self.mode = AppMode::StreamingOutput;
+        }
+    }
+
+    pub fn close_streaming_modal(&mut self) {
+        // Kill the child process if still running
+        if let Some(kill_tx) = self.streaming_kill_tx.take() {
+            let _ = kill_tx.send(());
+        }
+        self.streaming_step_id = None;
+        self.streaming_cmd = None;
+        self.streaming_lines.clear();
+        self.streaming_scroll = 0;
+        if !self.is_executing {
+            self.mode = AppMode::Normal;
+        } else {
+            self.mode = AppMode::Running;
         }
     }
 

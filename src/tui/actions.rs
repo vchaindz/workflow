@@ -8,7 +8,7 @@ use crate::core::ai;
 use crate::core::catalog;
 use crate::core::compare;
 use crate::core::db;
-use crate::core::executor::{execute_workflow, run_notify, ExecuteOpts, InteractiveRequest};
+use crate::core::executor::{execute_workflow, run_notify, ExecuteOpts, StreamingRequest};
 use crate::core::history;
 use crate::core::models::{ExecutionEvent, TaskKind};
 use crate::core::parser::{parse_shell_task, parse_workflow};
@@ -21,6 +21,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.mode {
         AppMode::Search => handle_search_key(app, key),
         AppMode::Running => Ok(()),
+        AppMode::StreamingOutput => handle_streaming_key(app, key),
         AppMode::Comparing => {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
@@ -38,6 +39,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.mode = AppMode::Normal;
             Ok(())
         }
+        AppMode::RecentRuns => handle_recent_runs_key(app, key),
+        AppMode::SavedTasks => handle_saved_tasks_key(app, key),
         AppMode::Wizard => handle_wizard_key(app, key),
         AppMode::ConfirmDelete => handle_confirm_delete_key(app, key),
         _ => handle_normal_key(app, key),
@@ -86,6 +89,9 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('a') => start_ai_wizard(app),
         KeyCode::Char('A') => start_ai_update_wizard(app),
         KeyCode::Char('t') => start_template_wizard(app),
+        KeyCode::Char('R') => open_recent_runs(app)?,
+        KeyCode::Char('s') => open_saved_tasks(app),
+        KeyCode::Char('S') => toggle_bookmark(app),
         KeyCode::Delete => start_delete(app),
         KeyCode::Char('h') => {
             app.mode = AppMode::Help;
@@ -131,6 +137,54 @@ fn handle_search_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+fn handle_streaming_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        app.close_streaming_modal();
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.close_streaming_modal();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.streaming_auto_scroll = false;
+            app.streaming_scroll = app.streaming_scroll.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let max = (app.streaming_lines.len() as u16).saturating_sub(1);
+            if app.streaming_scroll < max {
+                app.streaming_scroll += 1;
+            }
+            // Re-enable auto-scroll if we're at the bottom
+            if app.streaming_scroll >= max {
+                app.streaming_auto_scroll = true;
+            }
+        }
+        KeyCode::Home => {
+            app.streaming_auto_scroll = false;
+            app.streaming_scroll = 0;
+        }
+        KeyCode::End => {
+            app.streaming_auto_scroll = true;
+            app.streaming_scroll = (app.streaming_lines.len() as u16).saturating_sub(1);
+        }
+        KeyCode::PageUp => {
+            app.streaming_auto_scroll = false;
+            app.streaming_scroll = app.streaming_scroll.saturating_sub(20);
+        }
+        KeyCode::PageDown => {
+            let max = (app.streaming_lines.len() as u16).saturating_sub(1);
+            app.streaming_scroll = (app.streaming_scroll + 20).min(max);
+            if app.streaming_scroll >= max {
+                app.streaming_auto_scroll = true;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn run_selected(app: &mut App, dry_run: bool) -> Result<()> {
     if app.is_executing {
         return Ok(());
@@ -163,9 +217,10 @@ fn run_selected(app: &mut App, dry_run: bool) -> Result<()> {
     app.mode = AppMode::Running;
     app.running_message = Some(format!("Running {}...", task_ref));
 
-    // Create interactive channel for TUI suspend/resume
-    let (interactive_tx, interactive_rx) = mpsc::channel::<InteractiveRequest>();
-    app.interactive_rx = Some(interactive_rx);
+    // Create streaming channel for in-TUI output modal
+    let (streaming_tx, streaming_rx) = mpsc::channel::<StreamingRequest>();
+    app.streaming_rx = Some(streaming_rx);
+    app.interactive_rx = None;
 
     let db_path = app.config.db_path();
 
@@ -190,7 +245,8 @@ fn run_selected(app: &mut App, dry_run: bool) -> Result<()> {
             env_overrides: HashMap::new(),
             default_timeout,
             secrets,
-            interactive_tx: Some(interactive_tx),
+            interactive_tx: None,
+            streaming_tx: Some(streaming_tx),
         };
 
         match execute_workflow(&workflow, &task_ref, &opts, Some(&tx)) {
@@ -1165,4 +1221,104 @@ fn handle_wizard_template_variables(app: &mut App, key: KeyEvent) {
         }
         _ => {}
     }
+}
+
+fn open_recent_runs(app: &mut App) -> Result<()> {
+    let conn = db::open_db(&app.config.db_path())?;
+    let runs = db::get_recent_runs(&conn, 10)?;
+    app.recent_runs = runs;
+    app.recent_runs_cursor = 0;
+    app.mode = AppMode::RecentRuns;
+    Ok(())
+}
+
+fn open_saved_tasks(app: &mut App) {
+    app.saved_tasks_cursor = 0;
+    app.mode = AppMode::SavedTasks;
+}
+
+fn toggle_bookmark(app: &mut App) {
+    let task = match app.selected_task_ref() {
+        Some(t) => t.clone(),
+        None => return,
+    };
+
+    let task_ref = format!("{}/{}", task.category, task.name);
+    let added = app.config.toggle_bookmark(&task_ref);
+
+    let msg = if added {
+        format!("Bookmarked: {}", task_ref)
+    } else {
+        format!("Unbookmarked: {}", task_ref)
+    };
+    app.footer_log.push(format!(
+        "[{}] {}",
+        chrono::Local::now().format("%H:%M:%S"),
+        msg,
+    ));
+
+    if let Err(e) = app.config.save_bookmarks() {
+        app.footer_log.push(format!(
+            "[{}] Failed to save bookmarks: {}",
+            chrono::Local::now().format("%H:%M:%S"),
+            e,
+        ));
+    }
+}
+
+fn handle_recent_runs_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.recent_runs.clear();
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Up => {
+            if app.recent_runs_cursor > 0 {
+                app.recent_runs_cursor -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if !app.recent_runs.is_empty() && app.recent_runs_cursor + 1 < app.recent_runs.len() {
+                app.recent_runs_cursor += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(run) = app.recent_runs.get(app.recent_runs_cursor) {
+                let task_ref = run.task_ref.clone();
+                app.recent_runs.clear();
+                app.mode = AppMode::Normal;
+                app.navigate_to_task(&task_ref);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_saved_tasks_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let bookmark_count = app.config.bookmarks.len();
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Up => {
+            if app.saved_tasks_cursor > 0 {
+                app.saved_tasks_cursor -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if bookmark_count > 0 && app.saved_tasks_cursor + 1 < bookmark_count {
+                app.saved_tasks_cursor += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(task_ref) = app.config.bookmarks.get(app.saved_tasks_cursor).cloned() {
+                app.mode = AppMode::Normal;
+                app.navigate_to_task(&task_ref);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
