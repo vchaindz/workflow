@@ -1,1 +1,29 @@
+# Build artifacts
 /target
+debug/
+*.d
+*.o
+*.so
+*.dylib
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+
+# Claude Code
+CLAUDE.md
+
+# Logs and databases (local dev)
+*.log
