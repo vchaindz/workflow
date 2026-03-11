@@ -1,6 +1,6 @@
 use crate::core::config::Config;
+use crate::core::db;
 use crate::core::discovery::{resolve_task_ref, scan_workflows};
-use crate::core::logger::get_run_summary;
 use crate::error::Result;
 
 pub fn cmd_status(config: &Config, task_ref: &str, json: bool) -> Result<()> {
@@ -8,7 +8,8 @@ pub fn cmd_status(config: &Config, task_ref: &str, json: bool) -> Result<()> {
     let task = resolve_task_ref(&categories, task_ref)?;
     let canonical_ref = format!("{}/{}", task.category, task.name);
 
-    let summary = get_run_summary(&config.logs_dir(), &canonical_ref)?;
+    let conn = db::open_db(&config.db_path())?;
+    let summary = db::get_run_summary(&conn, &canonical_ref)?;
 
     match summary {
         Some(summary) => {

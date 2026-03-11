@@ -5,11 +5,14 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::core::db;
+use crate::core::history;
 use crate::core::models::{StepStatus, TaskKind};
 use crate::core::parser::{parse_shell_task, parse_workflow};
 use crate::core::wizard;
 
-use super::app::{App, AppMode, Focus, WizardStage};
+use crate::core::compare;
+
+use super::app::{App, AppMode, Focus, WizardMode, WizardStage};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let has_footer = !app.footer_log.is_empty();
@@ -56,6 +59,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.mode == AppMode::Wizard {
         draw_wizard(f, app);
+    }
+
+    if app.mode == AppMode::ConfirmDelete {
+        draw_confirm_delete(f, app);
     }
 }
 
@@ -157,7 +164,13 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(style);
 
-    let content = if app.mode == AppMode::Running {
+    let content = if app.mode == AppMode::Comparing {
+        if let Some(ref result) = app.compare_result {
+            compare::format_compare(result, false)
+        } else {
+            "No comparison data".to_string()
+        }
+    } else if app.mode == AppMode::Running {
         format_live_progress(app)
     } else if app.mode == AppMode::ViewingLogs {
         format_logs(&app.viewing_logs)
@@ -179,15 +192,19 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         "Select a task to preview".to_string()
     };
 
+    // Render content through tui-markdown for syntax highlighting
+    let text = tui_markdown::from_str(&content);
+
     // Approximate line count (including wraps) to clamp scroll
     let inner_width = area.width.saturating_sub(2) as usize; // borders
-    let content_lines: u16 = content
-        .lines()
+    let content_lines: u16 = text
+        .lines
+        .iter()
         .map(|l| {
             if inner_width == 0 {
                 1u16
             } else {
-                1 + (l.len() / inner_width.max(1)) as u16
+                1 + (l.width() / inner_width.max(1)) as u16
             }
         })
         .sum();
@@ -195,7 +212,7 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
     let max_scroll = content_lines.saturating_sub(inner_height);
     let scroll = app.detail_scroll.min(max_scroll);
 
-    let para = Paragraph::new(content)
+    let para = Paragraph::new(text)
         .block(block)
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
@@ -209,9 +226,10 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             format!("Search: {}_ | ESC cancel", app.search_query)
         }
         AppMode::Running => "Running... (output in footer below)".to_string(),
+        AppMode::Comparing => "c:compare | ESC:back | Up/Down:scroll".to_string(),
         AppMode::Wizard => " New Task Wizard ".to_string(),
         _ => {
-            "arrows:nav  +/-:collapse  r:run  d:dry-run  e:edit  w:wizard  L:logs  /:search  h:help  q:quit"
+            "arrows:nav  r:run  d:dry-run  e:edit  c:compare  w:new  W:clone  a:ai  Del:delete  L:logs  /:search  h:help  q:quit"
                 .to_string()
         }
     };
@@ -232,35 +250,72 @@ fn draw_wizard(f: &mut Frame, app: &App) {
     };
 
     let area = f.area();
-    let w = 64.min(area.width.saturating_sub(6));
-    let h = 26.min(area.height.saturating_sub(4));
-    let x = (area.width.saturating_sub(w)) / 2;
-    let y = (area.height.saturating_sub(h)) / 2;
-    let popup = Rect::new(x, y, w, h);
+    // Larger modal for history stage, medium for AI stages
+    let (mw, mh) = if wiz.stage == WizardStage::ShellHistory {
+        (80.min(area.width.saturating_sub(4)), 32.min(area.height.saturating_sub(2)))
+    } else if matches!(wiz.stage, WizardStage::AiPrompt | WizardStage::AiThinking) {
+        (70.min(area.width.saturating_sub(4)), 20.min(area.height.saturating_sub(2)))
+    } else {
+        (64.min(area.width.saturating_sub(6)), 26.min(area.height.saturating_sub(4)))
+    };
+    let x = (area.width.saturating_sub(mw)) / 2;
+    let y = (area.height.saturating_sub(mh)) / 2;
+    let popup = Rect::new(x, y, mw, mh);
 
     f.render_widget(Clear, popup);
 
-    // Outer block
+    let title = match wiz.mode {
+        WizardMode::FromHistory => " New Task from History ",
+        WizardMode::CloneTask => " Clone Task ",
+        WizardMode::AiChat => " AI Task Generator ",
+    };
     let block = Block::default()
-        .title(" New Task ")
+        .title(title)
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
     f.render_widget(block, popup);
 
-    // Inner area
     let inner = Rect::new(popup.x + 2, popup.y + 1, popup.width.saturating_sub(4), popup.height.saturating_sub(2));
 
-    // Build lines
     let mut lines: Vec<Line> = Vec::new();
 
-    // Progress bar
-    let stages = ["Category", "Name", "Options", "Preview"];
-    let current_idx = match wiz.stage {
-        WizardStage::Category => 0,
-        WizardStage::TaskName => 1,
-        WizardStage::Options => 2,
-        WizardStage::Preview => 3,
+    // Dynamic progress breadcrumb
+    let (stages, current_idx): (Vec<&str>, usize) = match wiz.mode {
+        WizardMode::FromHistory => {
+            let s = vec!["History", "Category", "Name", "Preview"];
+            let idx = match wiz.stage {
+                WizardStage::ShellHistory => 0,
+                WizardStage::Category => 1,
+                WizardStage::TaskName => 2,
+                WizardStage::Preview => 3,
+                _ => 0,
+            };
+            (s, idx)
+        }
+        WizardMode::CloneTask => {
+            let s = vec!["Category", "Name", "Options", "Preview"];
+            let idx = match wiz.stage {
+                WizardStage::Category => 0,
+                WizardStage::TaskName => 1,
+                WizardStage::Options => 2,
+                WizardStage::Preview => 3,
+                _ => 0,
+            };
+            (s, idx)
+        }
+        WizardMode::AiChat => {
+            let s = vec!["Prompt", "AI", "Category", "Name", "Preview"];
+            let idx = match wiz.stage {
+                WizardStage::AiPrompt => 0,
+                WizardStage::AiThinking => 1,
+                WizardStage::Category => 2,
+                WizardStage::TaskName => 3,
+                WizardStage::Preview => 4,
+                _ => 0,
+            };
+            (s, idx)
+        }
     };
 
     let mut progress_spans: Vec<Span> = Vec::new();
@@ -281,19 +336,20 @@ fn draw_wizard(f: &mut Frame, app: &App) {
     }
     lines.push(Line::from(progress_spans));
 
-    // Separator
     let sep_w = inner.width as usize;
     lines.push(Line::from(Span::styled(
         "\u{2500}".repeat(sep_w),
         Style::default().fg(Color::DarkGray),
     )));
 
-    // Source info
-    lines.push(Line::from(vec![
-        Span::styled("Source  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&wiz.source_task_ref, Style::default().fg(Color::White)),
-    ]));
-    lines.push(Line::from(""));
+    // Source info for clone mode
+    if let Some(ref task_ref) = wiz.source_task_ref {
+        lines.push(Line::from(vec![
+            Span::styled("Source  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(task_ref.as_str(), Style::default().fg(Color::White)),
+        ]));
+        lines.push(Line::from(""));
+    }
 
     // Handle save confirmation
     if let Some(ref msg) = wiz.save_message {
@@ -320,6 +376,197 @@ fn draw_wizard(f: &mut Frame, app: &App) {
     }
 
     match wiz.stage {
+        WizardStage::AiPrompt => {
+            let tool_name = wiz.ai_tool.map(|t| t.name()).unwrap_or("AI");
+            lines.push(Line::from(Span::styled(
+                "Describe the task you want to create",
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Using ", Style::default().fg(Color::DarkGray)),
+                Span::styled(tool_name, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(" to generate commands", Style::default().fg(Color::DarkGray)),
+            ]));
+            lines.push(Line::from(""));
+
+            lines.push(Line::from(vec![
+                Span::styled("> ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{}_", wiz.ai_prompt),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(""));
+
+            lines.push(Line::from(Span::styled(
+                "Examples:",
+                Style::default().fg(Color::DarkGray),
+            )));
+            for example in &[
+                "  backup postgres database to S3",
+                "  check if nginx is running and restart if down",
+                "  monitor disk usage and alert if above 90%",
+                "  rotate log files older than 7 days",
+            ] {
+                lines.push(Line::from(Span::styled(
+                    *example,
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+
+            push_wizard_footer(&mut lines, inner.height, &[
+                ("Enter", "Send"), ("Esc", "Cancel"),
+            ]);
+        }
+
+        WizardStage::AiThinking => {
+            if let Some(ref err) = wiz.ai_error {
+                // Error state
+                lines.push(Line::from(Span::styled(
+                    "AI generation failed",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    err.as_str(),
+                    Style::default().fg(Color::Red),
+                )));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("Prompt: {}", wiz.ai_prompt),
+                    Style::default().fg(Color::DarkGray),
+                )));
+
+                push_wizard_footer(&mut lines, inner.height, &[
+                    ("Esc", "Back to prompt"),
+                ]);
+            } else {
+                // Spinner state
+                let spinner_frames = ["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
+                let frame = spinner_frames[(wiz.ai_tick as usize) % spinner_frames.len()];
+                let tool_name = wiz.ai_tool.map(|t| t.name()).unwrap_or("AI");
+
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{} ", frame),
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("Generating commands with {}...", tool_name),
+                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("Prompt: {}", wiz.ai_prompt),
+                    Style::default().fg(Color::DarkGray),
+                )));
+
+                push_wizard_footer(&mut lines, inner.height, &[
+                    ("Esc", "Cancel"),
+                ]);
+            }
+        }
+
+        WizardStage::ShellHistory => {
+            // Filter input
+            lines.push(Line::from(vec![
+                Span::styled(" Filter ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{}_", wiz.history_filter),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+
+            // Count line
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{} selected \u{00b7} {}/{} commands",
+                    wiz.history_selected.len(),
+                    wiz.history_filtered.len(),
+                    wiz.history_entries.len(),
+                ),
+                Style::default().fg(Color::DarkGray),
+            )));
+
+            // Separator
+            lines.push(Line::from(Span::styled(
+                "\u{2500}".repeat(sep_w),
+                Style::default().fg(Color::DarkGray),
+            )));
+
+            if wiz.history_entries.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "No shell history found",
+                    Style::default().fg(Color::Red),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "Checked: $HISTFILE, ~/.zsh_history, ~/.bash_history",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            } else if wiz.history_filtered.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "No commands match filter",
+                    Style::default().fg(Color::Yellow),
+                )));
+            } else {
+                // Scrollable command list
+                let visible_height = inner.height.saturating_sub(7) as usize; // header + footer
+                let end = (wiz.history_scroll_offset + visible_height).min(wiz.history_filtered.len());
+                let start = wiz.history_scroll_offset.min(end);
+                let max_cmd_width = inner.width.saturating_sub(16) as usize; // checkbox + timestamp margin
+
+                for (vi, &real_idx) in wiz.history_filtered[start..end].iter().enumerate() {
+                    let list_pos = start + vi;
+                    let is_cursor = list_pos == wiz.history_cursor;
+                    let is_selected = wiz.history_selected.contains(&real_idx);
+
+                    let entry = &wiz.history_entries[real_idx];
+
+                    let check = if is_selected { "[x]" } else { "[ ]" };
+                    let check_style = if is_selected {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+
+                    let cmd_text = if entry.command.len() > max_cmd_width {
+                        format!("{}...", &entry.command[..max_cmd_width.saturating_sub(3)])
+                    } else {
+                        entry.command.clone()
+                    };
+
+                    let cmd_style = if is_cursor {
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+
+                    let mut spans = vec![
+                        Span::styled(format!("{} ", check), check_style),
+                        Span::styled(cmd_text, cmd_style),
+                    ];
+
+                    if let Some(ts) = entry.timestamp {
+                        let rel = history::format_relative_time(ts);
+                        spans.push(Span::styled(
+                            format!(" {}", rel),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+
+                    lines.push(Line::from(spans));
+                }
+            }
+
+            push_wizard_footer(&mut lines, inner.height, &[
+                ("Space", "Select"), ("Enter", "Confirm"), ("Up/Down", "Navigate"), ("Esc", "Cancel"),
+            ]);
+        }
+
         WizardStage::Category => {
             lines.push(Line::from(Span::styled(
                 "Choose a category for the new task",
@@ -331,7 +578,6 @@ fn draw_wizard(f: &mut Frame, app: &App) {
             )));
             lines.push(Line::from(""));
 
-            // Input field
             lines.push(Line::from(vec![
                 Span::styled(" Category ", Style::default().fg(Color::Black).bg(Color::Cyan)),
                 Span::raw(" "),
@@ -342,7 +588,6 @@ fn draw_wizard(f: &mut Frame, app: &App) {
             ]));
             lines.push(Line::from(""));
 
-            // Category list
             if !app.categories.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "Existing categories:",
@@ -363,10 +608,12 @@ fn draw_wizard(f: &mut Frame, app: &App) {
                 }
             }
 
-            // Footer
-            push_wizard_footer(&mut lines, inner.height, &[
-                ("Enter", "Confirm"), ("Up/Down", "Select"), ("Esc", "Cancel"),
-            ]);
+            let back_hints = if matches!(wiz.mode, WizardMode::FromHistory | WizardMode::AiChat) {
+                vec![("Enter", "Confirm"), ("Up/Down", "Select"), ("Shift+Tab", "Back"), ("Esc", "Cancel")]
+            } else {
+                vec![("Enter", "Confirm"), ("Up/Down", "Select"), ("Esc", "Cancel")]
+            };
+            push_wizard_footer(&mut lines, inner.height, &back_hints);
         }
 
         WizardStage::TaskName => {
@@ -380,7 +627,6 @@ fn draw_wizard(f: &mut Frame, app: &App) {
             )));
             lines.push(Line::from(""));
 
-            // Show confirmed category
             lines.push(Line::from(vec![
                 Span::styled(" Category ", Style::default().fg(Color::Black).bg(Color::Green)),
                 Span::raw(" "),
@@ -388,7 +634,6 @@ fn draw_wizard(f: &mut Frame, app: &App) {
             ]));
             lines.push(Line::from(""));
 
-            // Input field
             lines.push(Line::from(vec![
                 Span::styled(" Name ", Style::default().fg(Color::Black).bg(Color::Cyan)),
                 Span::raw(" "),
@@ -399,7 +644,6 @@ fn draw_wizard(f: &mut Frame, app: &App) {
             ]));
             lines.push(Line::from(""));
 
-            // Preview path
             lines.push(Line::from(vec![
                 Span::styled("  Output  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
@@ -424,7 +668,6 @@ fn draw_wizard(f: &mut Frame, app: &App) {
             )));
             lines.push(Line::from(""));
 
-            // Summary
             lines.push(Line::from(vec![
                 Span::styled(" Category ", Style::default().fg(Color::Black).bg(Color::Green)),
                 Span::styled(format!(" {}  ", wiz.category), Style::default().fg(Color::Green)),
@@ -492,15 +735,34 @@ fn draw_wizard(f: &mut Frame, app: &App) {
             ]));
             lines.push(Line::from(""));
 
-            // YAML preview with syntax-like coloring
-            let optimized = wizard::optimize_workflow(
-                &wiz.source_workflow,
-                wiz.source_run.as_ref(),
-                wiz.remove_failed,
-                wiz.remove_skipped,
-                wiz.parallelize,
-            );
-            let yaml = wizard::generate_yaml(&optimized);
+            // YAML preview — generate based on mode
+            let yaml = match wiz.mode {
+                WizardMode::FromHistory => {
+                    let commands: Vec<String> = wiz
+                        .history_selected
+                        .iter()
+                        .filter_map(|&i| wiz.history_entries.get(i))
+                        .map(|e| e.command.clone())
+                        .collect();
+                    let wf = wizard::workflow_from_commands(&wiz.task_name, &commands);
+                    wizard::generate_yaml(&wf)
+                }
+                WizardMode::AiChat => {
+                    let wf = wizard::workflow_from_commands(&wiz.task_name, &wiz.ai_commands);
+                    wizard::generate_yaml(&wf)
+                }
+                WizardMode::CloneTask => {
+                    let source_wf = wiz.source_workflow.as_ref().unwrap();
+                    let optimized = wizard::optimize_workflow(
+                        source_wf,
+                        wiz.source_run.as_ref(),
+                        wiz.remove_failed,
+                        wiz.remove_skipped,
+                        wiz.parallelize,
+                    );
+                    wizard::generate_yaml(&optimized)
+                }
+            };
 
             for line in yaml.lines() {
                 let owned = line.to_string();
@@ -533,6 +795,63 @@ fn draw_wizard(f: &mut Frame, app: &App) {
     let para = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
+    f.render_widget(para, inner);
+}
+
+fn draw_confirm_delete(f: &mut Frame, app: &App) {
+    let state = match app.delete_state.as_ref() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let area = f.area();
+    let w = 50.min(area.width.saturating_sub(4));
+    let h = 10.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" Delete Task ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+    f.render_widget(block, popup);
+
+    let inner = Rect::new(popup.x + 2, popup.y + 1, popup.width.saturating_sub(4), popup.height.saturating_sub(2));
+
+    let task_ref = format!("{}/{}", state.category, state.task_name);
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Delete this task permanently?",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Task  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&task_ref, Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  File  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                state.task_path.display().to_string(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" y/Enter ", Style::default().fg(Color::Black).bg(Color::Red)),
+            Span::styled(" Delete  ", Style::default().fg(Color::DarkGray)),
+            Span::raw("   "),
+            Span::styled(" Any key ", Style::default().fg(Color::Black).bg(Color::White)),
+            Span::styled(" Cancel", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
     f.render_widget(para, inner);
 }
 
@@ -581,6 +900,7 @@ fn format_live_progress(app: &App) -> String {
             StepStatus::Success => "✓",
             StepStatus::Failed => "✗",
             StepStatus::Skipped => "⊘",
+            StepStatus::Timedout => "⏱",
             StepStatus::Pending => "·",
         };
 
@@ -695,6 +1015,7 @@ fn format_run_log(log: &crate::core::models::RunLog) -> String {
             StepStatus::Success => "[OK]",
             StepStatus::Failed => "[FAIL]",
             StepStatus::Skipped => "[SKIP]",
+            StepStatus::Timedout => "[TIMEOUT]",
             StepStatus::Running => "[...]",
             StepStatus::Pending => "[--]",
         };
@@ -735,7 +1056,11 @@ fn draw_help(f: &mut Frame) {
         Line::from("  r           Run selected task"),
         Line::from("  d           Dry-run selected task"),
         Line::from("  e           Edit task in $EDITOR"),
-        Line::from("  w           Create task from template"),
+        Line::from("  w           New task from shell history"),
+        Line::from("  W           Clone selected task"),
+        Line::from("  a           AI task generator"),
+        Line::from("  Del         Delete selected task"),
+        Line::from("  c           Compare last 2 runs"),
         Line::from("  L           View run logs"),
         Line::from("  /           Search tasks"),
         Line::from("  q           Quit / close"),

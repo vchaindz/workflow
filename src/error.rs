@@ -14,6 +14,8 @@ pub enum DzError {
     Yaml(serde_yaml::Error),
     Json(serde_json::Error),
     Toml(toml::de::Error),
+    Compare(String),
+    Db(rusqlite::Error),
     Other(anyhow::Error),
 }
 
@@ -30,6 +32,8 @@ impl fmt::Display for DzError {
             DzError::Yaml(e) => write!(f, "YAML error: {e}"),
             DzError::Json(e) => write!(f, "JSON error: {e}"),
             DzError::Toml(e) => write!(f, "TOML error: {e}"),
+            DzError::Compare(msg) => write!(f, "compare error: {msg}"),
+            DzError::Db(e) => write!(f, "database error: {e}"),
             DzError::Other(e) => write!(f, "{e}"),
         }
     }
@@ -58,6 +62,12 @@ impl From<serde_json::Error> for DzError {
 impl From<toml::de::Error> for DzError {
     fn from(e: toml::de::Error) -> Self {
         DzError::Toml(e)
+    }
+}
+
+impl From<rusqlite::Error> for DzError {
+    fn from(e: rusqlite::Error) -> Self {
+        DzError::Db(e)
     }
 }
 

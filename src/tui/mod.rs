@@ -5,7 +5,7 @@ pub mod ui;
 pub mod widgets;
 
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::KeyEventKind;
 use crossterm::execute;
@@ -23,6 +23,7 @@ use app::App;
 use event::{poll_event, AppEvent};
 
 const TICK_RATE: Duration = Duration::from_millis(250);
+const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn run_tui(config: Config) -> Result<()> {
     let categories = scan_workflows(&config.workflows_dir)?;
@@ -50,8 +51,11 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
 ) -> Result<()> {
+    let mut last_rescan = Instant::now();
+
     loop {
         app.drain_execution_events();
+        app.drain_ai_events();
         terminal.draw(|f| ui::draw(f, app))?;
 
         match poll_event(TICK_RATE)? {
@@ -76,7 +80,8 @@ fn run_app(
                             terminal.clear()?;
 
                             // Refresh categories in case file was edited
-                            app.categories = scan_workflows(&app.config.workflows_dir)?;
+                            rescan(app);
+                            last_rescan = Instant::now();
                             continue;
                         }
                     }
@@ -84,11 +89,70 @@ fn run_app(
                     actions::handle_key(app, key)?;
                 }
             }
-            AppEvent::Tick => {}
+            AppEvent::Tick => {
+                if last_rescan.elapsed() >= RESCAN_INTERVAL {
+                    rescan(app);
+                    last_rescan = Instant::now();
+                }
+            }
         }
 
         if app.should_quit {
             return Ok(());
         }
     }
+}
+
+/// Rescan workflows directory and update categories, preserving selection.
+fn rescan(app: &mut App) {
+    let Ok(new_categories) = scan_workflows(&app.config.workflows_dir) else {
+        return;
+    };
+    if categories_equal(&app.categories, &new_categories) {
+        return;
+    }
+
+    // Preserve selected category by name
+    let prev_cat_name = app
+        .categories
+        .get(app.selected_category)
+        .map(|c| c.name.clone());
+    let prev_task_name = app.selected_task_ref().map(|t| t.name.clone());
+
+    app.categories = new_categories;
+
+    // Restore category selection
+    if let Some(ref name) = prev_cat_name {
+        if let Some(idx) = app.categories.iter().position(|c| &c.name == name) {
+            app.selected_category = idx;
+        } else {
+            app.selected_category = app.selected_category.min(app.category_count().saturating_sub(1));
+        }
+    }
+
+    // Restore task selection
+    if let Some(ref name) = prev_task_name {
+        let tasks = app.current_tasks();
+        if let Some(idx) = tasks.iter().position(|t| &t.name == name) {
+            app.selected_task = idx;
+        } else {
+            app.selected_task = app.selected_task.min(tasks.len().saturating_sub(1));
+        }
+    }
+}
+
+fn categories_equal(
+    a: &[crate::core::models::Category],
+    b: &[crate::core::models::Category],
+) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(ca, cb)| {
+        ca.name == cb.name
+            && ca.tasks.len() == cb.tasks.len()
+            && ca.tasks.iter().zip(cb.tasks.iter()).all(|(ta, tb)| {
+                ta.name == tb.name && ta.kind == tb.kind && ta.path == tb.path
+            })
+    })
 }

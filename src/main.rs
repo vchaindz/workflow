@@ -1,9 +1,11 @@
+use std::io::IsTerminal;
+
 use clap::Parser;
 
 use dzworkflows::cli::args::Cli;
 use dzworkflows::cli::dispatch;
 use dzworkflows::core::config::Config;
-use dzworkflows::core::logger::rotate_logs;
+use dzworkflows::core::db;
 
 fn main() {
     let cli = Cli::parse();
@@ -12,6 +14,8 @@ fn main() {
         eprintln!("warning: failed to load config: {e}");
         Config::default()
     });
+
+    let no_tui = cli.no_tui;
 
     // Override workflows dir if specified
     if let Some(dir) = cli.dir {
@@ -26,9 +30,14 @@ fn main() {
         }
     }
 
-    // Rotate old logs on startup
-    if let Err(e) = rotate_logs(&config.logs_dir(), config.log_retention_days) {
-        eprintln!("warning: log rotation failed: {e}");
+    // Rotate old runs on startup
+    match db::open_db(&config.db_path()) {
+        Ok(conn) => {
+            if let Err(e) = db::rotate_runs(&conn, config.log_retention_days) {
+                eprintln!("warning: run rotation failed: {e}");
+            }
+        }
+        Err(e) => eprintln!("warning: failed to open database: {e}"),
     }
 
     match cli.command {
@@ -43,7 +52,12 @@ fn main() {
             std::process::exit(exit_code);
         }
         None => {
-            // No subcommand → launch TUI
+            // No subcommand → launch TUI (only if interactive terminal)
+            if no_tui || !std::io::stdin().is_terminal() {
+                eprintln!("error: no subcommand given and stdin is not a terminal (or --no-tui set)");
+                eprintln!("hint: use a subcommand like `dzworkflows list` or `dzworkflows run <task>`");
+                std::process::exit(1);
+            }
             if let Err(e) = dzworkflows::tui::run_tui(config) {
                 eprintln!("TUI error: {e}");
                 std::process::exit(1);
