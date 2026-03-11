@@ -1,0 +1,22 @@
+name: Resource Usage Report
+description: Show CPU and memory usage across nodes, pods, and namespaces
+steps:
+  - id: node-usage
+    cmd: "echo '=== Node Resource Usage ===' && kubectl top nodes 2>/dev/null || echo 'Metrics server not available'"
+  - id: namespace-usage
+    cmd: |
+      echo '=== Resource Usage by Namespace ==='
+      kubectl get namespaces --no-headers 2>/dev/null | awk '{print $1}' | while read ns; do
+        cpu=$(kubectl top pods -n "$ns" --no-headers 2>/dev/null | awk '{sum+=$2} END {printf "%.0fm", sum}')
+        mem=$(kubectl top pods -n "$ns" --no-headers 2>/dev/null | awk '{sum+=$3} END {printf "%.0fMi", sum}')
+        count=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l)
+        [ "$count" -gt 0 ] && printf "  %-30s pods=%-4s cpu=%-10s mem=%s\n" "$ns" "$count" "$cpu" "$mem"
+      done
+  - id: top-cpu-pods
+    cmd: "echo '=== Top 10 CPU Pods ===' && kubectl top pods --all-namespaces --sort-by=cpu 2>/dev/null | head -11 || echo 'Metrics unavailable'"
+  - id: top-mem-pods
+    cmd: "echo '=== Top 10 Memory Pods ===' && kubectl top pods --all-namespaces --sort-by=memory 2>/dev/null | head -11 || echo 'Metrics unavailable'"
+  - id: resource-quotas
+    cmd: "echo '=== Resource Quotas ===' && kubectl get resourcequotas --all-namespaces 2>/dev/null || echo 'No resource quotas defined'"
+  - id: limit-ranges
+    cmd: "echo '=== Limit Ranges ===' && kubectl get limitranges --all-namespaces 2>/dev/null || echo 'No limit ranges defined'"

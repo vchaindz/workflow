@@ -1,0 +1,39 @@
+name: Pod Status Overview
+description: List pods across namespaces, find unhealthy pods, and show restart counts
+variables:
+  - name: namespace
+    description: Namespace to check (blank for all namespaces)
+    default: ""
+steps:
+  - id: pod-summary
+    cmd: |
+      echo '=== Pod Summary ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get pods $ns_flag --no-headers 2>/dev/null | awk '{print $NF}' | sort | uniq -c | sort -rn || echo 'Cannot list pods'
+  - id: unhealthy-pods
+    cmd: |
+      echo '=== Unhealthy Pods ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get pods $ns_flag 2>/dev/null | grep -vE '(Running|Completed|Succeeded)' | grep -v NAME || echo 'All pods healthy'
+  - id: high-restarts
+    cmd: |
+      echo '=== Pods with High Restart Counts ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get pods $ns_flag 2>/dev/null | awk 'NR>1 && $4+0 > 3 {print}' || echo 'No high-restart pods'
+  - id: pending-pods
+    cmd: |
+      echo '=== Pending Pods with Reasons ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get pods $ns_flag --field-selector=status.phase=Pending -o wide 2>/dev/null || echo 'No pending pods'
+  - id: resource-usage
+    cmd: |
+      echo '=== Top Pod Resource Usage ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl top pods $ns_flag --sort-by=cpu 2>/dev/null | head -15 || echo 'Metrics server not available'
+env:
+  DZ_NAMESPACE: "{{namespace}}"

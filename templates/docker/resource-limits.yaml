@@ -1,0 +1,37 @@
+name: Docker Resource Limits Check
+description: Audit container resource limits - memory, CPU, and restart policies
+steps:
+  - id: memory-limits
+    cmd: |
+      echo '=== Container Memory Limits ==='
+      docker ps --format '{{.Names}}' | while read name; do
+        mem=$(docker inspect --format '{{.HostConfig.Memory}}' "$name" 2>/dev/null)
+        mem_mb=$(( ${mem:-0} / 1048576 ))
+        if [ "$mem_mb" -eq 0 ]; then
+          echo "  $name: NO LIMIT"
+        else
+          echo "  $name: ${mem_mb}MB"
+        fi
+      done
+  - id: cpu-limits
+    cmd: |
+      echo '=== Container CPU Limits ==='
+      docker ps --format '{{.Names}}' | while read name; do
+        cpus=$(docker inspect --format '{{.HostConfig.NanoCpus}}' "$name" 2>/dev/null)
+        cpu_val=$(echo "scale=2; ${cpus:-0} / 1000000000" | bc 2>/dev/null || echo "0")
+        if [ "$cpu_val" = "0" ] || [ "$cpu_val" = "0.00" ]; then
+          echo "  $name: NO LIMIT"
+        else
+          echo "  $name: ${cpu_val} CPUs"
+        fi
+      done
+  - id: restart-policies
+    cmd: |
+      echo '=== Restart Policies ==='
+      docker ps -a --format '{{.Names}}' | while read name; do
+        policy=$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$name" 2>/dev/null)
+        max=$(docker inspect --format '{{.HostConfig.RestartPolicy.MaximumRetryCount}}' "$name" 2>/dev/null)
+        printf "  %-30s %s (max: %s)\n" "$name" "$policy" "$max"
+      done
+  - id: current-usage
+    cmd: "echo '=== Current Resource Usage ===' && docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}'"

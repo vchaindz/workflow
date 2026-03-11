@@ -1,0 +1,21 @@
+name: Disk Usage Report
+description: Show filesystem usage, flag partitions over threshold, and find largest directories
+variables:
+  - name: threshold
+    description: Disk usage percentage to flag as warning
+    default: "80"
+  - name: scan_path
+    description: Path to scan for largest directories
+    default: "/"
+steps:
+  - id: filesystem-usage
+    cmd: "echo '=== Filesystem Usage ===' && df -h --output=source,fstype,size,used,avail,pcent,target -x tmpfs -x devtmpfs 2>/dev/null || df -h"
+  - id: over-threshold
+    cmd: "echo \"=== Partitions over ${DZ_THRESHOLD}% ===' && df -h --output=source,pcent,target -x tmpfs -x devtmpfs 2>/dev/null | awk -v t=\"$DZ_THRESHOLD\" 'NR>1 {gsub(/%/,\"\",$2); if($2+0 > t+0) print}' || echo 'None found'"
+  - id: largest-dirs
+    cmd: "echo '=== Top 10 Largest Directories ===' && du -h --max-depth=1 \"$DZ_SCAN_PATH\" 2>/dev/null | sort -rh | head -10"
+  - id: inode-usage
+    cmd: "echo '=== Inode Usage ===' && df -i -x tmpfs -x devtmpfs 2>/dev/null | head -20 || df -i"
+env:
+  DZ_THRESHOLD: "{{threshold}}"
+  DZ_SCAN_PATH: "{{scan_path}}"

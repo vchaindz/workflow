@@ -1,0 +1,19 @@
+name: Journal & Log Cleanup
+description: Clean up systemd journal and rotated log files to free disk space
+variables:
+  - name: retention_days
+    description: Number of days of logs to retain
+    default: "7"
+steps:
+  - id: disk-before
+    cmd: "echo '=== Disk Usage Before ===' && df -h / /var 2>/dev/null | head -5"
+  - id: journal-vacuum
+    cmd: "echo \"=== Vacuuming journal (keeping ${DZ_RETENTION_DAYS} days) ===\" && sudo journalctl --vacuum-time=\"${DZ_RETENTION_DAYS}d\" 2>/dev/null || echo 'journalctl vacuum failed (need sudo?)'"
+  - id: rotated-logs
+    cmd: "echo '=== Cleaning rotated logs ===' && sudo find /var/log -name '*.gz' -mtime +\"$DZ_RETENTION_DAYS\" -delete -print 2>/dev/null | wc -l | xargs -I{} echo 'Removed {} compressed log files'"
+  - id: old-logs
+    cmd: "echo '=== Cleaning old log files ===' && sudo find /var/log -name '*.old' -mtime +\"$DZ_RETENTION_DAYS\" -delete -print 2>/dev/null | wc -l | xargs -I{} echo 'Removed {} old log files'"
+  - id: disk-after
+    cmd: "echo '=== Disk Usage After ===' && df -h / /var 2>/dev/null | head -5"
+env:
+  DZ_RETENTION_DAYS: "{{retention_days}}"

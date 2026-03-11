@@ -1,0 +1,31 @@
+name: Service & Endpoint Check
+description: List services, check endpoints, and verify ingress configuration
+variables:
+  - name: namespace
+    description: Namespace to check (blank for all namespaces)
+    default: ""
+steps:
+  - id: services
+    cmd: |
+      echo '=== Services ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get services $ns_flag -o wide 2>/dev/null || echo 'No services found'
+  - id: empty-endpoints
+    cmd: |
+      echo '=== Services with No Endpoints ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get endpoints $ns_flag 2>/dev/null | awk 'NR>1 && ($2=="" || $2=="<none>") {print "  WARNING:", $0}' || echo 'All services have endpoints'
+  - id: ingresses
+    cmd: |
+      echo '=== Ingresses ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get ingress $ns_flag 2>/dev/null || echo 'No ingresses found'
+  - id: external-services
+    cmd: |
+      echo '=== External/LoadBalancer Services ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get services $ns_flag 2>/dev/null | grep -E '(LoadBalancer|NodePort|ExternalName)' || echo 'No external services'

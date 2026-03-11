@@ -1,0 +1,16 @@
+name: Docker Container Status
+description: Overview of all containers, resource usage, and health checks
+steps:
+  - id: running-containers
+    cmd: "echo '=== Running Containers ===' && docker ps --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}\t{{.Image}}'"
+  - id: all-containers
+    cmd: "echo '=== All Containers (including stopped) ===' && docker ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}' | head -30"
+  - id: resource-usage
+    cmd: "echo '=== Resource Usage ===' && docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}'"
+  - id: health-checks
+    cmd: |
+      echo '=== Health Check Status ==='
+      docker ps --format '{{.Names}}' | while read name; do
+        health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no healthcheck{{end}}' "$name" 2>/dev/null)
+        printf "%-30s %s\n" "$name" "$health"
+      done

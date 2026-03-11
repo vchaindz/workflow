@@ -1,0 +1,27 @@
+name: Docker Network Inspection
+description: List networks, show container connectivity, and check for issues
+steps:
+  - id: list-networks
+    cmd: "echo '=== Docker Networks ===' && docker network ls --format 'table {{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}'"
+  - id: network-details
+    cmd: |
+      echo '=== Network Details ==='
+      docker network ls --format '{{.Name}}' | while read net; do
+        containers=$(docker network inspect "$net" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null)
+        if [ -n "$containers" ]; then
+          echo "--- $net ---"
+          echo "  Containers: $containers"
+        fi
+      done
+  - id: port-mappings
+    cmd: "echo '=== Port Mappings ===' && docker ps --format '{{.Names}}\t{{.Ports}}' | column -t"
+  - id: dns-check
+    cmd: |
+      echo '=== DNS Resolution Between Containers ==='
+      network=$(docker network ls --format '{{.Name}}' | grep -v -E '(bridge|host|none)' | head -1)
+      if [ -n "$network" ]; then
+        echo "Testing on network: $network"
+        docker network inspect "$network" --format '{{range .Containers}}{{.Name}}: {{.IPv4Address}}{{"\n"}}{{end}}' 2>/dev/null
+      else
+        echo 'No custom networks found'
+      fi

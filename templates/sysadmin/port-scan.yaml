@@ -1,0 +1,24 @@
+name: Listening Ports Check
+description: Show listening ports, connection counts, and firewall status
+steps:
+  - id: listening-ports
+    cmd: "echo '=== Listening Ports ===' && ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || echo 'Neither ss nor netstat available'"
+  - id: connection-counts
+    cmd: "echo '=== Connection Summary ===' && ss -s 2>/dev/null || netstat -s 2>/dev/null | head -20"
+  - id: established
+    cmd: "echo '=== Established Connections by Port ===' && ss -tn state established 2>/dev/null | awk 'NR>1 {split($4,a,\":\"); print a[length(a)]}' | sort | uniq -c | sort -rn | head -10 || echo 'Could not enumerate connections'"
+  - id: firewall-status
+    cmd: |
+      echo '=== Firewall Status ==='
+      if command -v ufw >/dev/null 2>&1; then
+        echo 'Firewall: ufw'
+        sudo ufw status verbose 2>/dev/null || ufw status 2>/dev/null || echo 'Cannot read ufw status'
+      elif command -v firewall-cmd >/dev/null 2>&1; then
+        echo 'Firewall: firewalld'
+        sudo firewall-cmd --state 2>/dev/null && sudo firewall-cmd --list-all 2>/dev/null || echo 'Cannot read firewalld status'
+      elif command -v iptables >/dev/null 2>&1; then
+        echo 'Firewall: iptables'
+        sudo iptables -L -n --line-numbers 2>/dev/null | head -30 || echo 'Cannot read iptables (need sudo?)'
+      else
+        echo 'No known firewall tool found'
+      fi

@@ -1,0 +1,40 @@
+name: Cluster Health Check
+description: Overview of Kubernetes cluster health - nodes, components, and capacity
+variables:
+  - name: context
+    description: Kubectl context to use (blank for current)
+    default: ""
+steps:
+  - id: cluster-info
+    cmd: |
+      echo '=== Cluster Info ==='
+      ctx_flag=""
+      [ -n "$DZ_CONTEXT" ] && ctx_flag="--context $DZ_CONTEXT"
+      kubectl cluster-info $ctx_flag 2>/dev/null | head -5 || echo 'Cannot reach cluster'
+  - id: node-status
+    cmd: "echo '=== Node Status ===' && kubectl get nodes -o wide 2>/dev/null || echo 'Cannot list nodes'"
+  - id: component-status
+    cmd: "echo '=== Component Health ===' && kubectl get componentstatuses 2>/dev/null || kubectl get --raw='/readyz?verbose' 2>/dev/null | head -20 || echo 'Component status unavailable'"
+  - id: node-capacity
+    cmd: |
+      echo '=== Node Capacity & Allocations ==='
+      kubectl top nodes 2>/dev/null || echo 'Metrics server not available'
+  - id: node-conditions
+    cmd: |
+      echo '=== Node Conditions (non-Ready) ==='
+      kubectl get nodes -o json 2>/dev/null | python3 -c "
+      import json, sys
+      try:
+        data = json.load(sys.stdin)
+        for node in data.get('items', []):
+          name = node['metadata']['name']
+          for c in node['status'].get('conditions', []):
+            if c['type'] != 'Ready' and c['status'] == 'True':
+              print(f\"  WARNING: {name} has {c['type']}: {c['message']}\")
+            elif c['type'] == 'Ready' and c['status'] != 'True':
+              print(f\"  CRITICAL: {name} is NotReady: {c['message']}\")
+        print('Check complete')
+      except: print('Could not parse node conditions')
+      " || echo 'Cannot parse node data'
+env:
+  DZ_CONTEXT: "{{context}}"

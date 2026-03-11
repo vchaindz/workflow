@@ -1,0 +1,39 @@
+name: Deployment Status
+description: Check deployment health, rollout status, and replica counts
+variables:
+  - name: namespace
+    description: Namespace to check (blank for all namespaces)
+    default: ""
+steps:
+  - id: deployments
+    cmd: |
+      echo '=== Deployments ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get deployments $ns_flag 2>/dev/null || echo 'No deployments found'
+  - id: unavailable-replicas
+    cmd: |
+      echo '=== Deployments with Unavailable Replicas ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get deployments $ns_flag 2>/dev/null | awk 'NR>1 {split($2,a,"/"); if(a[1]!=a[2]) print}' || echo 'All deployments fully available'
+  - id: statefulsets
+    cmd: |
+      echo '=== StatefulSets ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get statefulsets $ns_flag 2>/dev/null || echo 'No statefulsets found'
+  - id: daemonsets
+    cmd: |
+      echo '=== DaemonSets ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get daemonsets $ns_flag 2>/dev/null || echo 'No daemonsets found'
+  - id: recent-rollouts
+    cmd: |
+      echo '=== Recent Rollout Events ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get events $ns_flag --field-selector reason=ScalingReplicaSet --sort-by='.lastTimestamp' 2>/dev/null | tail -10 || echo 'No recent rollout events'
+env:
+  DZ_NAMESPACE: "{{namespace}}"

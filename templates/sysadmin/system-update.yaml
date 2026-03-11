@@ -1,0 +1,42 @@
+name: System Package Update
+description: Detect package manager, update package lists, upgrade packages, and check reboot status
+steps:
+  - id: detect-and-update
+    cmd: |
+      echo '=== System Package Update ==='
+      if command -v apt-get >/dev/null 2>&1; then
+        echo 'Package manager: apt'
+        sudo apt-get update && sudo apt-get upgrade -y
+      elif command -v dnf >/dev/null 2>&1; then
+        echo 'Package manager: dnf'
+        sudo dnf check-update; sudo dnf upgrade -y
+      elif command -v yum >/dev/null 2>&1; then
+        echo 'Package manager: yum'
+        sudo yum check-update; sudo yum upgrade -y
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Package manager: pacman'
+        sudo pacman -Syu --noconfirm
+      else
+        echo 'ERROR: No supported package manager found'
+        exit 1
+      fi
+  - id: reboot-check
+    cmd: |
+      echo '=== Reboot Required? ==='
+      if [ -f /var/run/reboot-required ]; then
+        echo 'YES - reboot is required'
+        cat /var/run/reboot-required.pkgs 2>/dev/null || true
+      elif command -v needs-restarting >/dev/null 2>&1; then
+        needs-restarting -r 2>/dev/null || echo 'Reboot may be needed (needs-restarting returned non-zero)'
+      else
+        echo 'No reboot indicator found'
+      fi
+  - id: summary
+    cmd: |
+      echo '=== Installed Package Count ==='
+      if command -v dpkg >/dev/null 2>&1; then
+        dpkg -l | grep -c '^ii'
+      elif command -v rpm >/dev/null 2>&1; then
+        rpm -qa | wc -l
+      fi
+      echo "packages installed"

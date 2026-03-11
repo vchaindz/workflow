@@ -1,0 +1,15 @@
+name: Systemd Service Health Check
+description: Check status, logs, and enabled state of a systemd service
+variables:
+  - name: service_name
+    description: Name of the systemd service to check
+    default: "nginx"
+steps:
+  - id: service-status
+    cmd: "echo \"=== Status: $DZ_SERVICE_NAME ===\" && systemctl status \"$DZ_SERVICE_NAME\" --no-pager || true"
+  - id: recent-logs
+    cmd: "echo \"=== Recent Journal Logs ===\" && journalctl -u \"$DZ_SERVICE_NAME\" --no-pager -n 20 --since '1 hour ago' 2>/dev/null || echo 'No journal logs available'"
+  - id: enabled-check
+    cmd: "echo '=== Enabled State ===' && systemctl is-enabled \"$DZ_SERVICE_NAME\" 2>/dev/null && echo 'Service is enabled at boot' || echo 'Service is NOT enabled at boot'"
+env:
+  DZ_SERVICE_NAME: "{{service_name}}"

@@ -1,0 +1,19 @@
+name: Docker Image Update Check
+description: Check running containers for newer base images available upstream
+steps:
+  - id: current-images
+    cmd: "echo '=== Current Images ===' && docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}' | head -30"
+  - id: pull-updates
+    cmd: |
+      echo '=== Checking for Updates ==='
+      docker ps --format '{{.Image}}' | sort -u | while read img; do
+        echo -n "Pulling $img ... "
+        result=$(docker pull "$img" 2>&1)
+        if echo "$result" | grep -q "Image is up to date"; then
+          echo "up to date"
+        else
+          echo "UPDATED"
+        fi
+      done
+  - id: dangling-after
+    cmd: "echo '=== Dangling Images (old versions) ===' && docker images -f dangling=true --format '{{.ID}} {{.Size}} {{.CreatedSince}}' || echo 'None'"

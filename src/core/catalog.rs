@@ -43,6 +43,46 @@ const CODEX_UPDATE: &str = include_str!("../../templates/tools/codex-update.yaml
 const WEBSITE_CONTENT_CHECK: &str =
     include_str!("../../templates/monitoring/website-content-check.yaml");
 
+// Docker templates
+const DOCKER_CONTAINER_STATUS: &str = include_str!("../../templates/docker/container-status.yaml");
+const DOCKER_CLEANUP: &str = include_str!("../../templates/docker/cleanup.yaml");
+const DOCKER_LOGS_TAIL: &str = include_str!("../../templates/docker/logs-tail.yaml");
+const DOCKER_IMAGE_UPDATE: &str = include_str!("../../templates/docker/image-update.yaml");
+const DOCKER_NETWORK_INSPECT: &str = include_str!("../../templates/docker/network-inspect.yaml");
+const DOCKER_VOLUME_BACKUP: &str = include_str!("../../templates/docker/volume-backup.yaml");
+const DOCKER_COMPOSE_STATUS: &str = include_str!("../../templates/docker/compose-status.yaml");
+const DOCKER_SECURITY_SCAN: &str = include_str!("../../templates/docker/security-scan.yaml");
+const DOCKER_RESTART_UNHEALTHY: &str =
+    include_str!("../../templates/docker/restart-unhealthy.yaml");
+const DOCKER_RESOURCE_LIMITS: &str = include_str!("../../templates/docker/resource-limits.yaml");
+
+// Kubectl templates
+const KUBECTL_CLUSTER_HEALTH: &str = include_str!("../../templates/kubectl/cluster-health.yaml");
+const KUBECTL_POD_STATUS: &str = include_str!("../../templates/kubectl/pod-status.yaml");
+const KUBECTL_FAILED_PODS: &str = include_str!("../../templates/kubectl/failed-pods.yaml");
+const KUBECTL_RESOURCE_USAGE: &str = include_str!("../../templates/kubectl/resource-usage.yaml");
+const KUBECTL_DEPLOYMENT_STATUS: &str =
+    include_str!("../../templates/kubectl/deployment-status.yaml");
+const KUBECTL_SERVICE_ENDPOINTS: &str =
+    include_str!("../../templates/kubectl/service-endpoints.yaml");
+const KUBECTL_PV_STORAGE: &str = include_str!("../../templates/kubectl/pv-storage.yaml");
+const KUBECTL_NAMESPACE_AUDIT: &str = include_str!("../../templates/kubectl/namespace-audit.yaml");
+const KUBECTL_SECRET_CONFIGMAP: &str =
+    include_str!("../../templates/kubectl/secret-configmap-audit.yaml");
+const KUBECTL_RBAC_REVIEW: &str = include_str!("../../templates/kubectl/rbac-review.yaml");
+
+// Sysadmin templates
+const DISK_USAGE: &str = include_str!("../../templates/sysadmin/disk-usage.yaml");
+const MEMORY_CHECK: &str = include_str!("../../templates/sysadmin/memory-check.yaml");
+const SERVICE_STATUS: &str = include_str!("../../templates/sysadmin/service-status.yaml");
+const LOG_CLEANUP: &str = include_str!("../../templates/sysadmin/log-cleanup.yaml");
+const SYSTEM_UPDATE: &str = include_str!("../../templates/sysadmin/system-update.yaml");
+const FAILED_SERVICES: &str = include_str!("../../templates/sysadmin/failed-services.yaml");
+const PORT_SCAN: &str = include_str!("../../templates/sysadmin/port-scan.yaml");
+const USER_AUDIT: &str = include_str!("../../templates/sysadmin/user-audit.yaml");
+const BACKUP_VERIFY: &str = include_str!("../../templates/sysadmin/backup-verify.yaml");
+const CPU_LOAD: &str = include_str!("../../templates/sysadmin/cpu-load.yaml");
+
 /// Parse template metadata (name, description, variables) from YAML text.
 fn parse_template_meta(yaml: &str) -> (String, Option<String>, Vec<TemplateVariable>) {
     let value: serde_yaml::Value = match serde_yaml::from_str(yaml) {
@@ -97,6 +137,36 @@ pub fn bundled_templates() -> Vec<TemplateEntry> {
         ("tools", "claude-update", CLAUDE_UPDATE),
         ("tools", "codex-update", CODEX_UPDATE),
         ("monitoring", "website-content-check", WEBSITE_CONTENT_CHECK),
+        ("docker", "cleanup", DOCKER_CLEANUP),
+        ("docker", "compose-status", DOCKER_COMPOSE_STATUS),
+        ("docker", "container-status", DOCKER_CONTAINER_STATUS),
+        ("docker", "image-update", DOCKER_IMAGE_UPDATE),
+        ("docker", "logs-tail", DOCKER_LOGS_TAIL),
+        ("docker", "network-inspect", DOCKER_NETWORK_INSPECT),
+        ("docker", "resource-limits", DOCKER_RESOURCE_LIMITS),
+        ("docker", "restart-unhealthy", DOCKER_RESTART_UNHEALTHY),
+        ("docker", "security-scan", DOCKER_SECURITY_SCAN),
+        ("docker", "volume-backup", DOCKER_VOLUME_BACKUP),
+        ("kubectl", "cluster-health", KUBECTL_CLUSTER_HEALTH),
+        ("kubectl", "deployment-status", KUBECTL_DEPLOYMENT_STATUS),
+        ("kubectl", "failed-pods", KUBECTL_FAILED_PODS),
+        ("kubectl", "namespace-audit", KUBECTL_NAMESPACE_AUDIT),
+        ("kubectl", "pod-status", KUBECTL_POD_STATUS),
+        ("kubectl", "pv-storage", KUBECTL_PV_STORAGE),
+        ("kubectl", "rbac-review", KUBECTL_RBAC_REVIEW),
+        ("kubectl", "resource-usage", KUBECTL_RESOURCE_USAGE),
+        ("kubectl", "secret-configmap-audit", KUBECTL_SECRET_CONFIGMAP),
+        ("kubectl", "service-endpoints", KUBECTL_SERVICE_ENDPOINTS),
+        ("sysadmin", "backup-verify", BACKUP_VERIFY),
+        ("sysadmin", "cpu-load", CPU_LOAD),
+        ("sysadmin", "disk-usage", DISK_USAGE),
+        ("sysadmin", "failed-services", FAILED_SERVICES),
+        ("sysadmin", "log-cleanup", LOG_CLEANUP),
+        ("sysadmin", "memory-check", MEMORY_CHECK),
+        ("sysadmin", "port-scan", PORT_SCAN),
+        ("sysadmin", "service-status", SERVICE_STATUS),
+        ("sysadmin", "system-update", SYSTEM_UPDATE),
+        ("sysadmin", "user-audit", USER_AUDIT),
     ];
 
     registry

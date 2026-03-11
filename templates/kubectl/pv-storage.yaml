@@ -1,0 +1,23 @@
+name: Persistent Volume & Storage Check
+description: Audit persistent volumes, claims, and storage classes
+steps:
+  - id: storage-classes
+    cmd: "echo '=== Storage Classes ===' && kubectl get storageclasses 2>/dev/null || echo 'No storage classes found'"
+  - id: persistent-volumes
+    cmd: "echo '=== Persistent Volumes ===' && kubectl get pv -o wide 2>/dev/null || echo 'No PVs found'"
+  - id: pvc-status
+    cmd: "echo '=== Persistent Volume Claims ===' && kubectl get pvc --all-namespaces 2>/dev/null || echo 'No PVCs found'"
+  - id: unbound-pvcs
+    cmd: |
+      echo '=== Unbound PVCs ==='
+      kubectl get pvc --all-namespaces 2>/dev/null | grep -v Bound | grep -v NAME || echo 'All PVCs are bound'
+  - id: pv-usage
+    cmd: |
+      echo '=== PV Capacity Summary ==='
+      kubectl get pv --no-headers 2>/dev/null | awk '{
+        status[$5]++
+        total++
+      } END {
+        for (s in status) printf "  %-15s %d\n", s, status[s]
+        printf "  %-15s %d\n", "Total", total
+      }' || echo 'Cannot summarize PVs'

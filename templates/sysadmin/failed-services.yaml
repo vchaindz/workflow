@@ -1,0 +1,31 @@
+name: Failed Systemd Services
+description: Find failed systemd units, show details, and suggest recovery actions
+steps:
+  - id: list-failed
+    cmd: "echo '=== Failed Systemd Units ===' && systemctl --failed --no-pager"
+  - id: failed-details
+    cmd: |
+      echo '=== Failed Unit Details ==='
+      failed=$(systemctl --failed --no-legend --no-pager | awk '{print $1}')
+      if [ -z "$failed" ]; then
+        echo 'No failed units found'
+      else
+        for unit in $failed; do
+          echo "--- $unit ---"
+          systemctl status "$unit" --no-pager -l 2>/dev/null | head -15
+          echo
+        done
+      fi
+  - id: suggest-restart
+    cmd: |
+      echo '=== Restart Suggestions ==='
+      failed=$(systemctl --failed --no-legend --no-pager | awk '{print $1}')
+      if [ -z "$failed" ]; then
+        echo 'No failed units - system is healthy'
+      else
+        for unit in $failed; do
+          echo "  sudo systemctl restart $unit"
+        done
+        echo
+        echo 'Run the above commands to attempt restart of failed services'
+      fi

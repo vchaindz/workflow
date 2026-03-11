@@ -1,0 +1,34 @@
+name: Docker Security Overview
+description: Check container security posture - privileged mode, capabilities, root users
+steps:
+  - id: privileged-containers
+    cmd: |
+      echo '=== Privileged Containers ==='
+      docker ps --format '{{.Names}}' | while read name; do
+        priv=$(docker inspect --format '{{.HostConfig.Privileged}}' "$name" 2>/dev/null)
+        if [ "$priv" = "true" ]; then
+          echo "WARNING: $name is running in privileged mode!"
+        fi
+      done
+      echo 'Check complete'
+  - id: root-containers
+    cmd: |
+      echo '=== Containers Running as Root ==='
+      docker ps --format '{{.Names}}' | while read name; do
+        user=$(docker inspect --format '{{.Config.User}}' "$name" 2>/dev/null)
+        if [ -z "$user" ] || [ "$user" = "root" ] || [ "$user" = "0" ]; then
+          echo "  $name (user: ${user:-default/root})"
+        fi
+      done
+  - id: exposed-ports
+    cmd: "echo '=== Containers with Host-Bound Ports ===' && docker ps --format '{{.Names}}\t{{.Ports}}' | grep '0.0.0.0' || echo 'No containers bound to all interfaces'"
+  - id: capabilities
+    cmd: |
+      echo '=== Added Capabilities ==='
+      docker ps --format '{{.Names}}' | while read name; do
+        caps=$(docker inspect --format '{{.HostConfig.CapAdd}}' "$name" 2>/dev/null)
+        if [ "$caps" != "[]" ] && [ "$caps" != "<nil>" ] && [ -n "$caps" ]; then
+          echo "  $name: $caps"
+        fi
+      done
+      echo 'Check complete'

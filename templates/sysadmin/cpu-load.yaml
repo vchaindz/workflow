@@ -1,0 +1,13 @@
+name: CPU & Load Analysis
+description: Show system load, top CPU consumers, core count, and recent high-load syslog entries
+steps:
+  - id: uptime-load
+    cmd: "echo '=== Uptime & Load Average ===' && uptime"
+  - id: cpu-info
+    cmd: "echo '=== CPU Info ===' && echo \"Cores: $(nproc)\" && echo \"Model: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)\" && echo \"Architecture: $(uname -m)\""
+  - id: top-cpu-consumers
+    cmd: "echo '=== Top 10 CPU Consumers ===' && ps aux --sort=-%cpu | head -11"
+  - id: cpu-usage-summary
+    cmd: "echo '=== CPU Usage Summary ===' && mpstat 1 1 2>/dev/null || (echo '--- /proc/stat snapshot ---' && head -1 /proc/stat)"
+  - id: high-load-log
+    cmd: "echo '=== Recent High-Load Syslog Entries ===' && journalctl --since '24 hours ago' --no-pager -p warning 2>/dev/null | grep -iE '(oom|kill|cpu|load|throttl)' | tail -10 || dmesg | grep -iE '(oom|kill|cpu|load|throttl)' | tail -10 || echo 'No relevant entries found'"

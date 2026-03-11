@@ -1,0 +1,11 @@
+name: Memory & Swap Report
+description: Check memory usage, top consumers, and swap status
+steps:
+  - id: memory-overview
+    cmd: "echo '=== Memory Overview ===' && free -h"
+  - id: top-memory-consumers
+    cmd: "echo '=== Top 10 Memory Consumers ===' && ps aux --sort=-%mem | head -11"
+  - id: swap-usage
+    cmd: "echo '=== Swap Details ===' && swapon --show 2>/dev/null || cat /proc/swaps && echo && echo '--- Top swap consumers ---' && for pid in /proc/[0-9]*; do awk '/VmSwap/{print FILENAME, $0}' $pid/status 2>/dev/null; done | sort -k2 -rn | head -10"
+  - id: memory-stats
+    cmd: "echo '=== /proc/meminfo highlights ===' && grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|SwapTotal|SwapFree|Dirty|Writeback):' /proc/meminfo"

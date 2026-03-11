@@ -1,0 +1,25 @@
+name: Namespace Audit
+description: Audit namespaces - resource counts, quotas, and stale namespaces
+steps:
+  - id: list-namespaces
+    cmd: "echo '=== Namespaces ===' && kubectl get namespaces 2>/dev/null || echo 'Cannot list namespaces'"
+  - id: resource-counts
+    cmd: |
+      echo '=== Resource Counts per Namespace ==='
+      kubectl get namespaces --no-headers 2>/dev/null | awk '{print $1}' | while read ns; do
+        pods=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l)
+        svcs=$(kubectl get services -n "$ns" --no-headers 2>/dev/null | wc -l)
+        deps=$(kubectl get deployments -n "$ns" --no-headers 2>/dev/null | wc -l)
+        secrets=$(kubectl get secrets -n "$ns" --no-headers 2>/dev/null | wc -l)
+        [ "$pods" -gt 0 ] || [ "$svcs" -gt 1 ] || [ "$deps" -gt 0 ] && \
+          printf "  %-30s pods=%-4s svc=%-4s deploy=%-4s secrets=%s\n" "$ns" "$pods" "$svcs" "$deps" "$secrets"
+      done
+  - id: empty-namespaces
+    cmd: |
+      echo '=== Empty Namespaces (no pods) ==='
+      kubectl get namespaces --no-headers 2>/dev/null | awk '{print $1}' | while read ns; do
+        count=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l)
+        [ "$count" -eq 0 ] && echo "  $ns"
+      done
+  - id: namespace-quotas
+    cmd: "echo '=== Namespace Quotas ===' && kubectl get resourcequotas --all-namespaces -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,CPU-REQ:.status.used.requests\\.cpu,CPU-LIM:.status.used.limits\\.cpu,MEM-REQ:.status.used.requests\\.memory,MEM-LIM:.status.used.limits\\.memory' 2>/dev/null || echo 'No quotas defined'"

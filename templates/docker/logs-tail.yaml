@@ -1,0 +1,19 @@
+name: Docker Container Logs
+description: Tail recent logs from a specific container
+variables:
+  - name: container
+    description: Container name or ID to view logs for
+    default: "nginx"
+  - name: lines
+    description: Number of log lines to show
+    default: "50"
+steps:
+  - id: container-info
+    cmd: "echo \"=== Container: $DZ_CONTAINER ===\" && docker inspect --format 'Image: {{.Config.Image}}\nStatus: {{.State.Status}}\nStarted: {{.State.StartedAt}}\nRestarts: {{.RestartCount}}' \"$DZ_CONTAINER\" 2>/dev/null || echo 'Container not found'"
+  - id: recent-logs
+    cmd: "echo '=== Recent Logs ===' && docker logs --tail \"$DZ_LINES\" --timestamps \"$DZ_CONTAINER\" 2>&1"
+  - id: error-logs
+    cmd: "echo '=== Error Lines (last 100) ===' && docker logs --tail 100 \"$DZ_CONTAINER\" 2>&1 | grep -iE '(error|fatal|panic|exception|fail|crit)' | tail -20 || echo 'No errors found'"
+env:
+  DZ_CONTAINER: "{{container}}"
+  DZ_LINES: "{{lines}}"

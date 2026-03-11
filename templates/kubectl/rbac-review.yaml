@@ -1,0 +1,46 @@
+name: RBAC Review
+description: Audit cluster roles, bindings, and service accounts for security review
+steps:
+  - id: cluster-roles
+    cmd: "echo '=== Cluster Roles (non-system) ===' && kubectl get clusterroles 2>/dev/null | grep -v 'system:' | head -30 || echo 'Cannot list cluster roles'"
+  - id: cluster-bindings
+    cmd: "echo '=== Cluster Role Bindings (non-system) ===' && kubectl get clusterrolebindings 2>/dev/null | grep -v 'system:' | head -30 || echo 'Cannot list bindings'"
+  - id: admin-bindings
+    cmd: |
+      echo '=== Users/Groups with cluster-admin ==='
+      kubectl get clusterrolebindings -o json 2>/dev/null | python3 -c "
+      import json, sys
+      try:
+        data = json.load(sys.stdin)
+        for item in data.get('items', []):
+          role = item.get('roleRef', {}).get('name', '')
+          if role == 'cluster-admin':
+            name = item['metadata']['name']
+            for subj in item.get('subjects', []):
+              print(f\"  {subj.get('kind')}: {subj.get('name')} (ns: {subj.get('namespace', 'cluster')}) via {name}\")
+        print('Check complete')
+      except: print('Cannot parse bindings')
+      " || echo 'Cannot check admin bindings'
+  - id: service-accounts
+    cmd: |
+      echo '=== Service Accounts (non-default) ==='
+      kubectl get serviceaccounts --all-namespaces 2>/dev/null | grep -v '^NAMESPACE' | grep -v 'default ' | head -20 || echo 'Only default service accounts'
+  - id: privileged-pods
+    cmd: |
+      echo '=== Pods with Privileged Security Context ==='
+      kubectl get pods --all-namespaces -o json 2>/dev/null | python3 -c "
+      import json, sys
+      try:
+        data = json.load(sys.stdin)
+        for item in data.get('items', []):
+          ns = item['metadata']['namespace']
+          name = item['metadata']['name']
+          for c in item['spec'].get('containers', []):
+            sc = c.get('securityContext', {})
+            if sc.get('privileged'):
+              print(f'  {ns}/{name}/{c[\"name\"]}: privileged=true')
+            if sc.get('runAsUser') == 0:
+              print(f'  {ns}/{name}/{c[\"name\"]}: runAsUser=0 (root)')
+        print('Check complete')
+      except: print('Cannot parse pod security')
+      " || echo 'Cannot check pod security contexts'

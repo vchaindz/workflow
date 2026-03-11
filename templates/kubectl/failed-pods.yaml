@@ -1,0 +1,56 @@
+name: Failed Pod Diagnostics
+description: Find CrashLoopBackOff and Error pods, show logs and events
+variables:
+  - name: namespace
+    description: Namespace to check (blank for all namespaces)
+    default: ""
+steps:
+  - id: crashloop-pods
+    cmd: |
+      echo '=== CrashLoopBackOff Pods ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get pods $ns_flag 2>/dev/null | grep -E '(CrashLoopBackOff|Error|ImagePullBackOff|ErrImagePull)' || echo 'No crashed pods found'
+  - id: failed-pod-logs
+    cmd: |
+      echo '=== Recent Logs from Failed Pods ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get pods $ns_flag --no-headers 2>/dev/null | grep -E '(CrashLoopBackOff|Error)' | head -5 | while read line; do
+        if [ -n "$DZ_NAMESPACE" ]; then
+          pod=$(echo "$line" | awk '{print $1}')
+          ns="$DZ_NAMESPACE"
+        else
+          ns=$(echo "$line" | awk '{print $1}')
+          pod=$(echo "$line" | awk '{print $2}')
+        fi
+        echo "--- $ns/$pod ---"
+        kubectl logs -n "$ns" "$pod" --tail=20 --previous 2>/dev/null || kubectl logs -n "$ns" "$pod" --tail=20 2>/dev/null || echo 'No logs available'
+        echo
+      done
+  - id: pod-events
+    cmd: |
+      echo '=== Warning Events (last 30 min) ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      kubectl get events $ns_flag --field-selector type=Warning --sort-by='.lastTimestamp' 2>/dev/null | tail -20 || echo 'No warning events'
+  - id: describe-failed
+    cmd: |
+      echo '=== Describe First Failed Pod ==='
+      ns_flag="--all-namespaces"
+      [ -n "$DZ_NAMESPACE" ] && ns_flag="-n $DZ_NAMESPACE"
+      first=$(kubectl get pods $ns_flag --no-headers 2>/dev/null | grep -E '(CrashLoopBackOff|Error)' | head -1)
+      if [ -n "$first" ]; then
+        if [ -n "$DZ_NAMESPACE" ]; then
+          pod=$(echo "$first" | awk '{print $1}')
+          kubectl describe pod -n "$DZ_NAMESPACE" "$pod" 2>/dev/null | tail -30
+        else
+          ns=$(echo "$first" | awk '{print $1}')
+          pod=$(echo "$first" | awk '{print $2}')
+          kubectl describe pod -n "$ns" "$pod" 2>/dev/null | tail -30
+        fi
+      else
+        echo 'No failed pods to describe'
+      fi
+env:
+  DZ_NAMESPACE: "{{namespace}}"

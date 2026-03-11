@@ -1,0 +1,32 @@
+name: Restart Unhealthy Containers
+description: Find and restart containers with unhealthy or exited status
+steps:
+  - id: find-unhealthy
+    cmd: |
+      echo '=== Unhealthy Containers ==='
+      docker ps --filter health=unhealthy --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+      unhealthy=$(docker ps --filter health=unhealthy -q)
+      if [ -z "$unhealthy" ]; then
+        echo 'No unhealthy containers found'
+      fi
+  - id: find-exited
+    cmd: |
+      echo '=== Recently Exited Containers ==='
+      docker ps -a --filter status=exited --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' | head -15
+  - id: restart-unhealthy
+    cmd: |
+      echo '=== Restarting Unhealthy Containers ==='
+      unhealthy=$(docker ps --filter health=unhealthy -q)
+      if [ -n "$unhealthy" ]; then
+        for id in $unhealthy; do
+          name=$(docker inspect --format '{{.Name}}' "$id" | tr -d '/')
+          echo "Restarting $name..."
+          docker restart "$id"
+        done
+      else
+        echo 'Nothing to restart'
+      fi
+  - id: verify
+    cmd: "echo '=== Post-Restart Status ===' && sleep 5 && docker ps --format 'table {{.Names}}\t{{.Status}}'"
+    depends_on:
+      - restart-unhealthy

@@ -1,0 +1,30 @@
+name: Docker Compose Status
+description: Check status of docker compose projects and their services
+steps:
+  - id: compose-projects
+    cmd: "echo '=== Docker Compose Projects ===' && docker compose ls 2>/dev/null || docker-compose ls 2>/dev/null || echo 'No compose projects found'"
+  - id: compose-services
+    cmd: |
+      echo '=== Service Status Per Project ==='
+      docker compose ls --format json 2>/dev/null | python3 -c "
+      import json, sys, subprocess
+      try:
+        projects = json.load(sys.stdin)
+        for p in projects:
+          name = p.get('Name', 'unknown')
+          path = p.get('ConfigFiles', '')
+          print(f'--- {name} ({path}) ---')
+          subprocess.run(['docker', 'compose', '-p', name, 'ps'], check=False)
+          print()
+      except: print('Could not parse compose projects')
+      " 2>/dev/null || echo 'Compose project enumeration not available'
+  - id: restart-counts
+    cmd: |
+      echo '=== Container Restart Counts ==='
+      docker ps --format '{{.Names}}' | while read name; do
+        restarts=$(docker inspect --format '{{.RestartCount}}' "$name" 2>/dev/null)
+        if [ "$restarts" -gt 0 ] 2>/dev/null; then
+          echo "WARNING: $name has restarted $restarts times"
+        fi
+      done
+      echo 'Done'
