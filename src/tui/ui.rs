@@ -46,8 +46,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(20),
-            Constraint::Percentage(35),
-            Constraint::Percentage(45),
+            Constraint::Percentage(25),
+            Constraint::Percentage(55),
         ])
         .split(chunks[1]);
 
@@ -89,7 +89,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 
     let spans = vec![
         Span::styled(
-            format!(" dzworkflows v{}", version),
+            format!(" workflow v{}", version),
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
@@ -1196,12 +1196,12 @@ fn format_task_preview(task: &crate::core::models::Task) -> String {
                 }
                 out.push('\n');
                 // Show command, truncated per line
-                let cmd = if step.cmd.len() > 80 {
-                    format!("{}...", &step.cmd[..77])
+                let cmd = if step.cmd.len() > 120 {
+                    format!("{}...", &step.cmd[..117])
                 } else {
                     step.cmd.clone()
                 };
-                out.push_str(&format!("     $ {}\n\n", cmd));
+                out.push_str(&format!("     $ {}\n", cmd));
             }
             out
         }
@@ -1292,7 +1292,7 @@ fn draw_help(f: &mut Frame) {
 
     let help_text = vec![
         Line::from(Span::styled(
-            " dzworkflows ",
+            " workflow ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -1540,8 +1540,8 @@ steps:
         let text = buffer_text(&buf);
 
         assert!(
-            text.contains("dzworkflows"),
-            "help overlay should show 'dzworkflows'"
+            text.contains("workflow"),
+            "help overlay should show 'workflow'"
         );
         assert!(
             text.contains("Dry-run"),

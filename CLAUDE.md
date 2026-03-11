@@ -18,7 +18,7 @@ Test fixtures are in `tests/fixtures/` — integration tests use `assert_cmd` to
 
 ## Architecture
 
-**dzworkflows** is a file-based workflow orchestrator. It scans `~/.config/dzworkflows/` where folders are categories and files are tasks (`.sh` = bash scripts, `.yaml` = multi-step DAG workflows). Two modes: interactive TUI (Ratatui) and non-interactive CLI for cron/automation.
+**workflow** is a file-based workflow orchestrator. It scans `~/.config/workflow/` where folders are categories and files are tasks (`.sh` = bash scripts, `.yaml` = multi-step DAG workflows). Two modes: interactive TUI (Ratatui) and non-interactive CLI for cron/automation.
 
 ### Execution pipeline
 
@@ -46,4 +46,4 @@ Tasks can be referenced as `category/task` or `category.task` (dot notation norm
 
 ## Config
 
-Optional `~/.config/dzworkflows/config.toml` with fields: `workflows_dir`, `log_retention_days` (default 30), `editor` (default `$EDITOR`/vi), `hooks` (pre_run/post_run). Falls back to defaults if missing. The `--dir` CLI flag overrides `workflows_dir`.
+Optional `~/.config/workflow/config.toml` with fields: `workflows_dir`, `log_retention_days` (default 30), `editor` (default `$EDITOR`/vi), `hooks` (pre_run/post_run). Falls back to defaults if missing. The `--dir` CLI flag overrides `workflows_dir`.

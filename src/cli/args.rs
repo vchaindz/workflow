@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "dzworkflows",
-    about = "A lightweight, file-based workflow orchestrator",
+    name = "workflow",
+    about = "A file-based workflow orchestrator for humans and AI agents",
     version
 )]
 pub struct Cli {
@@ -94,7 +94,7 @@ pub enum Commands {
 
     /// Export workflows to a .tar.gz archive
     Export {
-        /// Output file path (default: dzworkflows-export-<date>.tar.gz)
+        /// Output file path (default: workflow-export-<date>.tar.gz)
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
 

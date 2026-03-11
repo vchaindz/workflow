@@ -442,7 +442,7 @@ impl App {
                         ));
                         self.run_output = Some(run_log);
                         self.mode = AppMode::Normal;
-                        self.focus = Focus::Details;
+                        self.focus = Focus::TaskList;
                         self.detail_scroll = 0;
                         self.is_executing = false;
                         self.event_rx = None;

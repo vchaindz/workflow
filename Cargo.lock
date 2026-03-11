@@ -394,35 +394,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dzworkflows"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "chrono",
- "clap",
- "crossterm",
- "dirs",
- "flate2",
- "is-terminal",
- "predicates",
- "ratatui",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "serde_yaml",
- "similar",
- "tar",
- "tempfile",
- "toml",
- "tui-markdown",
- "uuid",
- "wait-timeout",
- "walkdir",
-]
-
-[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2312,6 +2283,35 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "workflow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dirs",
+ "flate2",
+ "is-terminal",
+ "predicates",
+ "ratatui",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "similar",
+ "tar",
+ "tempfile",
+ "toml",
+ "tui-markdown",
+ "uuid",
+ "wait-timeout",
+ "walkdir",
 ]
 
 [[package]]

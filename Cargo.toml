@@ -1,12 +1,12 @@
 [package]
-name = "dzworkflows"
+name = "workflow"
 version = "0.1.0"
 edition = "2021"
-description = "A lightweight, file-based workflow orchestrator with TUI and CLI"
+description = "A file-based workflow orchestrator with TUI and CLI, designed for humans and AI agents alike"
 license = "MIT"
 
 [[bin]]
-name = "dzworkflows"
+name = "workflow"
 path = "src/main.rs"
 
 [dependencies]

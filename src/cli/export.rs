@@ -20,7 +20,7 @@ pub fn cmd_export(config: &Config, output: Option<&Path>, include_history: bool)
         Some(p) => p.to_path_buf(),
         None => {
             let date = chrono::Local::now().format("%Y%m%d-%H%M%S");
-            PathBuf::from(format!("dzworkflows-export-{}.tar.gz", date))
+            PathBuf::from(format!("workflow-export-{}.tar.gz", date))
         }
     };
 

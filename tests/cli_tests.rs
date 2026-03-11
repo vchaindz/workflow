@@ -47,7 +47,7 @@ steps:
 #[test]
 fn test_list_command() {
     let dir = setup_fixtures();
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .args(["--dir", dir.path().to_str().unwrap(), "list"])
         .assert()
@@ -60,7 +60,7 @@ fn test_list_command() {
 #[test]
 fn test_list_json() {
     let dir = setup_fixtures();
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .args(["--dir", dir.path().to_str().unwrap(), "list", "--json"])
         .assert()
@@ -71,7 +71,7 @@ fn test_list_json() {
 #[test]
 fn test_run_shell_script() {
     let dir = setup_fixtures();
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .args(["--dir", dir.path().to_str().unwrap(), "run", "backup/db-full"])
         .assert()
@@ -82,7 +82,7 @@ fn test_run_shell_script() {
 #[test]
 fn test_run_yaml_workflow() {
     let dir = setup_fixtures();
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .args([
             "--dir",
@@ -98,7 +98,7 @@ fn test_run_yaml_workflow() {
 #[test]
 fn test_run_dry_run() {
     let dir = setup_fixtures();
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .args([
             "--dir",
@@ -115,7 +115,7 @@ fn test_run_dry_run() {
 #[test]
 fn test_run_dot_notation() {
     let dir = setup_fixtures();
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .args([
             "--dir",
@@ -130,7 +130,7 @@ fn test_run_dot_notation() {
 #[test]
 fn test_run_nonexistent_task() {
     let dir = setup_fixtures();
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .args([
             "--dir",
@@ -146,7 +146,7 @@ fn test_run_nonexistent_task() {
 #[test]
 fn test_status_no_history() {
     let dir = setup_fixtures();
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .args([
             "--dir",
@@ -165,14 +165,14 @@ fn test_status_after_run() {
     let dir_str = dir.path().to_str().unwrap();
 
     // Run first
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .args(["--dir", dir_str, "run", "backup/db-full"])
         .assert()
         .success();
 
     // Check status
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .args(["--dir", dir_str, "status", "backup/db-full"])
         .assert()
@@ -183,7 +183,7 @@ fn test_status_after_run() {
 #[test]
 fn test_logs_empty() {
     let dir = setup_fixtures();
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .args([
             "--dir",
@@ -198,10 +198,10 @@ fn test_logs_empty() {
 
 #[test]
 fn test_version_flag() {
-    Command::cargo_bin("dzworkflows")
+    Command::cargo_bin("workflow")
         .unwrap()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("dzworkflows"));
+        .stdout(predicate::str::contains("workflow"));
 }

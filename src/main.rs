@@ -2,10 +2,10 @@ use std::io::IsTerminal;
 
 use clap::Parser;
 
-use dzworkflows::cli::args::Cli;
-use dzworkflows::cli::dispatch;
-use dzworkflows::core::config::Config;
-use dzworkflows::core::db;
+use workflow::cli::args::Cli;
+use workflow::cli::dispatch;
+use workflow::core::config::Config;
+use workflow::core::db;
 
 fn main() {
     let cli = Cli::parse();
@@ -55,10 +55,10 @@ fn main() {
             // No subcommand → launch TUI (only if interactive terminal)
             if no_tui || !std::io::stdin().is_terminal() {
                 eprintln!("error: no subcommand given and stdin is not a terminal (or --no-tui set)");
-                eprintln!("hint: use a subcommand like `dzworkflows list` or `dzworkflows run <task>`");
+                eprintln!("hint: use a subcommand like `workflow list` or `workflow run <task>`");
                 std::process::exit(1);
             }
-            if let Err(e) = dzworkflows::tui::run_tui(config) {
+            if let Err(e) = workflow::tui::run_tui(config) {
                 eprintln!("TUI error: {e}");
                 std::process::exit(1);
             }

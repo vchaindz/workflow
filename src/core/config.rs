@@ -33,7 +33,7 @@ pub struct HooksConfig {
 fn default_workflows_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("dzworkflows")
+        .join("workflow")
 }
 
 fn default_log_retention() -> u32 {
