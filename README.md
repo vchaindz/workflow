@@ -6,6 +6,27 @@ Turn your shell history into reusable workflows — or describe what you need in
 
 No database required for execution — state is tracked via JSON logs and an optional SQLite history. No configuration required — just add files and go.
 
+### For Sysadmins
+
+| | |
+|---|---|
+| **30 bundled templates** | Sysadmin, Docker, and Kubernetes — ready to use out of the box |
+| **Real-world tasks** | Disk reports, systemd health checks, container security audits, k8s pod diagnostics |
+| **Overdue reminders** | Set `overdue: 7` on any task and get notified when maintenance is late |
+| **Cron-friendly CLI** | `workflow run backup/db-full` with proper exit codes for automation |
+| **Zero config** | Drop `.sh` or `.yaml` files into `~/.config/workflow/` and go |
+
+### For Developers
+
+| | |
+|---|---|
+| **AI workflow generation** | Describe a task in English — Claude, Codex, or Gemini writes the YAML |
+| **Shell history wizard** | Turn past commands into reusable, parameterized workflows |
+| **DAG execution engine** | Retries, timeouts, conditionals, parallelism, and dependency graphs |
+| **Interactive TUI** | Browse, run, and monitor workflows with real-time progress |
+| **Hot/cold sorting** | Tasks ranked by run frequency — hot tasks float to the top |
+| **Export/import** | Share workflows across machines with `workflow export` / `workflow import` |
+
 ## Table of Contents
 
 - [Highlights](#highlights)
