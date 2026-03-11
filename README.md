@@ -1,8 +1,21 @@
-# dzworkflows
+# workflow
 
-A lightweight, file-based workflow orchestrator for Linux. Drop bash scripts and YAML workflows into `~/.config/dzworkflows/`, browse them in an interactive TUI, or run them from the command line for cron and automation.
+A lightweight, file-based workflow orchestrator for Linux. Drop bash scripts and YAML workflows into `~/.config/workflow/`, browse them in an interactive TUI, or run them from the command line for cron and automation.
 
-No database — state is tracked via JSON log files. No configuration required — just add files and go.
+Turn your shell history into reusable workflows — or describe what you need in plain English and let AI generate the task for you.
+
+No database required for execution — state is tracked via JSON logs and an optional SQLite history. No configuration required — just add files and go.
+
+## Highlights
+
+- **Shell history wizard** — browse your recent shell commands, pick the ones you want, and save them as a workflow in seconds
+- **AI task generation** — describe a task in natural language, and Claude or Codex generates the workflow steps automatically
+- **Template catalog** — start from bundled or community templates with variable substitution
+- **Clone & optimize** — duplicate an existing task, strip failed/skipped steps, and parallelize independent branches
+- **Run comparison** — diff two runs of the same task side-by-side, with optional AI analysis
+- **DAG execution** — multi-step YAML workflows with dependency ordering, conditional steps, retries, and timeouts
+- **Interactive TUI** — three-pane browser with real-time execution progress, search, and log viewing
+- **CLI for automation** — every operation works headless for cron, CI, and scripting
 
 ## Quick Start
 
@@ -11,30 +24,92 @@ No database — state is tracked via JSON log files. No configuration required �
 cargo install --path .
 
 # Create your first workflow
-mkdir -p ~/.config/dzworkflows/backup
-cat > ~/.config/dzworkflows/backup/db-full.sh << 'EOF'
+mkdir -p ~/.config/workflow/backup
+cat > ~/.config/workflow/backup/db-full.sh << 'EOF'
 #!/bin/bash
 pg_dump mydb > /tmp/mydb_$(date +%Y%m%d).sql
 echo "Backup complete"
 EOF
 
 # Run it
-dzworkflows run backup/db-full
+workflow run backup/db-full
 
 # Or browse everything in the TUI
-dzworkflows
+workflow
 ```
+
+## Creating Tasks from Shell History
+
+Press `w` in the TUI to open the history wizard. It reads your shell history (zsh or bash), deduplicates and filters noise, and presents a searchable list:
+
+```
+┌─ New Task from History ──────────────────────────────────┐
+│ Filter: docker                                           │
+│                                                          │
+│   [x] docker compose up -d                    2h ago     │
+│   [ ] docker ps --format "table {{.Names}}"   3h ago     │
+│   [x] docker logs -f webapp                   5h ago     │
+│   [ ] docker exec -it db psql                 1d ago     │
+│                                                          │
+│ Space: toggle  Enter: continue  /: filter  Esc: cancel   │
+└──────────────────────────────────────────────────────────┘
+```
+
+Select commands with `Space`, press `Enter`, then choose a category and task name. The wizard auto-suggests both based on the commands you picked (e.g., docker commands → category `docker`). Preview the generated YAML before saving.
+
+## AI-Generated Workflows
+
+Press `a` in the TUI to describe a task in plain English. If `claude` or `codex` is on your PATH, the AI generates executable shell commands, a task name, and a category:
+
+```
+┌─ AI Task Generator ─────────────────────────────────────┐
+│                                                          │
+│ Describe what you need:                                  │
+│ > check nginx status and restart if not running          │
+│                                                          │
+│ Enter: generate  Esc: cancel                             │
+└──────────────────────────────────────────────────────────┘
+```
+
+The AI returns clean shell commands — no prose, no markdown — which are assembled into a YAML workflow. You review the preview, adjust the category/name if needed, and save.
+
+Requires `claude` (Claude Code CLI) or `codex` (OpenAI Codex CLI) installed and authenticated.
+
+## Template Catalog
+
+Press `t` in the TUI to browse bundled and cached templates. Templates support variables like `{{url}}` or `{{db_name}}` that you fill in before saving:
+
+```bash
+# CLI: list available templates
+workflow templates
+
+# Fetch community templates from GitHub
+workflow templates --fetch
+```
+
+Bundled templates include security scanning (Trivy CVE checks), monitoring (website content checks), and tool management (Claude/Codex updates).
+
+## Clone & Optimize
+
+Press `W` (shift-w) on any task to clone it. The clone wizard lets you:
+
+- **Remove failed steps** — strip steps that failed in the last run
+- **Remove skipped steps** — strip steps that were skipped due to dependency failures
+- **Parallelize** — remove unnecessary sequential dependencies between independent steps
+
+This is useful for iterating on a workflow after a partial failure — clone it, remove what broke, and save a clean version.
 
 ## File Structure
 
 ```
-~/.config/dzworkflows/
+~/.config/workflow/
 ├── backup/                  # Category (folder)
 │   ├── db-full.sh           # Bash script task
 │   └── mysql-daily.yaml     # Multi-step YAML workflow
 ├── deploy/
 │   └── staging.yaml
 ├── logs/                    # Auto-generated run logs (JSON)
+├── history.db               # SQLite run history (auto-created)
 └── config.toml              # Optional configuration
 ```
 
@@ -49,12 +124,16 @@ name: MySQL Daily Backup
 steps:
   - id: dump
     cmd: mysqldump --all-databases > /tmp/db.sql
+    timeout: 300
   - id: compress
     cmd: gzip /tmp/db.sql
     needs: [dump]
   - id: upload
     cmd: aws s3 cp /tmp/db.sql.gz s3://backup/
     needs: [compress]
+    retry: 3
+    retry_delay: 5
+    run_if: "test -f /tmp/db.sql.gz"
 env:
   AWS_PROFILE: prod
 ```
@@ -63,15 +142,21 @@ Steps run in dependency order (topological sort). If a step fails, its dependent
 
 ## TUI
 
-Launch with `dzworkflows` (no arguments):
+Launch with `workflow` (no arguments):
 
 ```
-┌ Categories ┬─ Tasks ────────────┬─ Details ──────────────────┐
+┌─ workflow v0.1.0 ── 12 workflows ── 48 runs ── 2 failed ─────┐
+│                                                                │
+│ Categories │ Tasks ──────────────┬─ Details ──────────────────│
 │ > backup   │ > db-full    [sh]  │ #!/bin/bash                │
 │   deploy   │   mysql-daily[yaml]│ pg_dump mydb > /tmp/...    │
-│            │                    │                            │
-└────────────┴────────────────────┴────────────────────────────┘
- j/k:nav  Tab:pane  r:run  e:edit  l:logs  /:search  d:dry-run  q:quit
+│   docker   │                    │                            │
+│                                                               │
+├─ Log ─────────────────────────────────────────────────────────┤
+│ [14:32:01] ▶ dump — mysqldump --all-databases > /tmp/db.sql  │
+│ [14:32:03] ✓ dump (1850ms)                                   │
+└───────────────────────────────────────────────────────────────┘
+ j/k:nav  Tab:pane  r:run  e:edit  w:wizard  a:ai  t:templates
 ```
 
 | Key | Action |
@@ -83,49 +168,84 @@ Launch with `dzworkflows` (no arguments):
 | `e` | Open in `$EDITOR` |
 | `L` | View run logs |
 | `/` | Search tasks |
+| `w` | New task from shell history |
+| `a` | New task from AI prompt |
+| `t` | New task from template |
+| `W` | Clone & optimize selected task |
+| `D` | Delete selected task |
+| `?` | Help screen |
 | `q` / `Ctrl-C` | Quit |
 
 ## CLI
 
 ```bash
 # Run a task (slash or dot notation)
-dzworkflows run backup/db-full
-dzworkflows run backup.db-full
+workflow run backup/db-full
+workflow run backup.db-full
 
 # Dry-run to preview commands
-dzworkflows run deploy/staging --dry-run
+workflow run deploy/staging --dry-run
+
+# Run with a step timeout (seconds)
+workflow run deploy/staging --timeout 60
 
 # Pass environment variables
-dzworkflows run deploy/staging --env ENV=production --env DEBUG=0
+workflow run deploy/staging --env ENV=production --env DEBUG=0
 
 # List all tasks
-dzworkflows list
-dzworkflows list --json
+workflow list
+workflow list --json
 
 # Check run history for a task
-dzworkflows status backup/db-full
-dzworkflows status backup/db-full --json
+workflow status backup/db-full
+workflow status backup/db-full --json
+
+# Compare two runs
+workflow compare backup/db-full
+workflow compare backup/db-full --ai   # AI-powered analysis
+
+# Validate workflows
+workflow validate                      # Validate all
+workflow validate backup/db-full       # Validate one
+
+# Export/import workflows
+workflow export -o my-workflows.tar.gz --include-history
+workflow import my-workflows.tar.gz --overwrite
+
+# Browse templates
+workflow templates
+workflow templates --fetch
 
 # View logs
-dzworkflows logs backup/db-full
-dzworkflows logs --limit 20 --json
+workflow logs backup/db-full
+workflow logs --limit 20 --json
 
 # Use a custom workflows directory
-dzworkflows --dir /path/to/workflows list
+workflow --dir /path/to/workflows list
 ```
 
 Exit code is 0 on success, non-zero on failure — suitable for cron:
 
 ```cron
-0 2 * * * dzworkflows run backup/db-full
+0 2 * * * workflow run backup/db-full
 ```
+
+## Run Comparison
+
+Compare two consecutive runs of the same task to spot regressions:
+
+```bash
+workflow compare backup/db-full
+```
+
+Shows step-by-step diffs: timing changes, status changes (pass→fail), and output differences. Add `--ai` to get a natural-language analysis of what changed and why.
 
 ## Configuration
 
-Optional `~/.config/dzworkflows/config.toml`:
+Optional `~/.config/workflow/config.toml`:
 
 ```toml
-workflows_dir = "/home/user/.config/dzworkflows"
+workflows_dir = "/home/user/.config/workflow"
 log_retention_days = 30
 editor = "vim"
 
@@ -138,7 +258,7 @@ All fields are optional and have sensible defaults.
 
 ## Logging
 
-Each run produces a JSON log in `~/.config/dzworkflows/logs/`:
+Each run produces a JSON log in `~/.config/workflow/logs/` and a record in `history.db` (SQLite). The JSON logs contain full step output:
 
 ```json
 {
@@ -158,10 +278,10 @@ Logs older than `log_retention_days` (default 30) are automatically cleaned up o
 ## Building from Source
 
 ```bash
-git clone https://github.com/youruser/dzworkflows.git
-cd dzworkflows
+git clone https://github.com/vchaindz/workflow.git
+cd workflow
 cargo build --release
-# Binary at target/release/dzworkflows
+# Binary at target/release/workflow
 ```
 
 Requires Rust 2021 edition (1.56+).
