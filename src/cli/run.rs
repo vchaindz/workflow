@@ -80,6 +80,7 @@ pub fn cmd_run(
         default_timeout: effective_timeout,
         secrets,
         interactive_tx: None,
+        streaming_tx: None,
     };
 
     let canonical_ref = format!("{}/{}", task.category, task.name);

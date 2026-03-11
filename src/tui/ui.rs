@@ -6,7 +6,7 @@ use ratatui::Frame;
 
 use crate::core::db;
 use crate::core::history;
-use crate::core::models::{StepStatus, TaskKind};
+use crate::core::models::{StepStatus, TaskHeat, TaskKind};
 use crate::core::parser::{parse_shell_task, parse_workflow};
 use crate::core::wizard;
 
@@ -196,7 +196,12 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         };
         let task_ref = format!("{}/{}", task.category, task.name);
         let star = if app.config.bookmarks.contains(&task_ref) { "★ " } else { "" };
-        let s = if i == app.selected_task {
+        let (heat_icon, heat_color) = match task.heat {
+            TaskHeat::Hot => ("▲", Color::Green),
+            TaskHeat::Warm => ("·", Color::Reset),
+            TaskHeat::Cold => ("▽", Color::Blue),
+        };
+        let name_style = if i == app.selected_task {
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD)
@@ -204,9 +209,12 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             Style::default()
         };
 
-        items.push(
-            ListItem::new(format!("{marker} {star}{} [{kind}]", task.name)).style(s),
-        );
+        let line = Line::from(vec![
+            Span::styled(format!("{marker} "), name_style),
+            Span::styled(format!("{heat_icon} "), Style::default().fg(heat_color)),
+            Span::styled(format!("{star}{} [{kind}]", task.name), name_style),
+        ]);
+        items.push(ListItem::new(line));
     }
 
     let title = if app.filtered_indices.is_some() {
@@ -302,8 +310,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         AppMode::Comparing => "c:compare | ESC:back | Up/Down:scroll".to_string(),
         AppMode::Wizard => " New Task Wizard ".to_string(),
         _ => {
-            "arrows:nav  r:run  d:dry-run  e:edit  c:compare  w:new  W:clone  a:ai  Del:delete  L:logs  /:search  h:help  q:quit"
-                .to_string()
+            let sort_label = if app.sort_by_heat { "f:α-sort" } else { "f:heat-sort" };
+            format!("arrows:nav  r:run  d:dry-run  e:edit  c:compare  {sort_label}  w:new  W:clone  a:ai  Del:delete  L:logs  /:search  h:help  q:quit")
         }
     };
 
@@ -1717,7 +1725,7 @@ fn draw_saved_tasks(f: &mut Frame, app: &App) {
 mod tests {
     use super::*;
     use crate::core::config::Config;
-    use crate::core::models::{Category, StepStatus, Task, TaskKind};
+    use crate::core::models::{Category, StepStatus, Task, TaskHeat, TaskKind};
     use crate::tui::app::{App, AppMode, StepState};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1780,6 +1788,7 @@ steps:
                         category: "backup".into(),
                         last_run: None,
                         overdue: None,
+                        heat: TaskHeat::Cold,
                     },
                     Task {
                         name: "files".into(),
@@ -1788,6 +1797,7 @@ steps:
                         category: "backup".into(),
                         last_run: None,
                         overdue: None,
+                        heat: TaskHeat::Cold,
                     },
                 ],
             },

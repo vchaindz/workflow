@@ -29,6 +29,7 @@ pub fn run_tui(config: Config) -> Result<()> {
     let categories = scan_workflows(&config.workflows_dir)?;
     let mut app = App::new(categories, config);
     app.refresh_stats();
+    app.load_heat_data();
     app.check_overdue();
 
     // Setup terminal
@@ -126,6 +127,10 @@ fn rescan(app: &mut App) {
     let prev_task_name = app.selected_task_ref().map(|t| t.name.clone());
 
     app.categories = new_categories;
+    app.load_heat_data();
+    if app.sort_by_heat {
+        app.apply_sort();
+    }
 
     // Restore category selection
     if let Some(ref name) = prev_cat_name {

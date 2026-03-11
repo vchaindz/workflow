@@ -70,7 +70,6 @@ fn has_streaming_flag(cmd: &str) -> bool {
 
     for ctx in &streaming_contexts {
         if cmd.contains(ctx) {
-            // Check for -f or --follow after the command
             if let Some(pos) = cmd.find(ctx) {
                 let after = &cmd[pos + ctx.len()..];
                 if has_flag(after, "-f") || has_flag(after, "--follow") {
@@ -79,6 +78,18 @@ fn has_streaming_flag(cmd: &str) -> bool {
             }
         }
     }
+
+    // docker compose ... logs -f / --follow
+    // The "logs" subcommand can appear after arbitrary compose flags like -f <file> --env-file
+    if cmd.contains("docker") && cmd.contains("compose") {
+        if let Some(pos) = cmd.find("logs") {
+            let after = &cmd[pos + 4..];
+            if has_flag(after, "-f") || has_flag(after, "--follow") {
+                return true;
+            }
+        }
+    }
+
     false
 }
 
@@ -292,6 +303,21 @@ mod tests {
         assert!(is_interactive_command("docker logs -f mycontainer"));
         assert!(is_interactive_command("kubectl logs -f pod/nginx"));
         assert!(is_interactive_command("tail --follow /var/log/syslog"));
+    }
+
+    #[test]
+    fn test_docker_compose_logs_streaming() {
+        assert!(is_interactive_command("docker compose logs -f"));
+        assert!(is_interactive_command("docker compose -f docker-compose.prod.yml logs -f"));
+        assert!(is_interactive_command("docker compose -f deploy/docker-compose.prod.yml --env-file .env logs -f"));
+        assert!(is_interactive_command("docker compose logs --follow"));
+        // Via SSH with quotes
+        assert!(is_interactive_command(
+            "ssh root@46.225.143.20 'cd /opt/agentx && docker compose -f deploy/docker-compose.prod.yml --env-file .env logs -f'"
+        ));
+        // Non-streaming compose commands
+        assert!(!is_interactive_command("docker compose ps"));
+        assert!(!is_interactive_command("docker compose -f deploy/docker-compose.prod.yml --env-file .env ps"));
     }
 
     #[test]

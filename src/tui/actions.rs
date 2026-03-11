@@ -93,6 +93,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('R') => open_recent_runs(app)?,
         KeyCode::Char('s') => open_saved_tasks(app),
         KeyCode::Char('S') => toggle_bookmark(app),
+        KeyCode::Char('f') => app.toggle_sort(),
         KeyCode::Delete => start_delete(app),
         KeyCode::Char('h') => {
             app.mode = AppMode::Help;

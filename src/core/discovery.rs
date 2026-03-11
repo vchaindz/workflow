@@ -106,6 +106,7 @@ pub fn scan_workflows(root: &Path) -> Result<Vec<Category>> {
             category: category_name.clone(),
             last_run: None,
             overdue,
+            heat: crate::core::models::TaskHeat::Cold,
         };
 
         categories

@@ -18,6 +18,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - [File Structure](#file-structure)
 - [YAML Workflow Format](#yaml-workflow-format)
 - [Overdue Reminders](#overdue-reminders)
+- [Hot/Cold Task Sorting](#hotcold-task-sorting)
 - [Recent Runs & Bookmarks](#recent-runs--bookmarks)
 - [TUI](#tui)
 - [CLI](#cli)
@@ -38,6 +39,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **Clone & optimize** — duplicate an existing task, strip failed/skipped steps, and parallelize independent branches
 - **Recent runs** — see the last 10 runs across all tasks at a glance, jump to any task from the list
 - **Overdue reminders** — optional `overdue` field on tasks warns you at startup if a task hasn't run within its expected interval
+- **Hot/cold task sorting** — tasks show heat indicators (▲/·/▽) based on run frequency; press `f` to sort hot tasks to the top
 - **Bookmarked tasks** — save frequently-used tasks for quick access with a single keypress
 - **Run comparison** — diff two runs of the same task side-by-side, with optional AI analysis
 - **DAG execution** — multi-step YAML workflows with dependency ordering, conditional steps, retries, and timeouts
@@ -185,6 +187,20 @@ Press `Enter` to jump directly to an overdue task, or `Esc` to dismiss.
 
 Tasks that have never been run are also flagged, with the overdue threshold shown as the number of days overdue.
 
+## Hot/Cold Task Sorting
+
+Tasks are automatically classified by how often you run them in the last 30 days:
+
+| Tier | Runs (30d) | Indicator | Color |
+|------|-----------|-----------|-------|
+| Hot  | ≥5        | `▲`       | Green |
+| Warm | 1–4       | `·`       | Default |
+| Cold | 0         | `▽`       | Blue  |
+
+Heat indicators appear next to every task in the TUI task list. Press `f` to toggle between alphabetical and heat-based sorting — hot tasks float to the top for quick access. Press `f` again to revert to alphabetical order. The status bar shows the current sort mode.
+
+Heat data is loaded from the SQLite history database at startup and refreshed on each automatic rescan.
+
 ## Recent Runs & Bookmarks
 
 ### Recent Runs (`R`)
@@ -285,6 +301,7 @@ Launch with `workflow` (no arguments):
 | `R` | Recent runs (last 10) |
 | `s` | Saved/bookmarked tasks |
 | `S` | Toggle bookmark on task |
+| `f` | Toggle heat sort (hot tasks first) |
 | `/` | Search tasks |
 | `w` | New task from shell history |
 | `a` | New task from AI prompt |

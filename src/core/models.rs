@@ -59,6 +59,13 @@ pub enum TaskKind {
     YamlWorkflow,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TaskHeat {
+    Hot,  // ≥5 runs in 30d
+    Warm, // 1–4 runs in 30d
+    Cold, // 0 runs in 30d
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Category {
     pub name: String,
@@ -76,6 +83,14 @@ pub struct Task {
     pub last_run: Option<RunSummary>,
     #[serde(default)]
     pub overdue: Option<u32>,
+    #[serde(skip)]
+    pub heat: TaskHeat,
+}
+
+impl Default for TaskHeat {
+    fn default() -> Self {
+        TaskHeat::Cold
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

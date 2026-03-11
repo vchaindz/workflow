@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -282,6 +283,25 @@ pub fn check_overdue_tasks(conn: &Connection, categories: &[crate::core::models:
 
     overdue.sort_by(|a, b| b.overdue_days.cmp(&a.overdue_days));
     Ok(overdue)
+}
+
+/// Returns (task_ref, run_count_last_30d) for all tasks that have any runs.
+pub fn get_task_heat(conn: &Connection) -> Result<HashMap<String, u32>> {
+    let cutoff = (Utc::now() - chrono::Duration::days(30))
+        .format("%Y-%m-%dT%H:%M:%S")
+        .to_string();
+    let mut stmt = conn.prepare(
+        "SELECT task_ref, COUNT(*) as cnt FROM runs WHERE started >= ?1 GROUP BY task_ref",
+    )?;
+    let mut map = HashMap::new();
+    let rows = stmt.query_map(params![cutoff], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+    })?;
+    for r in rows {
+        let (task_ref, cnt) = r?;
+        map.insert(task_ref, cnt);
+    }
+    Ok(map)
 }
 
 #[cfg(test)]

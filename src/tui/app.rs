@@ -7,7 +7,7 @@ use crate::core::config::Config;
 use crate::core::history::HistoryEntry;
 use crate::core::executor::{InteractiveRequest, StreamingRequest};
 use crate::core::db::OverdueTask;
-use crate::core::models::{Category, ExecutionEvent, RunLog, StepStatus, Task, Workflow};
+use crate::core::models::{Category, ExecutionEvent, RunLog, StepStatus, Task, TaskHeat, Workflow};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -189,6 +189,9 @@ pub struct App {
     // Overdue reminder modal
     pub overdue_tasks: Vec<OverdueTask>,
     pub overdue_cursor: usize,
+
+    // Heat-based sorting
+    pub sort_by_heat: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -244,6 +247,7 @@ impl App {
             saved_tasks_cursor: 0,
             overdue_tasks: Vec::new(),
             overdue_cursor: 0,
+            sort_by_heat: false,
         }
     }
 
@@ -271,6 +275,44 @@ impl App {
                 }
             }
         }
+    }
+
+    pub fn load_heat_data(&mut self) {
+        let db_path = self.config.workflows_dir.join("history.db");
+        if let Ok(conn) = crate::core::db::open_db(&db_path) {
+            if let Ok(heat_map) = crate::core::db::get_task_heat(&conn) {
+                for cat in &mut self.categories {
+                    for task in &mut cat.tasks {
+                        let task_ref = format!("{}/{}", cat.name, task.name);
+                        let count = heat_map.get(&task_ref).copied().unwrap_or(0);
+                        task.heat = match count {
+                            0 => TaskHeat::Cold,
+                            1..=4 => TaskHeat::Warm,
+                            _ => TaskHeat::Hot,
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn toggle_sort(&mut self) {
+        self.sort_by_heat = !self.sort_by_heat;
+        self.apply_sort();
+    }
+
+    pub fn apply_sort(&mut self) {
+        for cat in &mut self.categories {
+            if self.sort_by_heat {
+                cat.tasks.sort_by(|a, b| {
+                    a.heat.cmp(&b.heat)
+                        .then_with(|| a.name.cmp(&b.name))
+                });
+            } else {
+                cat.tasks.sort_by(|a, b| a.name.cmp(&b.name));
+            }
+        }
+        self.selected_task = 0;
     }
 
     pub fn toggle_collapse(&mut self) {
@@ -694,6 +736,7 @@ mod tests {
                         category: "backup".into(),
                         last_run: None,
                         overdue: None,
+                        heat: TaskHeat::Cold,
                     },
                     Task {
                         name: "files".into(),
@@ -702,6 +745,7 @@ mod tests {
                         category: "backup".into(),
                         last_run: None,
                         overdue: None,
+                        heat: TaskHeat::Cold,
                     },
                 ],
             },
@@ -715,6 +759,7 @@ mod tests {
                     category: "deploy".into(),
                     last_run: None,
                     overdue: None,
+                    heat: TaskHeat::Cold,
                 }],
             },
         ];
