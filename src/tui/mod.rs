@@ -28,6 +28,7 @@ const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 pub fn run_tui(config: Config) -> Result<()> {
     let categories = scan_workflows(&config.workflows_dir)?;
     let mut app = App::new(categories, config);
+    app.refresh_stats();
 
     // Setup terminal
     enable_raw_mode()?;
@@ -109,6 +110,7 @@ fn rescan(app: &mut App) {
         return;
     };
     if categories_equal(&app.categories, &new_categories) {
+        app.refresh_stats();
         return;
     }
 

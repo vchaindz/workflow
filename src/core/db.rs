@@ -209,6 +209,24 @@ pub fn get_run_summary(conn: &Connection, task_ref: &str) -> Result<Option<RunSu
     }))
 }
 
+pub struct GlobalStats {
+    pub total_runs: u64,
+    pub failed_runs: u64,
+}
+
+pub fn get_global_stats(conn: &Connection) -> Result<GlobalStats> {
+    let mut stmt = conn.prepare(
+        "SELECT COUNT(*), COUNT(CASE WHEN exit_code != 0 THEN 1 END) FROM runs",
+    )?;
+    let stats = stmt.query_row([], |row| {
+        Ok(GlobalStats {
+            total_runs: row.get::<_, i64>(0)? as u64,
+            failed_runs: row.get::<_, i64>(1)? as u64,
+        })
+    })?;
+    Ok(stats)
+}
+
 pub fn rotate_runs(conn: &Connection, retention_days: u32) -> Result<u32> {
     let cutoff = Utc::now() - chrono::Duration::days(retention_days as i64);
     let cutoff_str = cutoff.to_rfc3339();

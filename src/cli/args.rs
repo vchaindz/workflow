@@ -92,6 +92,31 @@ pub enum Commands {
         json: bool,
     },
 
+    /// Export workflows to a .tar.gz archive
+    Export {
+        /// Output file path (default: dzworkflows-export-<date>.tar.gz)
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+
+        /// Include run history database in export
+        #[arg(long)]
+        include_history: bool,
+    },
+
+    /// Import workflows from a .tar.gz archive
+    Import {
+        /// Path to the archive file
+        archive: std::path::PathBuf,
+
+        /// Overwrite existing files without prompting
+        #[arg(long)]
+        overwrite: bool,
+
+        /// Skip existing files (no prompt, keep originals)
+        #[arg(long)]
+        skip_existing: bool,
+    },
+
     /// View run logs
     Logs {
         /// Task reference (omit for all recent)

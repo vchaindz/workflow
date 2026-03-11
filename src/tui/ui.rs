@@ -21,6 +21,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(1),
                 Constraint::Min(3),
                 Constraint::Length(7),
                 Constraint::Length(1),
@@ -29,9 +30,15 @@ pub fn draw(f: &mut Frame, app: &App) {
     } else {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(1),
+            ])
             .split(f.area())
     };
+
+    draw_header(f, app, chunks[0]);
 
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -40,17 +47,17 @@ pub fn draw(f: &mut Frame, app: &App) {
             Constraint::Percentage(35),
             Constraint::Percentage(45),
         ])
-        .split(chunks[0]);
+        .split(chunks[1]);
 
     draw_sidebar(f, app, main_chunks[0]);
     draw_task_list(f, app, main_chunks[1]);
     draw_details(f, app, main_chunks[2]);
 
     if has_footer {
-        draw_footer(f, app, chunks[1]);
-        draw_status_bar(f, app, chunks[2]);
+        draw_footer(f, app, chunks[2]);
+        draw_status_bar(f, app, chunks[3]);
     } else {
-        draw_status_bar(f, app, chunks[1]);
+        draw_status_bar(f, app, chunks[2]);
     }
 
     if app.mode == AppMode::Help {
@@ -64,6 +71,51 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.mode == AppMode::ConfirmDelete {
         draw_confirm_delete(f, app);
     }
+}
+
+fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+    let version = env!("CARGO_PKG_VERSION");
+    let stats = &app.header_stats;
+
+    let running_style = if stats.currently_running {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let running_count: usize = if stats.currently_running { 1 } else { 0 };
+
+    let spans = vec![
+        Span::styled(
+            format!(" dzworkflows v{}", version),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("Workflows: {}", stats.total_workflows),
+            Style::default().fg(Color::White),
+        ),
+        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("Running: {}", running_count), running_style),
+        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("Total runs: {}", stats.total_runs),
+            Style::default().fg(Color::White),
+        ),
+        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("Failed: {}", stats.failed_runs),
+            if stats.failed_runs > 0 {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::White)
+            },
+        ),
+    ];
+
+    let header = Paragraph::new(Line::from(spans))
+        .style(Style::default().bg(Color::Rgb(30, 30, 40)));
+    f.render_widget(header, area);
 }
 
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {

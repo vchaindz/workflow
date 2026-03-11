@@ -1,5 +1,7 @@
 pub mod args;
 pub mod compare;
+pub mod export;
+pub mod import;
 pub mod list;
 pub mod logs;
 pub mod run;
@@ -37,6 +39,16 @@ pub fn dispatch(config: &Config, command: Commands) -> Result<i32> {
 
         Commands::Validate { task, json } => {
             validate::cmd_validate(config, task.as_deref(), json)
+        }
+
+        Commands::Export { output, include_history } => {
+            export::cmd_export(config, output.as_deref(), include_history)?;
+            Ok(0)
+        }
+
+        Commands::Import { archive, overwrite, skip_existing } => {
+            import::cmd_import(config, &archive, overwrite, skip_existing)?;
+            Ok(0)
         }
 
         Commands::Logs { task, json, limit } => {

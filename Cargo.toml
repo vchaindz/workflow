@@ -28,6 +28,8 @@ similar = "2"
 regex = "1"
 is-terminal = "0.4"
 wait-timeout = "0.2"
+tar = "0.4"
+flate2 = "1"
 
 [dev-dependencies]
 assert_cmd = "2"

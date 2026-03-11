@@ -89,12 +89,20 @@ pub struct WizardState {
     pub save_message: Option<String>,
 }
 
+pub struct HeaderStats {
+    pub total_workflows: usize,
+    pub currently_running: bool,
+    pub total_runs: u64,
+    pub failed_runs: u64,
+}
+
 pub struct App {
     pub categories: Vec<Category>,
     pub config: Config,
     pub focus: Focus,
     pub mode: AppMode,
     pub should_quit: bool,
+    pub header_stats: HeaderStats,
 
     // Sidebar state
     pub selected_category: usize,
@@ -146,12 +154,19 @@ pub struct StepState {
 
 impl App {
     pub fn new(categories: Vec<Category>, config: Config) -> Self {
+        let total_workflows = categories.iter().map(|c| c.tasks.len()).sum();
         Self {
             categories,
             config,
             focus: Focus::Sidebar,
             mode: AppMode::Normal,
             should_quit: false,
+            header_stats: HeaderStats {
+                total_workflows,
+                currently_running: false,
+                total_runs: 0,
+                failed_runs: 0,
+            },
             selected_category: 0,
             selected_task: 0,
             detail_scroll: 0,
@@ -169,6 +184,19 @@ impl App {
             compare_result: None,
             wizard: None,
             delete_state: None,
+        }
+    }
+
+    pub fn refresh_stats(&mut self) {
+        self.header_stats.total_workflows = self.categories.iter().map(|c| c.tasks.len()).sum();
+        self.header_stats.currently_running = self.is_executing;
+
+        let db_path = self.config.workflows_dir.join("history.db");
+        if let Ok(conn) = crate::core::db::open_db(&db_path) {
+            if let Ok(stats) = crate::core::db::get_global_stats(&conn) {
+                self.header_stats.total_runs = stats.total_runs;
+                self.header_stats.failed_runs = stats.failed_runs;
+            }
         }
     }
 
