@@ -1,8 +1,17 @@
 use std::path::Path;
 use walkdir::WalkDir;
 
+use serde::Deserialize;
+
 use crate::core::models::{Category, Task, TaskKind};
 use crate::error::{DzError, Result};
+
+/// Lightweight struct to extract just the overdue field from YAML without full parsing.
+#[derive(Deserialize)]
+struct WorkflowMeta {
+    #[serde(default)]
+    overdue: Option<u32>,
+}
 
 const DEFAULT_CATEGORY: &str = "_default";
 
@@ -81,12 +90,22 @@ pub fn scan_workflows(root: &Path) -> Result<Vec<Category>> {
             .unwrap_or(DEFAULT_CATEGORY)
             .to_string();
 
+        let overdue = if kind == TaskKind::YamlWorkflow {
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|contents| serde_yaml::from_str::<WorkflowMeta>(&contents).ok())
+                .and_then(|meta| meta.overdue)
+        } else {
+            None
+        };
+
         let task = Task {
             name: task_name,
             kind,
             path: path.to_path_buf(),
             category: category_name.clone(),
             last_run: None,
+            overdue,
         };
 
         categories

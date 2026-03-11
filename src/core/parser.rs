@@ -18,6 +18,7 @@ pub fn parse_workflow(path: &Path) -> Result<Workflow> {
         workdir: raw.workdir,
         secrets: raw.secrets,
         notify: raw.notify,
+        overdue: raw.overdue,
     };
 
     validate_workflow(&workflow)?;
@@ -116,6 +117,7 @@ pub fn parse_shell_task(path: &Path) -> Result<Workflow> {
         env: HashMap::new(),
         secrets: Vec::new(),
         notify: Default::default(),
+        overdue: None,
     })
 }
 

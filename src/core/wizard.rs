@@ -188,6 +188,7 @@ pub fn workflow_from_commands(name: &str, commands: &[String]) -> Workflow {
         workdir: None,
         secrets: Vec::new(),
         notify: Default::default(),
+        overdue: None,
     }
 }
 
@@ -290,6 +291,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
             steps: vec![
                 Step {
                     id: "step-1".to_string(),
@@ -430,6 +432,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
             steps: vec![
                 Step {
                     id: "step-1".to_string(),
@@ -472,6 +475,7 @@ mod tests {
             workdir: Some(PathBuf::from("/tmp")),
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
             steps: vec![
                 Step {
                     id: "build".to_string(),

@@ -237,6 +237,53 @@ pub fn rotate_runs(conn: &Connection, retention_days: u32) -> Result<u32> {
     Ok(deleted as u32)
 }
 
+#[derive(Debug, Clone)]
+pub struct OverdueTask {
+    pub task_ref: String,
+    pub category: String,
+    pub name: String,
+    pub overdue_days: i64,
+}
+
+pub fn check_overdue_tasks(conn: &Connection, categories: &[crate::core::models::Category]) -> Result<Vec<OverdueTask>> {
+    let mut overdue = Vec::new();
+    let now = Utc::now();
+
+    for cat in categories {
+        for task in &cat.tasks {
+            let threshold = match task.overdue {
+                Some(d) => d,
+                None => continue,
+            };
+
+            let task_ref = format!("{}/{}", cat.name, task.name);
+            let summary = get_run_summary(conn, &task_ref)?;
+
+            let overdue_days = match summary.and_then(|s| s.last_success) {
+                Some(last) => {
+                    let elapsed = (now - last).num_days();
+                    if elapsed > threshold as i64 {
+                        elapsed - threshold as i64
+                    } else {
+                        continue;
+                    }
+                }
+                None => threshold as i64, // never run — report threshold
+            };
+
+            overdue.push(OverdueTask {
+                task_ref,
+                category: cat.name.clone(),
+                name: task.name.clone(),
+                overdue_days,
+            });
+        }
+    }
+
+    overdue.sort_by(|a, b| b.overdue_days.cmp(&a.overdue_days));
+    Ok(overdue)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -41,6 +41,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         AppMode::RecentRuns => handle_recent_runs_key(app, key),
         AppMode::SavedTasks => handle_saved_tasks_key(app, key),
+        AppMode::OverdueReminder => handle_overdue_key(app, key),
         AppMode::Wizard => handle_wizard_key(app, key),
         AppMode::ConfirmDelete => handle_confirm_delete_key(app, key),
         _ => handle_normal_key(app, key),
@@ -1286,6 +1287,35 @@ fn handle_recent_runs_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if let Some(run) = app.recent_runs.get(app.recent_runs_cursor) {
                 let task_ref = run.task_ref.clone();
                 app.recent_runs.clear();
+                app.mode = AppMode::Normal;
+                app.navigate_to_task(&task_ref);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_overdue_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.overdue_tasks.clear();
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Up => {
+            if app.overdue_cursor > 0 {
+                app.overdue_cursor -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if !app.overdue_tasks.is_empty() && app.overdue_cursor + 1 < app.overdue_tasks.len() {
+                app.overdue_cursor += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(task) = app.overdue_tasks.get(app.overdue_cursor) {
+                let task_ref = task.task_ref.clone();
+                app.overdue_tasks.clear();
                 app.mode = AppMode::Normal;
                 app.navigate_to_task(&task_ref);
             }

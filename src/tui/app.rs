@@ -6,6 +6,7 @@ use crate::core::compare::CompareResult;
 use crate::core::config::Config;
 use crate::core::history::HistoryEntry;
 use crate::core::executor::{InteractiveRequest, StreamingRequest};
+use crate::core::db::OverdueTask;
 use crate::core::models::{Category, ExecutionEvent, RunLog, StepStatus, Task, Workflow};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -28,6 +29,7 @@ pub enum AppMode {
     ConfirmDelete,
     RecentRuns,
     SavedTasks,
+    OverdueReminder,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +185,10 @@ pub struct App {
 
     // Saved tasks modal
     pub saved_tasks_cursor: usize,
+
+    // Overdue reminder modal
+    pub overdue_tasks: Vec<OverdueTask>,
+    pub overdue_cursor: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +242,8 @@ impl App {
             recent_runs: Vec::new(),
             recent_runs_cursor: 0,
             saved_tasks_cursor: 0,
+            overdue_tasks: Vec::new(),
+            overdue_cursor: 0,
         }
     }
 
@@ -248,6 +256,19 @@ impl App {
             if let Ok(stats) = crate::core::db::get_global_stats(&conn) {
                 self.header_stats.total_runs = stats.total_runs;
                 self.header_stats.failed_runs = stats.failed_runs;
+            }
+        }
+    }
+
+    pub fn check_overdue(&mut self) {
+        let db_path = self.config.workflows_dir.join("history.db");
+        if let Ok(conn) = crate::core::db::open_db(&db_path) {
+            if let Ok(tasks) = crate::core::db::check_overdue_tasks(&conn, &self.categories) {
+                if !tasks.is_empty() {
+                    self.overdue_tasks = tasks;
+                    self.overdue_cursor = 0;
+                    self.mode = AppMode::OverdueReminder;
+                }
             }
         }
     }
@@ -672,6 +693,7 @@ mod tests {
                         path: PathBuf::from("/tmp/wf/backup/db-full.yaml"),
                         category: "backup".into(),
                         last_run: None,
+                        overdue: None,
                     },
                     Task {
                         name: "files".into(),
@@ -679,6 +701,7 @@ mod tests {
                         path: PathBuf::from("/tmp/wf/backup/files.sh"),
                         category: "backup".into(),
                         last_run: None,
+                        overdue: None,
                     },
                 ],
             },
@@ -691,6 +714,7 @@ mod tests {
                     path: PathBuf::from("/tmp/wf/deploy/staging.yaml"),
                     category: "deploy".into(),
                     last_run: None,
+                    overdue: None,
                 }],
             },
         ];

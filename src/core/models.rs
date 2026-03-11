@@ -49,6 +49,8 @@ pub(crate) struct RawWorkflow {
     pub secrets: Vec<String>,
     #[serde(default)]
     pub notify: NotifyConfig,
+    #[serde(default)]
+    pub overdue: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -72,6 +74,8 @@ pub struct Task {
     pub category: String,
     #[serde(skip)]
     pub last_run: Option<RunSummary>,
+    #[serde(default)]
+    pub overdue: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +90,8 @@ pub struct Workflow {
     pub secrets: Vec<String>,
     #[serde(default)]
     pub notify: NotifyConfig,
+    #[serde(default)]
+    pub overdue: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +157,7 @@ pub enum ExecutionEvent {
     StepCompleted { step_id: String, status: StepStatus, duration_ms: u64 },
     StepSkipped { step_id: String },
     StepRetrying { step_id: String, attempt: u32, max: u32, delay_secs: u64 },
+    StepOutput { step_id: String, line: String },
     WorkflowFinished { run_log: RunLog },
     StepTimedOut { step_id: String, timeout_secs: u64, duration_ms: u64 },
     WorkflowError { message: String },

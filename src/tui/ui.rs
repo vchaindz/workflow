@@ -85,6 +85,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.mode == AppMode::SavedTasks {
         draw_saved_tasks(f, app);
     }
+
+    if app.mode == AppMode::OverdueReminder {
+        draw_overdue_reminder(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -1578,6 +1582,68 @@ fn draw_recent_runs(f: &mut Frame, app: &App) {
     f.render_widget(list, popup);
 }
 
+fn draw_overdue_reminder(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let w = 65.min(area.width.saturating_sub(4));
+    let h = (app.overdue_tasks.len() as u16 + 4).max(6).min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" ⚠ Overdue Tasks ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+
+    let items: Vec<ListItem> = app
+        .overdue_tasks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let style = if i == app.overdue_cursor {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(" ! ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{:<35}", t.task_ref), style),
+                Span::styled(
+                    format!("{} day(s) overdue", t.overdue_days),
+                    Style::default().fg(Color::Red),
+                ),
+            ]))
+        })
+        .collect();
+
+    // Reserve last line inside block for hints
+    let inner = block.inner(popup);
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    f.render_widget(block, popup);
+
+    let list = List::new(items);
+    f.render_widget(list, layout[0]);
+
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled(" ↑↓", Style::default().fg(Color::Cyan)),
+        Span::raw(" navigate · "),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::raw(" jump to task · "),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::raw(" dismiss"),
+    ]))
+    .alignment(Alignment::Center);
+    f.render_widget(hint, layout[1]);
+}
+
 fn draw_saved_tasks(f: &mut Frame, app: &App) {
     let area = f.area();
     let w = 55.min(area.width.saturating_sub(4));
@@ -1713,6 +1779,7 @@ steps:
                         path: yaml_path,
                         category: "backup".into(),
                         last_run: None,
+                        overdue: None,
                     },
                     Task {
                         name: "files".into(),
@@ -1720,6 +1787,7 @@ steps:
                         path: sh_path,
                         category: "backup".into(),
                         last_run: None,
+                        overdue: None,
                     },
                 ],
             },

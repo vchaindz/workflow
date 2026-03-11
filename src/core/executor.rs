@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::Read as IoRead;
+use std::io::{BufRead, BufReader, Read as IoRead};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -20,12 +20,22 @@ pub struct InteractiveRequest {
     pub ack: mpsc::Sender<()>,
 }
 
+/// Request from the executor to the TUI to show streaming output modal.
+pub struct StreamingRequest {
+    pub step_id: String,
+    pub cmd_preview: String,
+    /// Receiver for the child process's kill sender.
+    /// TUI sends () to kill the child.
+    pub kill_tx: mpsc::Sender<()>,
+}
+
 pub struct ExecuteOpts {
     pub dry_run: bool,
     pub env_overrides: HashMap<String, String>,
     pub default_timeout: Option<u64>,
     pub secrets: Vec<String>,
     pub interactive_tx: Option<mpsc::Sender<InteractiveRequest>>,
+    pub streaming_tx: Option<mpsc::Sender<StreamingRequest>>,
 }
 
 impl Default for ExecuteOpts {
@@ -36,6 +46,7 @@ impl Default for ExecuteOpts {
             default_timeout: None,
             secrets: Vec::new(),
             interactive_tx: None,
+            streaming_tx: None,
         }
     }
 }
@@ -204,71 +215,228 @@ pub fn execute_workflow(
         };
 
         if is_interactive {
+            let cmd_label = format!("(streaming) {}", mask_secrets(&truncate_cmd(&expanded_cmd, 50), &secret_values));
             send(ExecutionEvent::StepStarted {
                 step_id: step.id.clone(),
-                cmd_preview: format!("(interactive) {}", mask_secrets(&truncate_cmd(&expanded_cmd, 50), &secret_values)),
+                cmd_preview: cmd_label.clone(),
             });
 
             let timer = Instant::now();
 
-            // If TUI mode, request suspend and wait for ack
-            if let Some(ref itx) = opts.interactive_tx {
+            // Prefer streaming modal (TUI stays in alternate screen)
+            if let Some(ref stx) = opts.streaming_tx {
+                let (kill_tx, kill_rx) = mpsc::channel::<()>();
+                let _ = stx.send(StreamingRequest {
+                    step_id: step.id.clone(),
+                    cmd_preview: cmd_label,
+                    kill_tx,
+                });
+
+                // Spawn child with piped stdout/stderr
+                let mut cmd = Command::new("bash");
+                cmd.arg("-c").arg(&expanded_cmd).envs(&env)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                if let Some(ref dir) = workflow.workdir {
+                    cmd.current_dir(dir);
+                }
+
+                match cmd.spawn() {
+                    Ok(mut child) => {
+                        let stdout = child.stdout.take();
+                        let stderr = child.stderr.take();
+                        let step_id_clone = step.id.clone();
+                        let tx_clone = event_tx.map(|t| t.clone());
+
+                        // Stream stdout in a thread
+                        let stdout_handle = stdout.map(|out| {
+                            let sid = step_id_clone.clone();
+                            let txc = tx_clone.clone();
+                            std::thread::spawn(move || {
+                                let reader = BufReader::new(out);
+                                for line in reader.lines() {
+                                    match line {
+                                        Ok(l) => {
+                                            if let Some(ref tx) = txc {
+                                                let _ = tx.send(ExecutionEvent::StepOutput {
+                                                    step_id: sid.clone(),
+                                                    line: l,
+                                                });
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            })
+                        });
+
+                        // Stream stderr in a thread
+                        let stderr_handle = stderr.map(|err| {
+                            let sid = step.id.clone();
+                            let txc = event_tx.map(|t| t.clone());
+                            std::thread::spawn(move || {
+                                let reader = BufReader::new(err);
+                                for line in reader.lines() {
+                                    match line {
+                                        Ok(l) => {
+                                            if let Some(ref tx) = txc {
+                                                let _ = tx.send(ExecutionEvent::StepOutput {
+                                                    step_id: sid.clone(),
+                                                    line: l,
+                                                });
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            })
+                        });
+
+                        // Wait for either process to exit or kill signal
+                        loop {
+                            if let Ok(()) = kill_rx.try_recv() {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                break;
+                            }
+                            match child.try_wait() {
+                                Ok(Some(_)) => break,
+                                Ok(None) => {
+                                    std::thread::sleep(Duration::from_millis(50));
+                                }
+                                Err(_) => break,
+                            }
+                        }
+
+                        // Wait for reader threads to finish
+                        if let Some(h) = stdout_handle { let _ = h.join(); }
+                        if let Some(h) = stderr_handle { let _ = h.join(); }
+
+                        let status = child.try_wait().ok().flatten();
+                        let duration_ms = timer.elapsed().as_millis() as u64;
+                        let (step_status, exit_code) = match status {
+                            Some(s) if s.success() => (StepStatus::Success, 0),
+                            Some(s) => (StepStatus::Failed, s.code().unwrap_or(1)),
+                            None => (StepStatus::Success, 0), // killed by user
+                        };
+
+                        if step_status == StepStatus::Failed {
+                            overall_exit = exit_code;
+                            failed_steps.insert(step.id.clone());
+                        }
+
+                        step_results.push(StepResult {
+                            id: step.id.clone(),
+                            status: step_status.clone(),
+                            output: "(streaming session)".to_string(),
+                            duration_ms,
+                        });
+                        send(ExecutionEvent::StepCompleted {
+                            step_id: step.id.clone(),
+                            status: step_status,
+                            duration_ms,
+                        });
+                    }
+                    Err(e) => {
+                        let duration_ms = timer.elapsed().as_millis() as u64;
+                        step_results.push(StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Failed,
+                            output: format!("failed to execute: {e}"),
+                            duration_ms,
+                        });
+                        overall_exit = 1;
+                        failed_steps.insert(step.id.clone());
+                        send(ExecutionEvent::StepCompleted {
+                            step_id: step.id.clone(),
+                            status: StepStatus::Failed,
+                            duration_ms,
+                        });
+                    }
+                }
+            } else if let Some(ref itx) = opts.interactive_tx {
+                // Fallback: suspend TUI for interactive step (CLI mode)
                 let (ack_tx, ack_rx) = mpsc::channel();
                 let _ = itx.send(InteractiveRequest {
                     step_id: step.id.clone(),
                     ack: ack_tx,
                 });
-                // Block until TUI restores terminal and acks
                 let _ = ack_rx.recv();
-            }
 
-            // Run with inherited stdio
-            let mut cmd = Command::new("bash");
-            cmd.arg("-c").arg(&expanded_cmd).envs(&env);
-            if let Some(ref dir) = workflow.workdir {
-                cmd.current_dir(dir);
-            }
-
-            let status = cmd.status();
-            let duration_ms = timer.elapsed().as_millis() as u64;
-
-            let (step_status, exit_code) = match status {
-                Ok(s) if s.success() => (StepStatus::Success, 0),
-                Ok(s) => (StepStatus::Failed, s.code().unwrap_or(1)),
-                Err(e) => {
-                    step_results.push(StepResult {
-                        id: step.id.clone(),
-                        status: StepStatus::Failed,
-                        output: format!("failed to execute: {e}"),
-                        duration_ms,
-                    });
-                    overall_exit = 1;
-                    failed_steps.insert(step.id.clone());
-                    send(ExecutionEvent::StepCompleted {
-                        step_id: step.id.clone(),
-                        status: StepStatus::Failed,
-                        duration_ms,
-                    });
-                    continue;
+                let mut cmd = Command::new("bash");
+                cmd.arg("-c").arg(&expanded_cmd).envs(&env);
+                if let Some(ref dir) = workflow.workdir {
+                    cmd.current_dir(dir);
                 }
-            };
 
-            if step_status == StepStatus::Failed {
-                overall_exit = exit_code;
-                failed_steps.insert(step.id.clone());
+                let status = cmd.status();
+                let duration_ms = timer.elapsed().as_millis() as u64;
+
+                let (step_status, exit_code) = match status {
+                    Ok(s) if s.success() => (StepStatus::Success, 0),
+                    Ok(s) => (StepStatus::Failed, s.code().unwrap_or(1)),
+                    Err(e) => {
+                        step_results.push(StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Failed,
+                            output: format!("failed to execute: {e}"),
+                            duration_ms,
+                        });
+                        overall_exit = 1;
+                        failed_steps.insert(step.id.clone());
+                        send(ExecutionEvent::StepCompleted {
+                            step_id: step.id.clone(),
+                            status: StepStatus::Failed,
+                            duration_ms,
+                        });
+                        continue;
+                    }
+                };
+
+                if step_status == StepStatus::Failed {
+                    overall_exit = exit_code;
+                    failed_steps.insert(step.id.clone());
+                }
+
+                step_results.push(StepResult {
+                    id: step.id.clone(),
+                    status: step_status.clone(),
+                    output: "(interactive session)".to_string(),
+                    duration_ms,
+                });
+                send(ExecutionEvent::StepCompleted {
+                    step_id: step.id.clone(),
+                    status: step_status,
+                    duration_ms,
+                });
+            } else {
+                // No TUI: run with inherited stdio directly
+                let mut cmd = Command::new("bash");
+                cmd.arg("-c").arg(&expanded_cmd).envs(&env);
+                if let Some(ref dir) = workflow.workdir {
+                    cmd.current_dir(dir);
+                }
+
+                let status = cmd.status();
+                let duration_ms = timer.elapsed().as_millis() as u64;
+                let (step_status, _) = match status {
+                    Ok(s) if s.success() => (StepStatus::Success, 0),
+                    Ok(s) => (StepStatus::Failed, s.code().unwrap_or(1)),
+                    Err(_) => (StepStatus::Failed, 1),
+                };
+
+                step_results.push(StepResult {
+                    id: step.id.clone(),
+                    status: step_status.clone(),
+                    output: "(interactive session)".to_string(),
+                    duration_ms,
+                });
+                send(ExecutionEvent::StepCompleted {
+                    step_id: step.id.clone(),
+                    status: step_status,
+                    duration_ms,
+                });
             }
-
-            step_results.push(StepResult {
-                id: step.id.clone(),
-                status: step_status.clone(),
-                output: "(interactive session)".to_string(),
-                duration_ms,
-            });
-            send(ExecutionEvent::StepCompleted {
-                step_id: step.id.clone(),
-                status: step_status,
-                duration_ms,
-            });
             continue;
         }
 
@@ -483,6 +651,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         }
     }
 
@@ -552,6 +721,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let log = execute_workflow(&wf, "test/fail", &ExecuteOpts::default(), None).unwrap();
@@ -583,6 +753,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let opts = ExecuteOpts {
@@ -613,6 +784,7 @@ mod tests {
             workdir: Some(std::path::PathBuf::from("/tmp")),
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let log = execute_workflow(&wf, "test/workdir", &ExecuteOpts::default(), None).unwrap();
@@ -639,6 +811,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let log = execute_workflow(&wf, "test/timeout", &ExecuteOpts::default(), None).unwrap();
@@ -666,6 +839,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let opts = ExecuteOpts {
@@ -697,6 +871,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let opts = ExecuteOpts {
@@ -740,6 +915,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let log = execute_workflow(&wf, "test/timeout-deps", &ExecuteOpts::default(), None).unwrap();
@@ -766,6 +942,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let log = execute_workflow(&wf, "test/run-if", &ExecuteOpts::default(), None).unwrap();
@@ -805,6 +982,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let log = execute_workflow(&wf, "test/run-if-false", &ExecuteOpts::default(), None).unwrap();
@@ -844,6 +1022,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let log = execute_workflow(&wf, "test/retry", &ExecuteOpts::default(), None).unwrap();
@@ -870,6 +1049,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let log = execute_workflow(&wf, "test/retry-fail", &ExecuteOpts::default(), None).unwrap();
@@ -897,6 +1077,7 @@ mod tests {
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
+            overdue: None,
         };
 
         let opts = ExecuteOpts {

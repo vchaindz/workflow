@@ -17,6 +17,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - [Clone & Optimize](#clone--optimize)
 - [File Structure](#file-structure)
 - [YAML Workflow Format](#yaml-workflow-format)
+- [Overdue Reminders](#overdue-reminders)
 - [Recent Runs & Bookmarks](#recent-runs--bookmarks)
 - [TUI](#tui)
 - [CLI](#cli)
@@ -36,6 +37,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **Template catalog** — start from bundled or community templates with variable substitution
 - **Clone & optimize** — duplicate an existing task, strip failed/skipped steps, and parallelize independent branches
 - **Recent runs** — see the last 10 runs across all tasks at a glance, jump to any task from the list
+- **Overdue reminders** — optional `overdue` field on tasks warns you at startup if a task hasn't run within its expected interval
 - **Bookmarked tasks** — save frequently-used tasks for quick access with a single keypress
 - **Run comparison** — diff two runs of the same task side-by-side, with optional AI analysis
 - **DAG execution** — multi-step YAML workflows with dependency ordering, conditional steps, retries, and timeouts
@@ -156,6 +158,33 @@ Press `W` (shift-w) on any task to clone it. The clone wizard lets you:
 
 This is useful for iterating on a workflow after a partial failure — clone it, remove what broke, and save a clean version.
 
+## Overdue Reminders
+
+Add an `overdue` field (in days) to any YAML task to get a startup reminder when the task hasn't been run recently:
+
+```yaml
+name: Database Full Backup
+overdue: 7          # warn if not run within 7 days
+steps:
+  - id: backup
+    cmd: pg_dump mydb > /backups/full.sql
+```
+
+When you launch the TUI, any overdue tasks appear in a popup:
+
+```
+┌──────────────── ⚠ Overdue Tasks ────────────────┐
+│  ! backup/db-full                 3 day(s) overdue │
+│  ! monitoring/disk-check          7 day(s) overdue │
+│                                                     │
+│  ↑↓ navigate · Enter jump to task · Esc dismiss     │
+└─────────────────────────────────────────────────────┘
+```
+
+Press `Enter` to jump directly to an overdue task, or `Esc` to dismiss.
+
+Tasks that have never been run are also flagged, with the overdue threshold shown as the number of days overdue.
+
 ## Recent Runs & Bookmarks
 
 ### Recent Runs (`R`)
@@ -206,6 +235,7 @@ Press `s` to open the saved tasks modal and quickly jump to any bookmarked task.
 
 ```yaml
 name: MySQL Daily Backup
+overdue: 1                    # warn if not run within 1 day
 steps:
   - id: dump
     cmd: mysqldump --all-databases > /tmp/db.sql
