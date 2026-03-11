@@ -1,22 +1,31 @@
 use std::collections::HashMap;
 use std::io::Read as IoRead;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use uuid::Uuid;
 use wait_timeout::ChildExt;
 
+use crate::core::detect;
 use crate::core::models::{ExecutionEvent, RunLog, Step, StepResult, StepStatus, Workflow};
 use crate::core::parser::topological_sort;
 use crate::core::template::expand_template;
 use crate::error::Result;
+
+/// Request from the executor to the TUI to suspend for an interactive step.
+pub struct InteractiveRequest {
+    pub step_id: String,
+    pub ack: mpsc::Sender<()>,
+}
 
 pub struct ExecuteOpts {
     pub dry_run: bool,
     pub env_overrides: HashMap<String, String>,
     pub default_timeout: Option<u64>,
     pub secrets: Vec<String>,
+    pub interactive_tx: Option<mpsc::Sender<InteractiveRequest>>,
 }
 
 impl Default for ExecuteOpts {
@@ -26,6 +35,7 @@ impl Default for ExecuteOpts {
             env_overrides: HashMap::new(),
             default_timeout: None,
             secrets: Vec::new(),
+            interactive_tx: None,
         }
     }
 }
@@ -183,6 +193,81 @@ pub fn execute_workflow(
                 step_id: step.id.clone(),
                 status: StepStatus::Success,
                 duration_ms: 0,
+            });
+            continue;
+        }
+
+        // Check if this step should run interactively
+        let is_interactive = match step.interactive {
+            Some(v) => v,
+            None => detect::is_interactive_command(&expanded_cmd),
+        };
+
+        if is_interactive {
+            send(ExecutionEvent::StepStarted {
+                step_id: step.id.clone(),
+                cmd_preview: format!("(interactive) {}", mask_secrets(&truncate_cmd(&expanded_cmd, 50), &secret_values)),
+            });
+
+            let timer = Instant::now();
+
+            // If TUI mode, request suspend and wait for ack
+            if let Some(ref itx) = opts.interactive_tx {
+                let (ack_tx, ack_rx) = mpsc::channel();
+                let _ = itx.send(InteractiveRequest {
+                    step_id: step.id.clone(),
+                    ack: ack_tx,
+                });
+                // Block until TUI restores terminal and acks
+                let _ = ack_rx.recv();
+            }
+
+            // Run with inherited stdio
+            let mut cmd = Command::new("bash");
+            cmd.arg("-c").arg(&expanded_cmd).envs(&env);
+            if let Some(ref dir) = workflow.workdir {
+                cmd.current_dir(dir);
+            }
+
+            let status = cmd.status();
+            let duration_ms = timer.elapsed().as_millis() as u64;
+
+            let (step_status, exit_code) = match status {
+                Ok(s) if s.success() => (StepStatus::Success, 0),
+                Ok(s) => (StepStatus::Failed, s.code().unwrap_or(1)),
+                Err(e) => {
+                    step_results.push(StepResult {
+                        id: step.id.clone(),
+                        status: StepStatus::Failed,
+                        output: format!("failed to execute: {e}"),
+                        duration_ms,
+                    });
+                    overall_exit = 1;
+                    failed_steps.insert(step.id.clone());
+                    send(ExecutionEvent::StepCompleted {
+                        step_id: step.id.clone(),
+                        status: StepStatus::Failed,
+                        duration_ms,
+                    });
+                    continue;
+                }
+            };
+
+            if step_status == StepStatus::Failed {
+                overall_exit = exit_code;
+                failed_steps.insert(step.id.clone());
+            }
+
+            step_results.push(StepResult {
+                id: step.id.clone(),
+                status: step_status.clone(),
+                output: "(interactive session)".to_string(),
+                duration_ms,
+            });
+            send(ExecutionEvent::StepCompleted {
+                step_id: step.id.clone(),
+                status: step_status,
+                duration_ms,
             });
             continue;
         }
@@ -380,6 +465,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
                 Step {
                     id: "s2".into(),
@@ -390,6 +476,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
             ],
             env: HashMap::new(),
@@ -436,6 +523,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
                 Step {
                     id: "dependent".into(),
@@ -446,6 +534,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
                 Step {
                     id: "independent".into(),
@@ -456,6 +545,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
             ],
             env: HashMap::new(),
@@ -487,6 +577,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             }],
             env: HashMap::from([("MY_VAR".to_string(), "original".to_string())]),
             workdir: None,
@@ -516,6 +607,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             }],
             env: HashMap::new(),
             workdir: Some(std::path::PathBuf::from("/tmp")),
@@ -541,6 +633,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -567,6 +660,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -597,6 +691,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -627,6 +722,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
                 Step {
                     id: "dependent".into(),
@@ -637,6 +733,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
             ],
             env: HashMap::new(),
@@ -663,6 +760,7 @@ mod tests {
                 run_if: Some("true".to_string()),
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -689,6 +787,7 @@ mod tests {
                     run_if: Some("false".to_string()),
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
                 Step {
                     id: "after".into(),
@@ -699,6 +798,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
             ],
             env: HashMap::new(),
@@ -738,6 +838,7 @@ mod tests {
                 run_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
+                interactive: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -763,6 +864,7 @@ mod tests {
                 run_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
+                interactive: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -789,6 +891,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             }],
             env: HashMap::from([("MY_PASS".to_string(), "hunter2".to_string())]),
             workdir: None,

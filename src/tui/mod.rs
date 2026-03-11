@@ -17,6 +17,8 @@ use ratatui::Terminal;
 
 use crate::core::config::Config;
 use crate::core::discovery::scan_workflows;
+use crate::core::executor::InteractiveRequest;
+use crate::core::models::ExecutionEvent;
 use crate::error::Result;
 
 use app::App;
@@ -55,6 +57,47 @@ fn run_app(
     let mut last_rescan = Instant::now();
 
     loop {
+        // Check for interactive step suspend requests
+        if let Some(ref rx) = app.interactive_rx {
+            if let Ok(InteractiveRequest { step_id, ack }) = rx.try_recv() {
+                // Restore terminal (same pattern as editor)
+                disable_raw_mode()?;
+                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                terminal.show_cursor()?;
+
+                app.footer_log.push(format!(
+                    "[{}] ⇄ Interactive: {} (press Ctrl-C or exit to return)",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    step_id,
+                ));
+
+                // Unblock the executor to run the command
+                ack.send(()).ok();
+
+                // Wait for the step to complete by draining execution events
+                if let Some(ref event_rx) = app.event_rx {
+                    loop {
+                        match event_rx.recv() {
+                            Ok(ExecutionEvent::StepCompleted { .. })
+                            | Ok(ExecutionEvent::WorkflowFinished { .. })
+                            | Ok(ExecutionEvent::WorkflowError { .. }) => break,
+                            Ok(_) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                }
+
+                // Re-init terminal
+                enable_raw_mode()?;
+                execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                terminal.clear()?;
+
+                // Drain any remaining events so app state is current
+                app.drain_execution_events();
+                continue;
+            }
+        }
+
         app.drain_execution_events();
         app.drain_ai_events();
         terminal.draw(|f| ui::draw(f, app))?;

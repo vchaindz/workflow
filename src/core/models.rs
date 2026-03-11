@@ -32,6 +32,8 @@ pub(crate) enum RawStep {
         retry: Option<u32>,
         #[serde(default)]
         retry_delay: Option<u64>,
+        #[serde(default)]
+        interactive: Option<bool>,
     },
 }
 
@@ -102,6 +104,8 @@ pub struct Step {
     pub retry: Option<u32>,
     #[serde(default)]
     pub retry_delay: Option<u64>,
+    #[serde(default)]
+    pub interactive: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -112,6 +116,7 @@ pub enum StepStatus {
     Failed,
     Skipped,
     Timedout,
+    Interactive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

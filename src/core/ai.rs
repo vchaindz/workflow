@@ -4,6 +4,7 @@ use std::process::Command;
 pub enum AiTool {
     Claude,
     Codex,
+    Gemini,
 }
 
 impl AiTool {
@@ -11,6 +12,7 @@ impl AiTool {
         match self {
             AiTool::Claude => "Claude",
             AiTool::Codex => "Codex",
+            AiTool::Gemini => "Gemini",
         }
     }
 }
@@ -23,15 +25,19 @@ pub struct AiResponse {
 
 pub enum AiResult {
     Success(AiResponse),
+    /// Full YAML response (used by AI update mode)
+    Yaml(String),
     Error(String),
 }
 
-/// Check PATH for `claude` then `codex`. Returns first found.
+/// Check PATH for `claude`, `codex`, or `gemini`. Returns first found.
 pub fn detect_ai_tool() -> Option<AiTool> {
     if which("claude") {
         Some(AiTool::Claude)
     } else if which("codex") {
         Some(AiTool::Codex)
+    } else if which("gemini") {
+        Some(AiTool::Gemini)
     } else {
         None
     }
@@ -75,6 +81,10 @@ pub fn invoke_ai(tool: AiTool, user_prompt: &str) -> AiResult {
             .arg("exec")
             .arg(&prompt)
             .output(),
+        AiTool::Gemini => Command::new("gemini")
+            .arg("-p")
+            .arg(&prompt)
+            .output(),
     };
 
     match output {
@@ -99,6 +109,95 @@ pub fn invoke_ai(tool: AiTool, user_prompt: &str) -> AiResult {
     }
 }
 
+/// Invoke AI to update an existing workflow YAML based on user instructions.
+pub fn invoke_ai_update(tool: AiTool, existing_yaml: &str, user_prompt: &str) -> AiResult {
+    let prompt = format!(
+        "You are a Linux sysadmin assistant. You will receive an existing workflow YAML \
+         and instructions to update it.\n\n\
+         STRICT OUTPUT FORMAT:\n\
+         - Output ONLY the complete updated YAML workflow\n\
+         - The YAML must be valid and parseable\n\
+         - Preserve the `name:` and `steps:` structure\n\
+         - Do NOT include markdown fencing, explanations, or commentary\n\
+         - Do NOT include ```yaml or ``` markers\n\
+         - Each step must have `id:` and `cmd:` fields\n\
+         - Preserve existing step IDs where possible\n\
+         - You may add, remove, reorder, or modify steps as requested\n\n\
+         EXISTING WORKFLOW:\n{}\n\n\
+         UPDATE INSTRUCTIONS: {}",
+        existing_yaml, user_prompt
+    );
+
+    let output = match tool {
+        AiTool::Claude => Command::new("claude")
+            .arg("-p")
+            .arg(&prompt)
+            .output(),
+        AiTool::Codex => Command::new("codex")
+            .arg("exec")
+            .arg(&prompt)
+            .output(),
+        AiTool::Gemini => Command::new("gemini")
+            .arg("-p")
+            .arg(&prompt)
+            .output(),
+    };
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let stdout = String::from_utf8_lossy(&o.stdout).into_owned();
+            match parse_ai_yaml_response(&stdout) {
+                Ok(yaml) => AiResult::Yaml(yaml),
+                Err(msg) => AiResult::Error(msg),
+            }
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
+            AiResult::Error(format!(
+                "AI tool exited with code {}: {}",
+                o.status.code().unwrap_or(-1),
+                stderr.lines().next().unwrap_or("unknown error")
+            ))
+        }
+        Err(e) => AiResult::Error(format!("Failed to run AI tool: {}", e)),
+    }
+}
+
+/// Parse AI YAML response: strip markdown fencing and surrounding prose.
+pub fn parse_ai_yaml_response(raw: &str) -> std::result::Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("AI returned empty response".to_string());
+    }
+
+    let mut lines: Vec<&str> = trimmed.lines().collect();
+
+    // Strip markdown fencing
+    if lines.first().map(|l| l.trim().starts_with("```")).unwrap_or(false) {
+        lines.remove(0);
+    }
+    if lines.last().map(|l| l.trim() == "```").unwrap_or(false) {
+        lines.pop();
+    }
+
+    // Find the first line starting with "name:" to strip leading prose
+    let start = lines.iter().position(|l| l.trim_start().starts_with("name:"));
+    let start = match start {
+        Some(i) => i,
+        None => return Err("AI response does not contain a valid workflow (missing 'name:')".to_string()),
+    };
+    let lines = &lines[start..];
+
+    let yaml = lines.join("\n");
+
+    // Basic validation
+    if !yaml.contains("steps:") {
+        return Err("AI response does not contain 'steps:' section".to_string());
+    }
+
+    Ok(yaml)
+}
+
 /// Invoke AI synchronously and return raw stdout for free-form responses.
 pub fn invoke_ai_raw(tool: AiTool, prompt: &str) -> std::result::Result<String, String> {
     let output = match tool {
@@ -108,6 +207,10 @@ pub fn invoke_ai_raw(tool: AiTool, prompt: &str) -> std::result::Result<String, 
             .output(),
         AiTool::Codex => Command::new("codex")
             .arg("exec")
+            .arg(prompt)
+            .output(),
+        AiTool::Gemini => Command::new("gemini")
+            .arg("-p")
             .arg(prompt)
             .output(),
     };
@@ -449,6 +552,50 @@ mod tests {
             "ps aux --sort=-%cpu | head -20",
             "top -bn1 -o %CPU | head -25",
         ]);
+    }
+
+    #[test]
+    fn test_parse_ai_yaml_response_clean() {
+        let yaml = "name: my-task\nsteps:\n  - id: step-1\n    cmd: echo hello\n";
+        let result = parse_ai_yaml_response(yaml).unwrap();
+        assert!(result.contains("name: my-task"));
+        assert!(result.contains("steps:"));
+    }
+
+    #[test]
+    fn test_parse_ai_yaml_response_strips_fencing() {
+        let raw = "```yaml\nname: my-task\nsteps:\n  - id: step-1\n    cmd: echo hello\n```";
+        let result = parse_ai_yaml_response(raw).unwrap();
+        assert!(result.starts_with("name:"));
+        assert!(!result.contains("```"));
+    }
+
+    #[test]
+    fn test_parse_ai_yaml_response_strips_prose() {
+        let raw = "Here is the updated workflow:\n\nname: my-task\nsteps:\n  - id: step-1\n    cmd: echo hello\n\nThis should work well.";
+        let result = parse_ai_yaml_response(raw).unwrap();
+        assert!(result.starts_with("name:"));
+        assert!(!result.contains("Here is"));
+    }
+
+    #[test]
+    fn test_parse_ai_yaml_response_missing_name() {
+        let raw = "steps:\n  - id: step-1\n    cmd: echo hello\n";
+        let result = parse_ai_yaml_response(raw);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_ai_yaml_response_missing_steps() {
+        let raw = "name: my-task\nother: stuff\n";
+        let result = parse_ai_yaml_response(raw);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_ai_yaml_response_empty() {
+        let result = parse_ai_yaml_response("");
+        assert!(result.is_err());
     }
 
     #[test]

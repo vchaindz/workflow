@@ -3,6 +3,7 @@ pub mod catalog;
 pub mod compare;
 pub mod config;
 pub mod db;
+pub mod detect;
 pub mod discovery;
 pub mod executor;
 pub mod history;

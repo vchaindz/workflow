@@ -322,6 +322,7 @@ fn draw_wizard(f: &mut Frame, app: &App) {
         WizardMode::FromHistory => " New Task from History ",
         WizardMode::CloneTask => " Clone Task ",
         WizardMode::AiChat => " AI Task Generator ",
+        WizardMode::AiUpdate => " AI Task Update ",
         WizardMode::FromTemplate => " Template Catalog ",
     };
     let block = Block::default()
@@ -367,6 +368,16 @@ fn draw_wizard(f: &mut Frame, app: &App) {
                 WizardStage::Category => 2,
                 WizardStage::TaskName => 3,
                 WizardStage::Preview => 4,
+                _ => 0,
+            };
+            (s, idx)
+        }
+        WizardMode::AiUpdate => {
+            let s = vec!["Prompt", "AI", "Preview"];
+            let idx = match wiz.stage {
+                WizardStage::AiPrompt => 0,
+                WizardStage::AiThinking => 1,
+                WizardStage::Preview => 2,
                 _ => 0,
             };
             (s, idx)
@@ -461,15 +472,31 @@ fn draw_wizard(f: &mut Frame, app: &App) {
     match wiz.stage {
         WizardStage::AiPrompt => {
             let tool_name = wiz.ai_tool.map(|t| t.name()).unwrap_or("AI");
+            let is_update = wiz.mode == WizardMode::AiUpdate;
+
             lines.push(Line::from(Span::styled(
-                "Describe the task you want to create",
+                if is_update { "Describe how to update this task" } else { "Describe the task you want to create" },
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(vec![
                 Span::styled("Using ", Style::default().fg(Color::DarkGray)),
                 Span::styled(tool_name, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::styled(" to generate commands", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    if is_update { " to update workflow" } else { " to generate commands" },
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]));
+
+            if is_update {
+                lines.push(Line::from(vec![
+                    Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{}/{}", wiz.category, wiz.task_name),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                ]));
+            }
+
             lines.push(Line::from(""));
 
             lines.push(Line::from(vec![
@@ -485,12 +512,23 @@ fn draw_wizard(f: &mut Frame, app: &App) {
                 "Examples:",
                 Style::default().fg(Color::DarkGray),
             )));
-            for example in &[
-                "  backup postgres database to S3",
-                "  check if nginx is running and restart if down",
-                "  monitor disk usage and alert if above 90%",
-                "  rotate log files older than 7 days",
-            ] {
+
+            let examples: &[&str] = if is_update {
+                &[
+                    "  add error handling to each step",
+                    "  parallelize independent steps",
+                    "  add a cleanup step at the end",
+                    "  increase timeouts to 120 seconds",
+                ]
+            } else {
+                &[
+                    "  backup postgres database to S3",
+                    "  check if nginx is running and restart if down",
+                    "  monitor disk usage and alert if above 90%",
+                    "  rotate log files older than 7 days",
+                ]
+            };
+            for example in examples {
                 lines.push(Line::from(Span::styled(
                     *example,
                     Style::default().fg(Color::DarkGray),
@@ -848,7 +886,7 @@ fn draw_wizard(f: &mut Frame, app: &App) {
                 }
             }
 
-            let back_hints = if matches!(wiz.mode, WizardMode::FromHistory | WizardMode::AiChat | WizardMode::FromTemplate) {
+            let back_hints = if matches!(wiz.mode, WizardMode::FromHistory | WizardMode::AiChat | WizardMode::AiUpdate | WizardMode::FromTemplate) {
                 vec![("Enter", "Confirm"), ("Up/Down", "Select"), ("Shift+Tab", "Back"), ("Esc", "Cancel")]
             } else {
                 vec![("Enter", "Confirm"), ("Up/Down", "Select"), ("Esc", "Cancel")]
@@ -962,12 +1000,16 @@ fn draw_wizard(f: &mut Frame, app: &App) {
         }
 
         WizardStage::Preview => {
+            let is_update = wiz.mode == WizardMode::AiUpdate;
             lines.push(Line::from(Span::styled(
-                "Review and save",
+                if is_update { "Review updated workflow" } else { "Review and save" },
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(vec![
-                Span::styled("Saving to  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    if is_update { "Updating  " } else { "Saving to  " },
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::styled(
                     format!("{}/{}.yaml", wiz.category, wiz.task_name),
                     Style::default().fg(Color::White),
@@ -977,6 +1019,9 @@ fn draw_wizard(f: &mut Frame, app: &App) {
 
             // YAML preview — generate based on mode
             let yaml = match wiz.mode {
+                WizardMode::AiUpdate => {
+                    wiz.ai_updated_yaml.clone().unwrap_or_default()
+                }
                 WizardMode::FromHistory => {
                     let commands: Vec<String> = wiz
                         .history_selected
@@ -1152,6 +1197,7 @@ fn format_live_progress(app: &App) -> String {
             StepStatus::Failed => "✗",
             StepStatus::Skipped => "⊘",
             StepStatus::Timedout => "⏱",
+            StepStatus::Interactive => "⇄",
             StepStatus::Pending => "·",
         };
 
@@ -1268,6 +1314,7 @@ fn format_run_log(log: &crate::core::models::RunLog) -> String {
             StepStatus::Skipped => "[SKIP]",
             StepStatus::Timedout => "[TIMEOUT]",
             StepStatus::Running => "[...]",
+            StepStatus::Interactive => "[INTERACTIVE]",
             StepStatus::Pending => "[--]",
         };
         out.push_str(&format!(
@@ -1310,6 +1357,7 @@ fn draw_help(f: &mut Frame) {
         Line::from("  w           New task from shell history"),
         Line::from("  W           Clone selected task"),
         Line::from("  a           AI task generator"),
+        Line::from("  A           AI update selected task"),
         Line::from("  t           New task from template"),
         Line::from("  Del         Delete selected task"),
         Line::from("  c           Compare last 2 runs"),

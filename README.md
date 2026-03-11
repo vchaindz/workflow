@@ -12,6 +12,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - [Install](#install)
 - [Creating Tasks from Shell History](#creating-tasks-from-shell-history)
 - [AI-Generated Workflows](#ai-generated-workflows)
+- [AI-Powered Task Update](#ai-powered-task-update)
 - [Template Catalog](#template-catalog)
 - [Clone & Optimize](#clone--optimize)
 - [File Structure](#file-structure)
@@ -29,7 +30,8 @@ No database required for execution — state is tracked via JSON logs and an opt
 ## Highlights
 
 - **Shell history wizard** — browse your recent shell commands, pick the ones you want, and save them as a workflow in seconds
-- **AI task generation** — describe a task in natural language, and Claude or Codex generates the workflow steps automatically
+- **AI task generation** — describe a task in natural language, and Claude, Codex, or Gemini generates the workflow steps automatically
+- **AI task update** — select an existing task, describe what to change, and AI rewrites the workflow for you
 - **Template catalog** — start from bundled or community templates with variable substitution
 - **Clone & optimize** — duplicate an existing task, strip failed/skipped steps, and parallelize independent branches
 - **Run comparison** — diff two runs of the same task side-by-side, with optional AI analysis
@@ -81,7 +83,7 @@ Select commands with `Space`, press `Enter`, then choose a category and task nam
 
 ## AI-Generated Workflows
 
-Press `a` in the TUI to describe a task in plain English. If `claude` or `codex` is on your PATH, the AI generates executable shell commands, a task name, and a category:
+Press `a` in the TUI to describe a task in plain English. If `claude`, `codex`, or `gemini` is on your PATH, the AI generates executable shell commands, a task name, and a category:
 
 ```
 ┌─ AI Task Generator ─────────────────────────────────────┐
@@ -95,7 +97,37 @@ Press `a` in the TUI to describe a task in plain English. If `claude` or `codex`
 
 The AI returns clean shell commands — no prose, no markdown — which are assembled into a YAML workflow. You review the preview, adjust the category/name if needed, and save.
 
-Requires `claude` (Claude Code CLI) or `codex` (OpenAI Codex CLI) installed and authenticated.
+Requires `claude` (Claude Code CLI), `codex` (OpenAI Codex CLI), or `gemini` (Google Gemini CLI) installed and authenticated.
+
+## AI-Powered Task Update
+
+Press `A` (Shift-a) on a selected task to update it with AI assistance. Describe what you want to change — add error handling, parallelize steps, add timeouts — and the AI rewrites the entire workflow YAML:
+
+```
+┌─ AI Task Update ────────────────────────────────────────┐
+│                                                          │
+│ Describe how to update this task:                        │
+│ Task: backup/db-full                                     │
+│ > add error handling and retry logic to each step        │
+│                                                          │
+│ Enter: send  Esc: cancel                                 │
+└──────────────────────────────────────────────────────────┘
+```
+
+The updated YAML is previewed before saving. Press `Enter` to overwrite the original, or `Esc` to cancel.
+
+### CLI: `ai-update` subcommand
+
+```bash
+# Update a task with AI
+workflow ai-update backup/db-full --prompt "parallelize independent steps"
+
+# Preview without saving
+workflow ai-update backup/db-full --prompt "add timeouts" --dry-run
+
+# Save as a new task instead of overwriting
+workflow ai-update backup/db-full --prompt "add cleanup step" --save-as db-full-v2
+```
 
 ## Template Catalog
 
@@ -178,7 +210,7 @@ Launch with `workflow` (no arguments):
 │ [14:32:01] ▶ dump — mysqldump --all-databases > /tmp/db.sql  │
 │ [14:32:03] ✓ dump (1850ms)                                   │
 └───────────────────────────────────────────────────────────────┘
- j/k:nav  Tab:pane  r:run  e:edit  w:wizard  a:ai  t:templates
+ j/k:nav  Tab:pane  r:run  e:edit  w:wizard  a:ai  A:update  t:templates
 ```
 
 | Key | Action |
@@ -192,6 +224,7 @@ Launch with `workflow` (no arguments):
 | `/` | Search tasks |
 | `w` | New task from shell history |
 | `a` | New task from AI prompt |
+| `A` | AI update selected task |
 | `t` | New task from template |
 | `W` | Clone & optimize selected task |
 | `D` | Delete selected task |
@@ -221,6 +254,11 @@ workflow list --json
 # Check run history for a task
 workflow status backup/db-full
 workflow status backup/db-full --json
+
+# AI-update an existing task
+workflow ai-update backup/db-full --prompt "add error handling"
+workflow ai-update backup/db-full --prompt "parallelize steps" --dry-run
+workflow ai-update backup/db-full --prompt "add cleanup" --save-as db-full-v2
 
 # Compare two runs
 workflow compare backup/db-full

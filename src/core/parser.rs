@@ -36,17 +36,17 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, retry: None, retry_delay: None }
+                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, retry: None, retry_delay: None, interactive: None }
             }
-            RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, retry, retry_delay } => {
+            RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, retry, retry_delay, interactive } => {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay }
+                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive }
             }
-            RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, retry, retry_delay } => {
+            RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive } => {
                 // Explicit id: no implicit chaining, but don't break the chain for others
-                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay }
+                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive }
             }
         };
 
@@ -111,6 +111,7 @@ pub fn parse_shell_task(path: &Path) -> Result<Workflow> {
             run_if: None,
             retry: None,
             retry_delay: None,
+            interactive: None,
         }],
         env: HashMap::new(),
         secrets: Vec::new(),
@@ -251,6 +252,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             },
             Step {
                 id: "b".into(),
@@ -261,6 +263,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             },
             Step {
                 id: "c".into(),
@@ -271,6 +274,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             },
         ];
 
@@ -296,6 +300,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             },
             Step {
                 id: "b".into(),
@@ -306,6 +311,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             },
             Step {
                 id: "c".into(),
@@ -316,6 +322,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             },
             Step {
                 id: "d".into(),
@@ -326,6 +333,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             },
         ];
 

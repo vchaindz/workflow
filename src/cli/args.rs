@@ -128,6 +128,24 @@ pub enum Commands {
         json: bool,
     },
 
+    /// Use AI to update/reorganize an existing task
+    AiUpdate {
+        /// Task reference (e.g., backup/db-full)
+        task: String,
+
+        /// Instructions for the AI (what to change)
+        #[arg(long)]
+        prompt: String,
+
+        /// Preview changes without saving
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Save as a new task instead of overwriting
+        #[arg(long)]
+        save_as: Option<String>,
+    },
+
     /// View run logs
     Logs {
         /// Task reference (omit for all recent)

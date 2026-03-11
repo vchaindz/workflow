@@ -177,6 +177,7 @@ pub fn workflow_from_commands(name: &str, commands: &[String]) -> Workflow {
             run_if: None,
             retry: None,
             retry_delay: None,
+            interactive: None,
         });
     }
 
@@ -249,6 +250,9 @@ pub fn generate_yaml(workflow: &Workflow) -> String {
         if step.parallel {
             out.push_str("    parallel: true\n");
         }
+        if let Some(interactive) = step.interactive {
+            out.push_str(&format!("    interactive: {}\n", interactive));
+        }
     }
 
     out
@@ -296,6 +300,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
                 Step {
                     id: "step-2".to_string(),
@@ -306,6 +311,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
                 Step {
                     id: "step-3".to_string(),
@@ -316,6 +322,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
                 Step {
                     id: "deploy".to_string(),
@@ -326,6 +333,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
             ],
         }
@@ -432,6 +440,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
                 Step {
                     id: "step-2".to_string(),
@@ -442,6 +451,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
             ],
         };
@@ -472,6 +482,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
                 Step {
                     id: "test".to_string(),
@@ -482,6 +493,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
+                    interactive: None,
                 },
             ],
         };
@@ -555,6 +567,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             },
             Step {
                 id: "step-5".to_string(),
@@ -565,6 +578,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
+                interactive: None,
             },
         ];
         renumber_steps(&mut steps);

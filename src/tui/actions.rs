@@ -8,7 +8,7 @@ use crate::core::ai;
 use crate::core::catalog;
 use crate::core::compare;
 use crate::core::db;
-use crate::core::executor::{execute_workflow, run_notify, ExecuteOpts};
+use crate::core::executor::{execute_workflow, run_notify, ExecuteOpts, InteractiveRequest};
 use crate::core::history;
 use crate::core::models::{ExecutionEvent, TaskKind};
 use crate::core::parser::{parse_shell_task, parse_workflow};
@@ -84,6 +84,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('W') => start_clone_wizard(app)?,
         KeyCode::Char('c') => compare_selected(app)?,
         KeyCode::Char('a') => start_ai_wizard(app),
+        KeyCode::Char('A') => start_ai_update_wizard(app),
         KeyCode::Char('t') => start_template_wizard(app),
         KeyCode::Delete => start_delete(app),
         KeyCode::Char('h') => {
@@ -162,6 +163,10 @@ fn run_selected(app: &mut App, dry_run: bool) -> Result<()> {
     app.mode = AppMode::Running;
     app.running_message = Some(format!("Running {}...", task_ref));
 
+    // Create interactive channel for TUI suspend/resume
+    let (interactive_tx, interactive_rx) = mpsc::channel::<InteractiveRequest>();
+    app.interactive_rx = Some(interactive_rx);
+
     let db_path = app.config.db_path();
 
     let default_timeout = app.config.default_timeout;
@@ -185,6 +190,7 @@ fn run_selected(app: &mut App, dry_run: bool) -> Result<()> {
             env_overrides: HashMap::new(),
             default_timeout,
             secrets,
+            interactive_tx: Some(interactive_tx),
         };
 
         match execute_workflow(&workflow, &task_ref, &opts, Some(&tx)) {
@@ -385,6 +391,9 @@ fn start_history_wizard(app: &mut App) {
         ai_commands: Vec::new(),
         ai_error: None,
         ai_tick: 0,
+        ai_source_yaml: String::new(),
+        ai_source_path: None,
+        ai_updated_yaml: None,
         template_entries: Vec::new(),
         template_filter: String::new(),
         template_filtered: Vec::new(),
@@ -443,6 +452,9 @@ fn start_clone_wizard(app: &mut App) -> Result<()> {
         ai_commands: Vec::new(),
         ai_error: None,
         ai_tick: 0,
+        ai_source_yaml: String::new(),
+        ai_source_path: None,
+        ai_updated_yaml: None,
         template_entries: Vec::new(),
         template_filter: String::new(),
         template_filtered: Vec::new(),
@@ -472,7 +484,7 @@ fn start_ai_wizard(app: &mut App) {
         Some(t) => t,
         None => {
             app.footer_log.push(format!(
-                "[{}] No AI tool found (install `claude` or `codex`)",
+                "[{}] No AI tool found (install `claude`, `codex`, or `gemini`)",
                 chrono::Local::now().format("%H:%M:%S"),
             ));
             return;
@@ -497,6 +509,9 @@ fn start_ai_wizard(app: &mut App) {
         ai_commands: Vec::new(),
         ai_error: None,
         ai_tick: 0,
+        ai_source_yaml: String::new(),
+        ai_source_path: None,
+        ai_updated_yaml: None,
         template_entries: Vec::new(),
         template_filter: String::new(),
         template_filtered: Vec::new(),
@@ -506,6 +521,76 @@ fn start_ai_wizard(app: &mut App) {
         template_var_cursor: 0,
         category: String::new(),
         task_name: String::new(),
+        category_cursor: None,
+        remove_failed: false,
+        remove_skipped: false,
+        parallelize: false,
+        active_toggle: 0,
+        preview_scroll: 0,
+        save_message: None,
+    });
+    app.mode = AppMode::Wizard;
+}
+
+fn start_ai_update_wizard(app: &mut App) {
+    let tool = match ai::detect_ai_tool() {
+        Some(t) => t,
+        None => {
+            app.footer_log.push(format!(
+                "[{}] No AI tool found (install `claude`, `codex`, or `gemini`)",
+                chrono::Local::now().format("%H:%M:%S"),
+            ));
+            return;
+        }
+    };
+
+    let task = match app.selected_task_ref() {
+        Some(t) => t.clone(),
+        None => return,
+    };
+
+    let yaml = match std::fs::read_to_string(&task.path) {
+        Ok(content) => content,
+        Err(e) => {
+            app.footer_log.push(format!(
+                "[{}] Failed to read task: {}",
+                chrono::Local::now().format("%H:%M:%S"),
+                e,
+            ));
+            return;
+        }
+    };
+
+    app.wizard = Some(WizardState {
+        mode: WizardMode::AiUpdate,
+        stage: WizardStage::AiPrompt,
+        history_entries: Vec::new(),
+        history_filter: String::new(),
+        history_filtered: Vec::new(),
+        history_cursor: 0,
+        history_selected: Vec::new(),
+        history_scroll_offset: 0,
+        source_task_ref: None,
+        source_workflow: None,
+        source_run: None,
+        ai_prompt: String::new(),
+        ai_tool: Some(tool),
+        ai_result_rx: None,
+        ai_commands: Vec::new(),
+        ai_error: None,
+        ai_tick: 0,
+        ai_source_yaml: yaml,
+        ai_source_path: Some(task.path.clone()),
+        ai_updated_yaml: None,
+        template_entries: Vec::new(),
+        template_filter: String::new(),
+        template_filtered: Vec::new(),
+        template_cursor: 0,
+        template_scroll_offset: 0,
+        template_var_values: Vec::new(),
+        template_var_cursor: 0,
+        category: task.category.clone(),
+        task_name: task.name.clone(),
         category_cursor: None,
         remove_failed: false,
         remove_skipped: false,
@@ -532,10 +617,18 @@ fn handle_wizard_ai_prompt(app: &mut App, key: KeyEvent) {
                 wiz.ai_tick = 0;
                 wiz.stage = WizardStage::AiThinking;
 
-                thread::spawn(move || {
-                    let result = ai::invoke_ai(tool, &prompt);
-                    let _ = tx.send(result);
-                });
+                if wiz.mode == WizardMode::AiUpdate {
+                    let source_yaml = wiz.ai_source_yaml.clone();
+                    thread::spawn(move || {
+                        let result = ai::invoke_ai_update(tool, &source_yaml, &prompt);
+                        let _ = tx.send(result);
+                    });
+                } else {
+                    thread::spawn(move || {
+                        let result = ai::invoke_ai(tool, &prompt);
+                        let _ = tx.send(result);
+                    });
+                }
             }
         }
         KeyCode::Backspace => {
@@ -699,7 +792,7 @@ fn handle_wizard_category(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::BackTab => {
             match wiz.mode {
                 WizardMode::FromHistory => wiz.stage = WizardStage::ShellHistory,
-                WizardMode::AiChat => wiz.stage = WizardStage::AiPrompt,
+                WizardMode::AiChat | WizardMode::AiUpdate => wiz.stage = WizardStage::AiPrompt,
                 WizardMode::FromTemplate => {
                     if wiz.template_var_values.is_empty() {
                         wiz.stage = WizardStage::TemplateBrowse;
@@ -749,7 +842,7 @@ fn handle_wizard_taskname(app: &mut App, key: KeyEvent) {
             if !wiz.task_name.is_empty() {
                 match wiz.mode {
                     WizardMode::CloneTask => wiz.stage = WizardStage::Options,
-                    WizardMode::FromHistory | WizardMode::AiChat | WizardMode::FromTemplate => {
+                    WizardMode::FromHistory | WizardMode::AiChat | WizardMode::AiUpdate | WizardMode::FromTemplate => {
                         wiz.stage = WizardStage::Preview;
                         wiz.preview_scroll = 0;
                     }
@@ -804,6 +897,9 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
             let wiz = app.wizard.as_mut().unwrap();
             match wiz.mode {
                 WizardMode::CloneTask => wiz.stage = WizardStage::Options,
+                WizardMode::AiUpdate => {
+                    wiz.stage = WizardStage::AiPrompt;
+                }
                 WizardMode::FromHistory | WizardMode::AiChat | WizardMode::FromTemplate => {
                     wiz.stage = WizardStage::TaskName;
                 }
@@ -820,6 +916,9 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Enter => {
             let yaml = match wiz.mode {
+                WizardMode::AiUpdate => {
+                    wiz.ai_updated_yaml.clone().unwrap_or_default()
+                }
                 WizardMode::FromHistory => {
                     let commands: Vec<String> = wiz
                         .history_selected
@@ -861,12 +960,18 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
             let category = wiz.category.clone();
             let task_name = wiz.task_name.clone();
 
-            let path = wizard::save_task(
-                &app.config.workflows_dir,
-                &category,
-                &task_name,
-                &yaml,
-            )?;
+            let path = if wiz.mode == WizardMode::AiUpdate {
+                let p = wiz.ai_source_path.clone().unwrap();
+                std::fs::write(&p, &yaml)?;
+                p
+            } else {
+                wizard::save_task(
+                    &app.config.workflows_dir,
+                    &category,
+                    &task_name,
+                    &yaml,
+                )?
+            };
 
             let msg = format!("Saved: {}", path.display());
             app.wizard.as_mut().unwrap().save_message = Some(msg.clone());
@@ -913,6 +1018,9 @@ fn start_template_wizard(app: &mut App) {
         ai_commands: Vec::new(),
         ai_error: None,
         ai_tick: 0,
+        ai_source_yaml: String::new(),
+        ai_source_path: None,
+        ai_updated_yaml: None,
         template_entries: entries,
         template_filter: String::new(),
         template_filtered: filtered,

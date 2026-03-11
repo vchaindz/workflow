@@ -5,6 +5,7 @@ use crate::core::ai::{AiResult, AiResponse, AiTool};
 use crate::core::compare::CompareResult;
 use crate::core::config::Config;
 use crate::core::history::HistoryEntry;
+use crate::core::executor::InteractiveRequest;
 use crate::core::models::{Category, ExecutionEvent, RunLog, StepStatus, Task, Workflow};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,6 +52,7 @@ pub enum WizardMode {
     FromHistory,
     CloneTask,
     AiChat,
+    AiUpdate,
     FromTemplate,
 }
 
@@ -92,6 +94,11 @@ pub struct WizardState {
     pub template_scroll_offset: usize,
     pub template_var_values: Vec<(String, String, Option<String>)>, // (name, current_value, default)
     pub template_var_cursor: usize,
+
+    // AI Update fields
+    pub ai_source_yaml: String,
+    pub ai_source_path: Option<std::path::PathBuf>,
+    pub ai_updated_yaml: Option<String>,
 
     // Shared fields
     pub category: String,
@@ -146,6 +153,9 @@ pub struct App {
     pub executing_task_ref: Option<String>,
     pub step_states: Vec<StepState>,
 
+    // Interactive step channel (executor → TUI suspend request)
+    pub interactive_rx: Option<mpsc::Receiver<InteractiveRequest>>,
+
     // Compare state
     pub compare_result: Option<CompareResult>,
 
@@ -193,6 +203,7 @@ impl App {
             is_executing: false,
             executing_task_ref: None,
             step_states: Vec::new(),
+            interactive_rx: None,
             compare_result: None,
             wizard: None,
             delete_state: None,
@@ -386,6 +397,7 @@ impl App {
                         let icon = match status {
                             StepStatus::Success => "✓",
                             StepStatus::Failed => "✗",
+                            StepStatus::Interactive => "⇄",
                             _ => "?",
                         };
                         self.footer_log.push(format!(
@@ -446,6 +458,7 @@ impl App {
                         self.detail_scroll = 0;
                         self.is_executing = false;
                         self.event_rx = None;
+                        self.interactive_rx = None;
                         return;
                     }
                     ExecutionEvent::WorkflowError { message } => {
@@ -457,6 +470,7 @@ impl App {
                         self.mode = AppMode::Normal;
                         self.is_executing = false;
                         self.event_rx = None;
+                        self.interactive_rx = None;
                         return;
                     }
                 },
@@ -471,6 +485,7 @@ impl App {
                         self.is_executing = false;
                     }
                     self.event_rx = None;
+                    self.interactive_rx = None;
                     return;
                 }
             }
@@ -495,6 +510,14 @@ impl App {
         };
 
         match rx.try_recv() {
+            Ok(AiResult::Yaml(yaml)) => {
+                // AI update mode: store the raw YAML and go straight to preview
+                wiz.ai_updated_yaml = Some(yaml);
+                wiz.ai_result_rx = None;
+                wiz.ai_error = None;
+                wiz.stage = WizardStage::Preview;
+                wiz.preview_scroll = 0;
+            }
             Ok(AiResult::Success(AiResponse { commands, task_name, category })) => {
                 // Use AI-suggested name/category, fall back to heuristics
                 wiz.category = category.unwrap_or_else(|| {

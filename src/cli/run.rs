@@ -79,6 +79,7 @@ pub fn cmd_run(
         env_overrides,
         default_timeout: effective_timeout,
         secrets,
+        interactive_tx: None,
     };
 
     let canonical_ref = format!("{}/{}", task.category, task.name);

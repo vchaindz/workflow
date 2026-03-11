@@ -1,3 +1,4 @@
+pub mod ai_update;
 pub mod args;
 pub mod compare;
 pub mod export;
@@ -54,6 +55,11 @@ pub fn dispatch(config: &Config, command: Commands) -> Result<i32> {
 
         Commands::Templates { fetch, json } => {
             templates::cmd_templates(config, fetch, json)?;
+            Ok(0)
+        }
+
+        Commands::AiUpdate { task, prompt, dry_run, save_as } => {
+            ai_update::cmd_ai_update(config, &task, &prompt, dry_run, save_as.as_deref())?;
             Ok(0)
         }
 

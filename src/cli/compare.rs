@@ -70,7 +70,7 @@ pub fn cmd_compare(
                 Err(msg) => eprintln!("AI analysis failed: {}", msg),
             }
         } else {
-            eprintln!("No AI tool found (install `claude` or `codex`)");
+            eprintln!("No AI tool found (install `claude`, `codex`, or `gemini`)");
         }
     }
 
