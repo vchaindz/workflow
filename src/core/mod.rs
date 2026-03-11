@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod catalog;
 pub mod compare;
 pub mod config;
 pub mod db;

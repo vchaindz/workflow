@@ -31,7 +31,9 @@ pub fn scan_workflows(root: &Path) -> Result<Vec<Category>> {
 
         // Skip logs/ directory and config.toml
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name == "logs" || name == "config.toml" {
+            if name == "logs" || name == "config.toml"
+                || name == "history.db" || name.starts_with('.')
+            {
                 continue;
             }
         }

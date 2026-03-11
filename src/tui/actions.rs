@@ -5,6 +5,7 @@ use std::thread;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::core::ai;
+use crate::core::catalog;
 use crate::core::compare;
 use crate::core::db;
 use crate::core::executor::{execute_workflow, run_notify, ExecuteOpts};
@@ -83,6 +84,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('W') => start_clone_wizard(app)?,
         KeyCode::Char('c') => compare_selected(app)?,
         KeyCode::Char('a') => start_ai_wizard(app),
+        KeyCode::Char('t') => start_template_wizard(app),
         KeyCode::Delete => start_delete(app),
         KeyCode::Char('h') => {
             app.mode = AppMode::Help;
@@ -383,6 +385,13 @@ fn start_history_wizard(app: &mut App) {
         ai_commands: Vec::new(),
         ai_error: None,
         ai_tick: 0,
+        template_entries: Vec::new(),
+        template_filter: String::new(),
+        template_filtered: Vec::new(),
+        template_cursor: 0,
+        template_scroll_offset: 0,
+        template_var_values: Vec::new(),
+        template_var_cursor: 0,
         category: String::new(),
         task_name: String::new(),
         category_cursor: None,
@@ -434,6 +443,13 @@ fn start_clone_wizard(app: &mut App) -> Result<()> {
         ai_commands: Vec::new(),
         ai_error: None,
         ai_tick: 0,
+        template_entries: Vec::new(),
+        template_filter: String::new(),
+        template_filtered: Vec::new(),
+        template_cursor: 0,
+        template_scroll_offset: 0,
+        template_var_values: Vec::new(),
+        template_var_cursor: 0,
         category: task.category.clone(),
         task_name: format!("{}-copy", task.name),
         category_cursor: None,
@@ -481,6 +497,13 @@ fn start_ai_wizard(app: &mut App) {
         ai_commands: Vec::new(),
         ai_error: None,
         ai_tick: 0,
+        template_entries: Vec::new(),
+        template_filter: String::new(),
+        template_filtered: Vec::new(),
+        template_cursor: 0,
+        template_scroll_offset: 0,
+        template_var_values: Vec::new(),
+        template_var_cursor: 0,
         category: String::new(),
         task_name: String::new(),
         category_cursor: None,
@@ -572,6 +595,8 @@ fn handle_wizard_key(app: &mut App, key: KeyEvent) -> Result<()> {
             WizardStage::ShellHistory => handle_wizard_history(app, key),
             WizardStage::AiPrompt => handle_wizard_ai_prompt(app, key),
             WizardStage::AiThinking => handle_wizard_ai_thinking(app, key),
+            WizardStage::TemplateBrowse => handle_wizard_template_browse(app, key),
+            WizardStage::TemplateVariables => handle_wizard_template_variables(app, key),
             WizardStage::Category => handle_wizard_category(app, key)?,
             WizardStage::TaskName => handle_wizard_taskname(app, key),
             WizardStage::Options => handle_wizard_options(app, key),
@@ -675,6 +700,13 @@ fn handle_wizard_category(app: &mut App, key: KeyEvent) -> Result<()> {
             match wiz.mode {
                 WizardMode::FromHistory => wiz.stage = WizardStage::ShellHistory,
                 WizardMode::AiChat => wiz.stage = WizardStage::AiPrompt,
+                WizardMode::FromTemplate => {
+                    if wiz.template_var_values.is_empty() {
+                        wiz.stage = WizardStage::TemplateBrowse;
+                    } else {
+                        wiz.stage = WizardStage::TemplateVariables;
+                    }
+                }
                 WizardMode::CloneTask => {}
             }
             return Ok(());
@@ -717,7 +749,7 @@ fn handle_wizard_taskname(app: &mut App, key: KeyEvent) {
             if !wiz.task_name.is_empty() {
                 match wiz.mode {
                     WizardMode::CloneTask => wiz.stage = WizardStage::Options,
-                    WizardMode::FromHistory | WizardMode::AiChat => {
+                    WizardMode::FromHistory | WizardMode::AiChat | WizardMode::FromTemplate => {
                         wiz.stage = WizardStage::Preview;
                         wiz.preview_scroll = 0;
                     }
@@ -772,7 +804,9 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
             let wiz = app.wizard.as_mut().unwrap();
             match wiz.mode {
                 WizardMode::CloneTask => wiz.stage = WizardStage::Options,
-                WizardMode::FromHistory | WizardMode::AiChat => wiz.stage = WizardStage::TaskName,
+                WizardMode::FromHistory | WizardMode::AiChat | WizardMode::FromTemplate => {
+                    wiz.stage = WizardStage::TaskName;
+                }
             }
             return Ok(());
         }
@@ -799,6 +833,18 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
                 WizardMode::AiChat => {
                     let wf = wizard::workflow_from_commands(&wiz.task_name, &wiz.ai_commands);
                     wizard::generate_yaml(&wf)
+                }
+                WizardMode::FromTemplate => {
+                    let idx = wiz.template_cursor;
+                    if let Some(entry) = wiz.template_entries.get(idx) {
+                        let mut values = HashMap::new();
+                        for (name, val, _default) in &wiz.template_var_values {
+                            values.insert(name.clone(), val.clone());
+                        }
+                        catalog::instantiate_template(entry, &values)
+                    } else {
+                        String::new()
+                    }
                 }
                 WizardMode::CloneTask => {
                     let source_wf = wiz.source_workflow.as_ref().unwrap();
@@ -833,4 +879,182 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn start_template_wizard(app: &mut App) {
+    let cache_dir = app.config.workflows_dir.join(".template-cache");
+    let entries = catalog::all_templates(&cache_dir);
+
+    if entries.is_empty() {
+        app.footer_log.push(format!(
+            "[{}] No templates available",
+            chrono::Local::now().format("%H:%M:%S"),
+        ));
+        return;
+    }
+
+    let filtered: Vec<usize> = (0..entries.len()).collect();
+
+    app.wizard = Some(WizardState {
+        mode: WizardMode::FromTemplate,
+        stage: WizardStage::TemplateBrowse,
+        history_entries: Vec::new(),
+        history_filter: String::new(),
+        history_filtered: Vec::new(),
+        history_cursor: 0,
+        history_selected: Vec::new(),
+        history_scroll_offset: 0,
+        source_task_ref: None,
+        source_workflow: None,
+        source_run: None,
+        ai_prompt: String::new(),
+        ai_tool: None,
+        ai_result_rx: None,
+        ai_commands: Vec::new(),
+        ai_error: None,
+        ai_tick: 0,
+        template_entries: entries,
+        template_filter: String::new(),
+        template_filtered: filtered,
+        template_cursor: 0,
+        template_scroll_offset: 0,
+        template_var_values: Vec::new(),
+        template_var_cursor: 0,
+        category: String::new(),
+        task_name: String::new(),
+        category_cursor: None,
+        remove_failed: false,
+        remove_skipped: false,
+        parallelize: false,
+        active_toggle: 0,
+        preview_scroll: 0,
+        save_message: None,
+    });
+    app.mode = AppMode::Wizard;
+}
+
+fn handle_wizard_template_browse(app: &mut App, key: KeyEvent) {
+    let wiz = app.wizard.as_mut().unwrap();
+
+    match key.code {
+        KeyCode::Up => {
+            if wiz.template_cursor > 0 {
+                wiz.template_cursor -= 1;
+                if wiz.template_cursor < wiz.template_scroll_offset {
+                    wiz.template_scroll_offset = wiz.template_cursor;
+                }
+            }
+        }
+        KeyCode::Down => {
+            if !wiz.template_filtered.is_empty()
+                && wiz.template_cursor + 1 < wiz.template_filtered.len()
+            {
+                wiz.template_cursor += 1;
+                let visible = 16usize;
+                if wiz.template_cursor >= wiz.template_scroll_offset + visible {
+                    wiz.template_scroll_offset = wiz.template_cursor.saturating_sub(visible - 1);
+                }
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(&real_idx) = wiz.template_filtered.get(wiz.template_cursor) {
+                wiz.template_cursor = real_idx;
+                let entry = &wiz.template_entries[real_idx];
+
+                // Pre-fill category and task name from template
+                wiz.category = entry.category.clone();
+                wiz.task_name = entry.slug.clone();
+
+                // Set up variable values
+                if entry.variables.is_empty() {
+                    wiz.template_var_values = Vec::new();
+                    wiz.stage = WizardStage::Category;
+                } else {
+                    wiz.template_var_values = entry
+                        .variables
+                        .iter()
+                        .map(|v| {
+                            (
+                                v.name.clone(),
+                                v.default.clone().unwrap_or_default(),
+                                v.default.clone(),
+                            )
+                        })
+                        .collect();
+                    wiz.template_var_cursor = 0;
+                    wiz.stage = WizardStage::TemplateVariables;
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            wiz.template_filter.pop();
+            update_template_filter(wiz);
+        }
+        KeyCode::Char(c) => {
+            wiz.template_filter.push(c);
+            update_template_filter(wiz);
+        }
+        _ => {}
+    }
+}
+
+fn update_template_filter(wiz: &mut WizardState) {
+    let query = wiz.template_filter.to_lowercase();
+    wiz.template_filtered = if query.is_empty() {
+        (0..wiz.template_entries.len()).collect()
+    } else {
+        wiz.template_entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                e.name.to_lowercase().contains(&query)
+                    || e.slug.to_lowercase().contains(&query)
+                    || e.category.to_lowercase().contains(&query)
+                    || e.description
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    };
+    wiz.template_cursor = 0;
+    wiz.template_scroll_offset = 0;
+}
+
+fn handle_wizard_template_variables(app: &mut App, key: KeyEvent) {
+    let wiz = app.wizard.as_mut().unwrap();
+
+    match key.code {
+        KeyCode::Up => {
+            if wiz.template_var_cursor > 0 {
+                wiz.template_var_cursor -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if wiz.template_var_cursor + 1 < wiz.template_var_values.len() {
+                wiz.template_var_cursor += 1;
+            }
+        }
+        KeyCode::Enter | KeyCode::Tab => {
+            wiz.stage = WizardStage::Category;
+        }
+        KeyCode::BackTab => {
+            wiz.stage = WizardStage::TemplateBrowse;
+        }
+        KeyCode::Backspace => {
+            let idx = wiz.template_var_cursor;
+            if let Some(entry) = wiz.template_var_values.get_mut(idx) {
+                entry.1.pop();
+            }
+        }
+        KeyCode::Char(c) => {
+            let idx = wiz.template_var_cursor;
+            if let Some(entry) = wiz.template_var_values.get_mut(idx) {
+                entry.1.push(c);
+            }
+        }
+        _ => {}
+    }
 }

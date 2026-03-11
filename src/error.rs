@@ -15,6 +15,7 @@ pub enum DzError {
     Json(serde_json::Error),
     Toml(toml::de::Error),
     Compare(String),
+    Template(String),
     Db(rusqlite::Error),
     Other(anyhow::Error),
 }
@@ -33,6 +34,7 @@ impl fmt::Display for DzError {
             DzError::Json(e) => write!(f, "JSON error: {e}"),
             DzError::Toml(e) => write!(f, "TOML error: {e}"),
             DzError::Compare(msg) => write!(f, "compare error: {msg}"),
+            DzError::Template(msg) => write!(f, "template error: {msg}"),
             DzError::Db(e) => write!(f, "database error: {e}"),
             DzError::Other(e) => write!(f, "{e}"),
         }

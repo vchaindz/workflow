@@ -6,6 +6,7 @@ pub mod list;
 pub mod logs;
 pub mod run;
 pub mod status;
+pub mod templates;
 pub mod validate;
 
 use crate::core::config::Config;
@@ -48,6 +49,11 @@ pub fn dispatch(config: &Config, command: Commands) -> Result<i32> {
 
         Commands::Import { archive, overwrite, skip_existing } => {
             import::cmd_import(config, &archive, overwrite, skip_existing)?;
+            Ok(0)
+        }
+
+        Commands::Templates { fetch, json } => {
+            templates::cmd_templates(config, fetch, json)?;
             Ok(0)
         }
 

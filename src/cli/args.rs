@@ -117,6 +117,17 @@ pub enum Commands {
         skip_existing: bool,
     },
 
+    /// Browse and manage workflow templates
+    Templates {
+        /// Fetch latest templates from GitHub
+        #[arg(long)]
+        fetch: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// View run logs
     Logs {
         /// Task reference (omit for all recent)

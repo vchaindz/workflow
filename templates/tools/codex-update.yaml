@@ -1,0 +1,11 @@
+name: Codex CLI Update
+description: Update OpenAI Codex CLI to the latest version
+steps:
+  - id: check-current
+    cmd: codex --version || echo "not installed"
+  - id: update
+    cmd: npm install -g @openai/codex@latest
+    needs: [check-current]
+  - id: verify
+    cmd: codex --version
+    needs: [update]

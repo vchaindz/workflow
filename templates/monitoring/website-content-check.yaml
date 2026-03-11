@@ -1,0 +1,15 @@
+name: Website Content Check
+description: Check a website for content changes using curl and diff
+variables:
+  - name: url
+    description: URL to monitor for changes
+    default: "https://example.com"
+  - name: check_string
+    description: String to look for in the page content
+    default: "Example Domain"
+steps:
+  - id: fetch
+    cmd: "curl -sL $DZ_URL | grep -c \"$DZ_CHECK_STRING\" || echo 'CONTENT CHANGED or not found'"
+env:
+  DZ_URL: "{{url}}"
+  DZ_CHECK_STRING: "{{check_string}}"

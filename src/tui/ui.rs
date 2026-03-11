@@ -12,6 +12,8 @@ use crate::core::wizard;
 
 use crate::core::compare;
 
+use crate::core::catalog;
+
 use super::app::{App, AppMode, Focus, WizardMode, WizardStage};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -303,9 +305,9 @@ fn draw_wizard(f: &mut Frame, app: &App) {
 
     let area = f.area();
     // Larger modal for history stage, medium for AI stages
-    let (mw, mh) = if wiz.stage == WizardStage::ShellHistory {
+    let (mw, mh) = if matches!(wiz.stage, WizardStage::ShellHistory | WizardStage::TemplateBrowse) {
         (80.min(area.width.saturating_sub(4)), 32.min(area.height.saturating_sub(2)))
-    } else if matches!(wiz.stage, WizardStage::AiPrompt | WizardStage::AiThinking) {
+    } else if matches!(wiz.stage, WizardStage::AiPrompt | WizardStage::AiThinking | WizardStage::TemplateVariables) {
         (70.min(area.width.saturating_sub(4)), 20.min(area.height.saturating_sub(2)))
     } else {
         (64.min(area.width.saturating_sub(6)), 26.min(area.height.saturating_sub(4)))
@@ -320,6 +322,7 @@ fn draw_wizard(f: &mut Frame, app: &App) {
         WizardMode::FromHistory => " New Task from History ",
         WizardMode::CloneTask => " Clone Task ",
         WizardMode::AiChat => " AI Task Generator ",
+        WizardMode::FromTemplate => " Template Catalog ",
     };
     let block = Block::default()
         .title(title)
@@ -367,6 +370,34 @@ fn draw_wizard(f: &mut Frame, app: &App) {
                 _ => 0,
             };
             (s, idx)
+        }
+        WizardMode::FromTemplate => {
+            let has_vars = !wiz.template_var_values.is_empty()
+                || !wiz.template_entries.get(wiz.template_cursor)
+                    .map(|e| e.variables.is_empty())
+                    .unwrap_or(true);
+            if has_vars {
+                let s = vec!["Browse", "Variables", "Category", "Name", "Preview"];
+                let idx = match wiz.stage {
+                    WizardStage::TemplateBrowse => 0,
+                    WizardStage::TemplateVariables => 1,
+                    WizardStage::Category => 2,
+                    WizardStage::TaskName => 3,
+                    WizardStage::Preview => 4,
+                    _ => 0,
+                };
+                (s, idx)
+            } else {
+                let s = vec!["Browse", "Category", "Name", "Preview"];
+                let idx = match wiz.stage {
+                    WizardStage::TemplateBrowse => 0,
+                    WizardStage::Category => 1,
+                    WizardStage::TaskName => 2,
+                    WizardStage::Preview => 3,
+                    _ => 0,
+                };
+                (s, idx)
+            }
         }
     };
 
@@ -619,6 +650,163 @@ fn draw_wizard(f: &mut Frame, app: &App) {
             ]);
         }
 
+        WizardStage::TemplateBrowse => {
+            // Filter input
+            lines.push(Line::from(vec![
+                Span::styled(" Filter ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{}_", wiz.template_filter),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+
+            // Count line
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{}/{} templates",
+                    wiz.template_filtered.len(),
+                    wiz.template_entries.len(),
+                ),
+                Style::default().fg(Color::DarkGray),
+            )));
+
+            // Separator
+            lines.push(Line::from(Span::styled(
+                "\u{2500}".repeat(sep_w),
+                Style::default().fg(Color::DarkGray),
+            )));
+
+            if wiz.template_filtered.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "No templates match filter",
+                    Style::default().fg(Color::Yellow),
+                )));
+            } else {
+                let visible_height = inner.height.saturating_sub(7) as usize;
+                let end = (wiz.template_scroll_offset + visible_height).min(wiz.template_filtered.len());
+                let start = wiz.template_scroll_offset.min(end);
+                let max_name_width = inner.width.saturating_sub(6) as usize;
+
+                for (vi, &real_idx) in wiz.template_filtered[start..end].iter().enumerate() {
+                    let list_pos = start + vi;
+                    let is_cursor = list_pos == wiz.template_cursor;
+                    let entry = &wiz.template_entries[real_idx];
+
+                    let ref_name = format!("{}/{}", entry.category, entry.slug);
+                    let display = if let Some(ref desc) = entry.description {
+                        let max_desc = max_name_width.saturating_sub(ref_name.len() + 3);
+                        let short_desc: String = desc.chars().take(max_desc).collect();
+                        format!("{} \u{2014} {}", ref_name, short_desc)
+                    } else {
+                        ref_name
+                    };
+
+                    let style = if is_cursor {
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+
+                    let pointer = if is_cursor { "\u{25b8} " } else { "  " };
+                    lines.push(Line::from(Span::styled(
+                        format!("{}{}", pointer, display),
+                        style,
+                    )));
+
+                    // Show source tag on cursor line
+                    if is_cursor {
+                        let source_tag = format!("    [{}]", entry.source);
+                        let vars_info = if entry.variables.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  {} variable(s)", entry.variables.len())
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{}{}", source_tag, vars_info),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+                }
+            }
+
+            push_wizard_footer(&mut lines, inner.height, &[
+                ("Enter", "Select"), ("Up/Down", "Navigate"), ("Type", "Filter"), ("Esc", "Cancel"),
+            ]);
+        }
+
+        WizardStage::TemplateVariables => {
+            let selected_name = wiz.template_entries.get(wiz.template_cursor)
+                .map(|e| e.name.as_str())
+                .unwrap_or("Template");
+            lines.push(Line::from(Span::styled(
+                format!("Configure variables for {}", selected_name),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                "Edit values, defaults are pre-filled",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+
+            for (i, (name, value, default)) in wiz.template_var_values.iter().enumerate() {
+                let is_active = i == wiz.template_var_cursor;
+
+                // Variable description from the template entry
+                let var_desc = wiz.template_entries.get(wiz.template_cursor)
+                    .and_then(|e| e.variables.get(i))
+                    .map(|v| v.description.as_str())
+                    .unwrap_or("");
+
+                let pointer = if is_active { "\u{25b8}" } else { " " };
+                let label_style = if is_active {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {} ", pointer), label_style),
+                    Span::styled(name.as_str(), label_style),
+                    Span::styled(
+                        if var_desc.is_empty() { String::new() } else { format!(" ({})", var_desc) },
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+
+                let val_display = if is_active {
+                    format!("{}_", value)
+                } else {
+                    value.clone()
+                };
+
+                lines.push(Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(
+                        val_display,
+                        if is_active {
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Green)
+                        },
+                    ),
+                    if let Some(def) = default {
+                        Span::styled(
+                            format!("  default: {}", def),
+                            Style::default().fg(Color::DarkGray),
+                        )
+                    } else {
+                        Span::raw("")
+                    },
+                ]));
+            }
+
+            push_wizard_footer(&mut lines, inner.height, &[
+                ("Enter", "Confirm"), ("Up/Down", "Navigate"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
+            ]);
+        }
+
         WizardStage::Category => {
             lines.push(Line::from(Span::styled(
                 "Choose a category for the new task",
@@ -660,7 +848,7 @@ fn draw_wizard(f: &mut Frame, app: &App) {
                 }
             }
 
-            let back_hints = if matches!(wiz.mode, WizardMode::FromHistory | WizardMode::AiChat) {
+            let back_hints = if matches!(wiz.mode, WizardMode::FromHistory | WizardMode::AiChat | WizardMode::FromTemplate) {
                 vec![("Enter", "Confirm"), ("Up/Down", "Select"), ("Shift+Tab", "Back"), ("Esc", "Cancel")]
             } else {
                 vec![("Enter", "Confirm"), ("Up/Down", "Select"), ("Esc", "Cancel")]
@@ -803,6 +991,18 @@ fn draw_wizard(f: &mut Frame, app: &App) {
                     let wf = wizard::workflow_from_commands(&wiz.task_name, &wiz.ai_commands);
                     wizard::generate_yaml(&wf)
                 }
+                WizardMode::FromTemplate => {
+                    let idx = wiz.template_cursor;
+                    if let Some(entry) = wiz.template_entries.get(idx) {
+                        let mut values = std::collections::HashMap::new();
+                        for (name, val, _default) in &wiz.template_var_values {
+                            values.insert(name.clone(), val.clone());
+                        }
+                        catalog::instantiate_template(entry, &values)
+                    } else {
+                        String::new()
+                    }
+                }
                 WizardMode::CloneTask => {
                     let source_wf = wiz.source_workflow.as_ref().unwrap();
                     let optimized = wizard::optimize_workflow(
@@ -838,10 +1038,9 @@ fn draw_wizard(f: &mut Frame, app: &App) {
         }
     }
 
-    let scroll = if wiz.stage == WizardStage::Preview {
-        wiz.preview_scroll
-    } else {
-        0
+    let scroll = match wiz.stage {
+        WizardStage::Preview => wiz.preview_scroll,
+        _ => 0,
     };
 
     let para = Paragraph::new(lines)
@@ -1086,7 +1285,7 @@ fn format_run_log(log: &crate::core::models::RunLog) -> String {
 fn draw_help(f: &mut Frame) {
     let area = f.area();
     let w = 50.min(area.width.saturating_sub(4));
-    let h = 20.min(area.height.saturating_sub(4));
+    let h = 22.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
@@ -1111,6 +1310,7 @@ fn draw_help(f: &mut Frame) {
         Line::from("  w           New task from shell history"),
         Line::from("  W           Clone selected task"),
         Line::from("  a           AI task generator"),
+        Line::from("  t           New task from template"),
         Line::from("  Del         Delete selected task"),
         Line::from("  c           Compare last 2 runs"),
         Line::from("  L           View run logs"),

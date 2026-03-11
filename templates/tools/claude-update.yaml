@@ -1,0 +1,11 @@
+name: Claude CLI Update
+description: Update Claude Code CLI to the latest version
+steps:
+  - id: check-current
+    cmd: claude --version || echo "not installed"
+  - id: update
+    cmd: npm install -g @anthropic-ai/claude-code@latest
+    needs: [check-current]
+  - id: verify
+    cmd: claude --version
+    needs: [update]

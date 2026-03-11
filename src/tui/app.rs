@@ -38,6 +38,8 @@ pub enum WizardStage {
     ShellHistory,
     AiPrompt,
     AiThinking,
+    TemplateBrowse,
+    TemplateVariables,
     Category,
     TaskName,
     Options,
@@ -49,6 +51,7 @@ pub enum WizardMode {
     FromHistory,
     CloneTask,
     AiChat,
+    FromTemplate,
 }
 
 #[derive(Debug)]
@@ -80,6 +83,15 @@ pub struct WizardState {
     pub ai_commands: Vec<String>,
     pub ai_error: Option<String>,
     pub ai_tick: u8,
+
+    // Template fields
+    pub template_entries: Vec<crate::core::catalog::TemplateEntry>,
+    pub template_filter: String,
+    pub template_filtered: Vec<usize>,
+    pub template_cursor: usize,
+    pub template_scroll_offset: usize,
+    pub template_var_values: Vec<(String, String, Option<String>)>, // (name, current_value, default)
+    pub template_var_cursor: usize,
 
     // Shared fields
     pub category: String,
