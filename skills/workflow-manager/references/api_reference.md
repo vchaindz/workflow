@@ -20,6 +20,8 @@ notify:
   on_failure: "curl -X POST https://hooks.example.com/fail"
   on_success: "curl -X POST https://hooks.example.com/ok"
 
+overdue: 7                     # warn in TUI if not run within N days
+
 steps:
   # Format 1: Bare string (auto-chained sequentially)
   - "echo hello"
@@ -45,6 +47,12 @@ steps:
     cmd: "echo done"
     needs: [process]
 ```
+
+## Workflow Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| overdue | u32 | none | Warn in TUI if task not run within N days |
 
 ## Step Fields
 

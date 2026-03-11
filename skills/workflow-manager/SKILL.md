@@ -19,6 +19,7 @@ Minimal example:
 
 ```yaml
 name: Deploy staging
+overdue: 7
 steps:
   - "docker compose pull"
   - "docker compose up -d"
@@ -29,6 +30,7 @@ With DAG dependencies and advanced features:
 
 ```yaml
 name: Full deploy
+overdue: 1
 env:
   TAG:
     cmd: "git describe --tags --always"
@@ -108,4 +110,5 @@ workflow templates --fetch   # fetch from GitHub
 - Template vars `{{date}}`, `{{datetime}}`, `{{hostname}}` expand in commands
 - `run_if` executes as `bash -c`; step runs only on exit code 0
 - `secrets` lists env vars that must be set before execution
+- `overdue` sets an expected run frequency in days; the TUI shows a reminder popup on startup for overdue tasks
 - The `--dir` flag overrides the default `~/.config/workflow/` root
