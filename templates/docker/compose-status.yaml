@@ -1,12 +1,20 @@
 name: Docker Compose Status
-description: Check status of docker compose projects and their services
+description: Check status of a docker compose project and its services
+variables:
+  - name: project
+    description: Compose project to inspect
+    default: ""
+    choices_cmd: "docker compose ls --format '{{.Name}}'"
 steps:
   - id: compose-projects
-    cmd: "echo '=== Docker Compose Projects ===' && docker compose ls 2>/dev/null || docker-compose ls 2>/dev/null || echo 'No compose projects found'"
+    cmd: |
+      echo '=== Docker Compose Projects ==='
+      docker compose ls 2>/dev/null || echo 'No compose projects found'
   - id: compose-services
     cmd: |
-      echo '=== Service Status Per Project ==='
-      docker compose ls --format json 2>/dev/null | python3 -c "
+      if [ -z "$DZ_PROJECT" ]; then
+        echo '=== All Service Status ==='
+        docker compose ls --format json 2>/dev/null | python3 -c "
       import json, sys, subprocess
       try:
         projects = json.load(sys.stdin)
@@ -18,13 +26,35 @@ steps:
           print()
       except: print('Could not parse compose projects')
       " 2>/dev/null || echo 'Compose project enumeration not available'
+      else
+        echo "=== Project: $DZ_PROJECT ==="
+        docker compose -p "$DZ_PROJECT" ps 2>/dev/null || echo "Cannot inspect project $DZ_PROJECT"
+      fi
+  - id: compose-logs
+    cmd: |
+      if [ -n "$DZ_PROJECT" ]; then
+        echo "=== Recent Logs: $DZ_PROJECT ==="
+        docker compose -p "$DZ_PROJECT" logs --tail 30 2>/dev/null || echo 'Cannot fetch logs'
+      fi
   - id: restart-counts
     cmd: |
       echo '=== Container Restart Counts ==='
-      docker ps --format '{{.Names}}' | while read name; do
-        restarts=$(docker inspect --format '{{.RestartCount}}' "$name" 2>/dev/null)
-        if [ "$restarts" -gt 0 ] 2>/dev/null; then
-          echo "WARNING: $name has restarted $restarts times"
-        fi
-      done
+      if [ -n "$DZ_PROJECT" ]; then
+        docker compose -p "$DZ_PROJECT" ps -q 2>/dev/null | while read cid; do
+          name=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+          restarts=$(docker inspect --format '{{.RestartCount}}' "$cid" 2>/dev/null)
+          if [ "$restarts" -gt 0 ] 2>/dev/null; then
+            echo "WARNING: $name has restarted $restarts times"
+          fi
+        done
+      else
+        docker ps --format '{{.Names}}' | while read name; do
+          restarts=$(docker inspect --format '{{.RestartCount}}' "$name" 2>/dev/null)
+          if [ "$restarts" -gt 0 ] 2>/dev/null; then
+            echo "WARNING: $name has restarted $restarts times"
+          fi
+        done
+      fi
       echo 'Done'
+env:
+  DZ_PROJECT: "{{project}}"

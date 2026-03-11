@@ -1,16 +1,14 @@
 name: Docker Cleanup
-description: Remove unused images, stopped containers, dangling volumes, and build cache
+description: Remove stale containers, dangling images, unused networks, and build cache (only resources older than 24h)
 steps:
   - id: disk-before
     cmd: "echo '=== Docker Disk Usage Before ===' && docker system df"
   - id: stopped-containers
-    cmd: "echo '=== Removing Stopped Containers ===' && docker container prune -f"
+    cmd: "echo '=== Removing Stopped Containers ===' && docker container prune -f --filter 'until=24h'"
   - id: dangling-images
-    cmd: "echo '=== Removing Dangling Images ===' && docker image prune -f"
-  - id: unused-volumes
-    cmd: "echo '=== Removing Unused Volumes ===' && docker volume prune -f"
+    cmd: "echo '=== Removing Dangling Images ===' && docker image prune -f --filter 'until=24h'"
   - id: unused-networks
-    cmd: "echo '=== Removing Unused Networks ===' && docker network prune -f"
+    cmd: "echo '=== Removing Unused Networks ===' && docker network prune -f --filter 'until=24h'"
   - id: build-cache
     cmd: "echo '=== Removing Build Cache ===' && docker builder prune -f --keep-storage 1G 2>/dev/null || echo 'Builder prune not supported'"
   - id: disk-after

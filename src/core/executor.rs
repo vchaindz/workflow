@@ -97,6 +97,13 @@ pub fn execute_workflow(
     let mut env: HashMap<String, String> = workflow.env.clone();
     env.extend(opts.env_overrides.clone());
 
+    // Expand {{var}} placeholders in env values (e.g. DZ_CONTAINER: "{{container}}")
+    let snapshot: HashMap<String, String> = env.clone();
+    env = env
+        .into_iter()
+        .map(|(k, v)| (k, expand_template(&v, &snapshot)))
+        .collect();
+
     // Collect actual values of secret-named env vars for masking
     let secret_values: Vec<String> = opts
         .secrets
@@ -652,6 +659,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         }
     }
 
@@ -722,6 +730,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/fail", &ExecuteOpts::default(), None).unwrap();
@@ -754,6 +763,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let opts = ExecuteOpts {
@@ -785,6 +795,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/workdir", &ExecuteOpts::default(), None).unwrap();
@@ -812,6 +823,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/timeout", &ExecuteOpts::default(), None).unwrap();
@@ -840,6 +852,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let opts = ExecuteOpts {
@@ -872,6 +885,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let opts = ExecuteOpts {
@@ -916,6 +930,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/timeout-deps", &ExecuteOpts::default(), None).unwrap();
@@ -943,6 +958,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/run-if", &ExecuteOpts::default(), None).unwrap();
@@ -983,6 +999,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/run-if-false", &ExecuteOpts::default(), None).unwrap();
@@ -1023,6 +1040,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/retry", &ExecuteOpts::default(), None).unwrap();
@@ -1050,6 +1068,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let log = execute_workflow(&wf, "test/retry-fail", &ExecuteOpts::default(), None).unwrap();
@@ -1078,6 +1097,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
         };
 
         let opts = ExecuteOpts {

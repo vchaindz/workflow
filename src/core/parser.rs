@@ -19,6 +19,7 @@ pub fn parse_workflow(path: &Path) -> Result<Workflow> {
         secrets: raw.secrets,
         notify: raw.notify,
         overdue: raw.overdue,
+        variables: raw.variables,
     };
 
     validate_workflow(&workflow)?;
@@ -118,6 +119,7 @@ pub fn parse_shell_task(path: &Path) -> Result<Workflow> {
         secrets: Vec::new(),
         notify: Default::default(),
         overdue: None,
+        variables: Vec::new(),
     })
 }
 

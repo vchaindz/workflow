@@ -1,19 +1,34 @@
 name: Docker Container Logs
-description: Tail recent logs from a specific container
+description: List running containers and tail recent logs from a selected one
 variables:
   - name: container
     description: Container name or ID to view logs for
-    default: "nginx"
+    default: ""
+    choices_cmd: "docker ps --format '{{.Names}}'"
   - name: lines
     description: Number of log lines to show
     default: "50"
 steps:
+  - id: list-containers
+    cmd: "echo '=== Running Containers ===' && docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null || echo 'No running containers'"
   - id: container-info
-    cmd: "echo \"=== Container: $DZ_CONTAINER ===\" && docker inspect --format 'Image: {{.Config.Image}}\nStatus: {{.State.Status}}\nStarted: {{.State.StartedAt}}\nRestarts: {{.RestartCount}}' \"$DZ_CONTAINER\" 2>/dev/null || echo 'Container not found'"
+    cmd: |
+      if [ -z "$DZ_CONTAINER" ]; then
+        echo 'Set the container variable to a name from the list above'
+        exit 0
+      fi
+      echo "=== Container: $DZ_CONTAINER ===" && docker inspect --format 'Image: {{.Config.Image}} | Status: {{.State.Status}} | Started: {{.State.StartedAt}}' "$DZ_CONTAINER" 2>/dev/null || echo 'Container not found'
+    needs: [list-containers]
   - id: recent-logs
-    cmd: "echo '=== Recent Logs ===' && docker logs --tail \"$DZ_LINES\" --timestamps \"$DZ_CONTAINER\" 2>&1"
+    cmd: |
+      if [ -z "$DZ_CONTAINER" ]; then exit 0; fi
+      echo '=== Recent Logs ===' && docker logs --tail "$DZ_LINES" --timestamps "$DZ_CONTAINER" 2>&1
+    needs: [container-info]
   - id: error-logs
-    cmd: "echo '=== Error Lines (last 100) ===' && docker logs --tail 100 \"$DZ_CONTAINER\" 2>&1 | grep -iE '(error|fatal|panic|exception|fail|crit)' | tail -20 || echo 'No errors found'"
+    cmd: |
+      if [ -z "$DZ_CONTAINER" ]; then exit 0; fi
+      echo '=== Error Lines (last 100) ===' && docker logs --tail 100 "$DZ_CONTAINER" 2>&1 | grep -iE '(error|fatal|panic|exception|fail|crit)' | tail -20 || echo 'No errors found'
+    needs: [container-info]
 env:
   DZ_CONTAINER: "{{container}}"
   DZ_LINES: "{{lines}}"

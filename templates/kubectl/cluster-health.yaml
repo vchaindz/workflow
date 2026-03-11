@@ -4,6 +4,7 @@ variables:
   - name: context
     description: Kubectl context to use (blank for current)
     default: ""
+    choices_cmd: "kubectl config get-contexts -o name"
 steps:
   - id: cluster-info
     cmd: |

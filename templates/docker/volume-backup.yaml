@@ -3,7 +3,8 @@ description: List volumes, show usage, and create a tar backup of a named volume
 variables:
   - name: volume_name
     description: Docker volume name to backup
-    default: "data"
+    default: ""
+    choices_cmd: "docker volume ls -q"
   - name: backup_path
     description: Directory to store the backup tar file
     default: "/tmp"
@@ -11,6 +12,7 @@ steps:
   - id: list-volumes
     cmd: "echo '=== Docker Volumes ===' && docker volume ls --format 'table {{.Name}}\t{{.Driver}}\t{{.Mountpoint}}'"
   - id: volume-sizes
+    needs: [list-volumes]
     cmd: |
       echo '=== Volume Sizes ==='
       docker volume ls -q | while read vol; do
@@ -18,7 +20,12 @@ steps:
         printf "%-40s %s\n" "$vol" "${size:-unknown}"
       done
   - id: backup
+    needs: [volume-sizes]
     cmd: |
+      if [ -z "$DZ_VOLUME_NAME" ]; then
+        echo 'Set the volume_name variable to a volume from the list above'
+        exit 0
+      fi
       echo "=== Backing up volume: $DZ_VOLUME_NAME ==="
       backup_file="$DZ_BACKUP_PATH/docker-vol-${DZ_VOLUME_NAME}-$(date +%Y%m%d-%H%M%S).tar.gz"
       docker run --rm -v "$DZ_VOLUME_NAME":/source -v "$DZ_BACKUP_PATH":/backup alpine tar czf "/backup/$(basename $backup_file)" -C /source . 2>/dev/null && echo "Backup saved: $backup_file" || echo "ERROR: Backup failed for volume $DZ_VOLUME_NAME"

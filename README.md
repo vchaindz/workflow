@@ -308,7 +308,7 @@ Launch with `workflow` (no arguments):
 │ [14:32:01] ▶ dump — mysqldump --all-databases > /tmp/db.sql  │
 │ [14:32:03] ✓ dump (1850ms)                                   │
 └───────────────────────────────────────────────────────────────┘
- j/k:nav  Tab:pane  r:run  e:edit  w:wizard  a:ai  A:update  t:templates  R:recent  s/S:bookmarks
+ arrows:nav  r:run  d:dry-run  e:edit  c:compare  f:heat-sort  w:new  W:clone  t:template  a:ai  R:recent  s:saved  Del:delete  L:logs  /:search  h:help  q:quit
 ```
 
 | Key | Action |

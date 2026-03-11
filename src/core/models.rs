@@ -37,6 +37,17 @@ pub(crate) enum RawStep {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeVariable {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub default: Option<String>,
+    #[serde(default)]
+    pub choices_cmd: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct RawWorkflow {
     pub name: String,
@@ -51,6 +62,8 @@ pub(crate) struct RawWorkflow {
     pub notify: NotifyConfig,
     #[serde(default)]
     pub overdue: Option<u32>,
+    #[serde(default)]
+    pub variables: Vec<RuntimeVariable>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -107,6 +120,8 @@ pub struct Workflow {
     pub notify: NotifyConfig,
     #[serde(default)]
     pub overdue: Option<u32>,
+    #[serde(default)]
+    pub variables: Vec<RuntimeVariable>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

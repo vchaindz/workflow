@@ -4,6 +4,7 @@ variables:
   - name: namespace
     description: Namespace to check (blank for all namespaces)
     default: ""
+    choices_cmd: "kubectl get ns -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\\n'"
 steps:
   - id: deployments
     cmd: |

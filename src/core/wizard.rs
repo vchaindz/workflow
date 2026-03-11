@@ -189,6 +189,7 @@ pub fn workflow_from_commands(name: &str, commands: &[String]) -> Workflow {
         secrets: Vec::new(),
         notify: Default::default(),
         overdue: None,
+        variables: Vec::new(),
     }
 }
 
@@ -292,6 +293,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
             steps: vec![
                 Step {
                     id: "step-1".to_string(),
@@ -433,6 +435,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
             steps: vec![
                 Step {
                     id: "step-1".to_string(),
@@ -476,6 +479,7 @@ mod tests {
             secrets: Vec::new(),
             notify: Default::default(),
             overdue: None,
+            variables: Vec::new(),
             steps: vec![
                 Step {
                     id: "build".to_string(),

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
 use crate::core::ai::{AiResult, AiResponse, AiTool};
@@ -7,7 +7,7 @@ use crate::core::config::Config;
 use crate::core::history::HistoryEntry;
 use crate::core::executor::{InteractiveRequest, StreamingRequest};
 use crate::core::db::OverdueTask;
-use crate::core::models::{Category, ExecutionEvent, RunLog, StepStatus, Task, TaskHeat, Workflow};
+use crate::core::models::{Category, ExecutionEvent, RunLog, RuntimeVariable, StepStatus, Task, TaskHeat, Workflow};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -30,6 +30,7 @@ pub enum AppMode {
     RecentRuns,
     SavedTasks,
     OverdueReminder,
+    VariablePrompt,
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +193,18 @@ pub struct App {
 
     // Heat-based sorting
     pub sort_by_heat: bool,
+
+    // Variable prompt modal state
+    pub var_prompt_vars: Vec<RuntimeVariable>,
+    pub var_prompt_index: usize,
+    pub var_prompt_choices: Vec<String>,
+    pub var_prompt_cursor: usize,
+    pub var_prompt_scroll: usize,
+    pub var_prompt_resolved: HashMap<String, String>,
+    pub var_prompt_dry_run: bool,
+    pub var_prompt_task: Option<Task>,
+    pub var_prompt_workflow: Option<Workflow>,
+    pub var_prompt_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -248,6 +261,16 @@ impl App {
             overdue_tasks: Vec::new(),
             overdue_cursor: 0,
             sort_by_heat: false,
+            var_prompt_vars: Vec::new(),
+            var_prompt_index: 0,
+            var_prompt_choices: Vec::new(),
+            var_prompt_cursor: 0,
+            var_prompt_scroll: 0,
+            var_prompt_resolved: HashMap::new(),
+            var_prompt_dry_run: false,
+            var_prompt_task: None,
+            var_prompt_workflow: None,
+            var_prompt_error: None,
         }
     }
 

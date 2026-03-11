@@ -1,27 +1,54 @@
 name: Docker Network Inspection
 description: List networks, show container connectivity, and check for issues
+variables:
+  - name: network
+    description: Network to inspect (blank for all)
+    default: ""
+    choices_cmd: "docker network ls --format '{{.Name}}'"
 steps:
   - id: list-networks
     cmd: "echo '=== Docker Networks ===' && docker network ls --format 'table {{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}'"
   - id: network-details
     cmd: |
       echo '=== Network Details ==='
-      docker network ls --format '{{.Name}}' | while read net; do
-        containers=$(docker network inspect "$net" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null)
-        if [ -n "$containers" ]; then
-          echo "--- $net ---"
-          echo "  Containers: $containers"
-        fi
-      done
+      if [ -n "$DZ_NETWORK" ]; then
+        echo "--- $DZ_NETWORK ---"
+        docker network inspect "$DZ_NETWORK" 2>/dev/null | python3 -c "
+      import json, sys
+      try:
+        data = json.load(sys.stdin)
+        net = data[0]
+        print(f'  Driver: {net[\"Driver\"]}  Scope: {net[\"Scope\"]}')
+        print(f'  Subnet: {net.get(\"IPAM\",{}).get(\"Config\",[{}])[0].get(\"Subnet\",\"n/a\")}')
+        containers = net.get('Containers', {})
+        if containers:
+          print(f'  Containers ({len(containers)}):')
+          for c in containers.values():
+            print(f'    {c[\"Name\"]}: {c[\"IPv4Address\"]}')
+        else:
+          print('  No containers attached')
+      except: print('Could not parse network details')
+      " || echo "Cannot inspect $DZ_NETWORK"
+      else
+        docker network ls --format '{{.Name}}' | while read net; do
+          containers=$(docker network inspect "$net" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null)
+          if [ -n "$containers" ]; then
+            echo "--- $net ---"
+            echo "  Containers: $containers"
+          fi
+        done
+      fi
   - id: port-mappings
     cmd: "echo '=== Port Mappings ===' && docker ps --format '{{.Names}}\t{{.Ports}}' | column -t"
   - id: dns-check
     cmd: |
       echo '=== DNS Resolution Between Containers ==='
-      network=$(docker network ls --format '{{.Name}}' | grep -v -E '(bridge|host|none)' | head -1)
+      network="${DZ_NETWORK:-$(docker network ls --format '{{.Name}}' | grep -v -E '(bridge|host|none)' | head -1)}"
       if [ -n "$network" ]; then
         echo "Testing on network: $network"
         docker network inspect "$network" --format '{{range .Containers}}{{.Name}}: {{.IPv4Address}}{{"\n"}}{{end}}' 2>/dev/null
       else
         echo 'No custom networks found'
       fi
+env:
+  DZ_NETWORK: "{{network}}"

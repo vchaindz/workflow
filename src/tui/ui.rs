@@ -89,6 +89,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.mode == AppMode::OverdueReminder {
         draw_overdue_reminder(f, app);
     }
+
+    if app.mode == AppMode::VariablePrompt {
+        draw_variable_prompt(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -311,7 +315,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         AppMode::Wizard => " New Task Wizard ".to_string(),
         _ => {
             let sort_label = if app.sort_by_heat { "f:α-sort" } else { "f:heat-sort" };
-            format!("arrows:nav  r:run  d:dry-run  e:edit  c:compare  {sort_label}  w:new  W:clone  a:ai  Del:delete  L:logs  /:search  h:help  q:quit")
+            format!("arrows:nav  r:run  d:dry-run  e:edit  c:compare  {sort_label}  w:new  W:clone  t:template  a:ai  R:recent  s:saved  Del:delete  L:logs  /:search  h:help  q:quit")
         }
     };
 
@@ -1359,7 +1363,7 @@ fn format_run_log(log: &crate::core::models::RunLog) -> String {
 fn draw_help(f: &mut Frame) {
     let area = f.area();
     let w = 50.min(area.width.saturating_sub(4));
-    let h = 25.min(area.height.saturating_sub(4));
+    let h = 26.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
@@ -1392,6 +1396,7 @@ fn draw_help(f: &mut Frame) {
         Line::from("  R           Recent runs (last 10)"),
         Line::from("  s           Saved/bookmarked tasks"),
         Line::from("  S           Toggle bookmark on task"),
+        Line::from("  f           Toggle heat/alpha sort"),
         Line::from("  /           Search tasks"),
         Line::from("  q           Quit / close"),
         Line::from("  Esc         Cancel / dismiss"),
@@ -1652,6 +1657,99 @@ fn draw_overdue_reminder(f: &mut Frame, app: &App) {
     f.render_widget(hint, layout[1]);
 }
 
+fn draw_variable_prompt(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let total_vars = app.var_prompt_vars.len();
+    let current_var = app.var_prompt_vars.get(app.var_prompt_index);
+    let var_name = current_var.map(|v| v.name.as_str()).unwrap_or("?");
+    let var_desc = current_var.and_then(|v| v.description.as_deref());
+
+    let w = 60.min(area.width.saturating_sub(4));
+    let h = 20.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    f.render_widget(Clear, popup);
+
+    let title = format!(" Select: {} ({}/{}) ", var_name, app.var_prompt_index + 1, total_vars);
+    let border_color = if app.var_prompt_error.is_some() { Color::Red } else { Color::Cyan };
+    let block = Block::default()
+        .title(title)
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    // Layout: optional description, list, hints
+    let desc_height = if var_desc.is_some() || app.var_prompt_error.is_some() { 1 } else { 0 };
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(desc_height),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    // Description or error line
+    if let Some(ref err) = app.var_prompt_error {
+        let err_line = Paragraph::new(Line::from(Span::styled(
+            format!(" ✗ {}", err),
+            Style::default().fg(Color::Red),
+        )));
+        f.render_widget(err_line, layout[0]);
+    } else if let Some(desc) = var_desc {
+        let desc_line = Paragraph::new(Line::from(Span::styled(
+            format!(" {}", desc),
+            Style::default().fg(Color::DarkGray),
+        )));
+        f.render_widget(desc_line, layout[0]);
+    }
+
+    // Choice list with scroll
+    let visible_height = layout[1].height as usize;
+    let scroll = if app.var_prompt_cursor >= app.var_prompt_scroll + visible_height {
+        app.var_prompt_cursor.saturating_sub(visible_height - 1)
+    } else {
+        app.var_prompt_scroll
+    };
+
+    let items: Vec<ListItem> = app
+        .var_prompt_choices
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_height)
+        .map(|(i, choice)| {
+            let marker = if i == app.var_prompt_cursor { "▸ " } else { "  " };
+            let style = if i == app.var_prompt_cursor {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(Span::styled(format!("{}{}", marker, choice), style)))
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, layout[1]);
+
+    // Hints
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled(" ↑↓", Style::default().fg(Color::Cyan)),
+        Span::raw(" select · "),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::raw(" confirm · "),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::raw(" cancel"),
+    ]))
+    .alignment(Alignment::Center);
+    f.render_widget(hint, layout[2]);
+}
+
 fn draw_saved_tasks(f: &mut Frame, app: &App) {
     let area = f.area();
     let w = 55.min(area.width.saturating_sub(4));
@@ -1909,7 +2007,7 @@ steps:
         let mut app = make_render_app(&tmp);
         app.mode = AppMode::Help;
 
-        let buf = render_app(&app, 120, 30);
+        let buf = render_app(&app, 120, 32);
         let text = buffer_text(&buf);
 
         assert!(
