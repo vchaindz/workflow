@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::core::models::NotifyConfig;
 use crate::error::{DzError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +16,12 @@ pub struct Config {
     pub theme: String,
     #[serde(default)]
     pub hooks: HooksConfig,
+    #[serde(default)]
+    pub default_timeout: Option<u64>,
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    #[serde(default)]
+    pub notify: NotifyConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -45,6 +52,9 @@ impl Default for Config {
             editor: default_editor(),
             theme: String::new(),
             hooks: HooksConfig::default(),
+            default_timeout: None,
+            secrets: Vec::new(),
+            notify: NotifyConfig::default(),
         }
     }
 }
@@ -73,5 +83,9 @@ impl Config {
 
     pub fn logs_dir(&self) -> PathBuf {
         self.workflows_dir.join("logs")
+    }
+
+    pub fn db_path(&self) -> PathBuf {
+        self.workflows_dir.join("history.db")
     }
 }

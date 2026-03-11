@@ -1,9 +1,11 @@
 use std::collections::HashMap;
-use std::process::Command;
-use std::time::Instant;
+use std::io::Read as IoRead;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use uuid::Uuid;
+use wait_timeout::ChildExt;
 
 use crate::core::models::{ExecutionEvent, RunLog, Step, StepResult, StepStatus, Workflow};
 use crate::core::parser::topological_sort;
@@ -13,6 +15,8 @@ use crate::error::Result;
 pub struct ExecuteOpts {
     pub dry_run: bool,
     pub env_overrides: HashMap<String, String>,
+    pub default_timeout: Option<u64>,
+    pub secrets: Vec<String>,
 }
 
 impl Default for ExecuteOpts {
@@ -20,8 +24,34 @@ impl Default for ExecuteOpts {
         Self {
             dry_run: false,
             env_overrides: HashMap::new(),
+            default_timeout: None,
+            secrets: Vec::new(),
         }
     }
+}
+
+/// Replace secret values with [REDACTED] in text.
+pub fn mask_secrets(text: &str, secret_values: &[String]) -> String {
+    let mut result = text.to_string();
+    for secret in secret_values {
+        if !secret.is_empty() {
+            result = result.replace(secret, "[REDACTED]");
+        }
+    }
+    result
+}
+
+/// Run a notification command after workflow completion.
+/// Expands template variables in the command string, then runs via bash fire-and-forget.
+pub fn run_notify(cmd: &str, vars: &HashMap<String, String>) {
+    let expanded = expand_template(cmd, vars);
+    let _ = Command::new("bash")
+        .arg("-c")
+        .arg(&expanded)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 pub fn execute_workflow(
@@ -45,6 +75,14 @@ pub fn execute_workflow(
     // Merge env: workflow env + overrides
     let mut env: HashMap<String, String> = workflow.env.clone();
     env.extend(opts.env_overrides.clone());
+
+    // Collect actual values of secret-named env vars for masking
+    let secret_values: Vec<String> = opts
+        .secrets
+        .iter()
+        .filter_map(|name| env.get(name).cloned())
+        .filter(|v| !v.is_empty())
+        .collect();
 
     // Expand templates in env values
     let template_vars: HashMap<String, String> = env.clone();
@@ -76,6 +114,45 @@ pub fn execute_workflow(
             continue;
         }
 
+        // Conditional step: evaluate run_if condition
+        if let Some(ref condition) = step.run_if {
+            if opts.dry_run {
+                println!("[dry-run] step '{}' run_if: {}", step.id, condition);
+            } else {
+                let cond_result = Command::new("bash")
+                    .arg("-c")
+                    .arg(condition)
+                    .envs(&env)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                match cond_result {
+                    Ok(status) if !status.success() => {
+                        send(ExecutionEvent::StepSkipped { step_id: step.id.clone() });
+                        step_results.push(StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Skipped,
+                            output: format!("condition not met: {condition}"),
+                            duration_ms: 0,
+                        });
+                        // Do NOT add to failed_steps — dependents still run
+                        continue;
+                    }
+                    Err(e) => {
+                        send(ExecutionEvent::StepSkipped { step_id: step.id.clone() });
+                        step_results.push(StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Skipped,
+                            output: format!("condition error: {e}"),
+                            duration_ms: 0,
+                        });
+                        continue;
+                    }
+                    _ => {} // condition met, proceed
+                }
+            }
+        }
+
         if step.parallel {
             eprintln!(
                 "warning: parallel execution not supported in MVP, running '{}' sequentially",
@@ -84,21 +161,22 @@ pub fn execute_workflow(
         }
 
         let expanded_cmd = expand_template(&step.cmd, &template_vars);
+        let masked_cmd = mask_secrets(&expanded_cmd, &secret_values);
 
         if opts.dry_run {
             send(ExecutionEvent::StepStarted {
                 step_id: step.id.clone(),
-                cmd_preview: format!("[dry-run] {expanded_cmd}"),
+                cmd_preview: format!("[dry-run] {masked_cmd}"),
             });
             if let Some(ref dir) = workflow.workdir {
-                println!("[dry-run] step '{}' (in {}): {}", step.id, dir.display(), expanded_cmd);
+                println!("[dry-run] step '{}' (in {}): {}", step.id, dir.display(), masked_cmd);
             } else {
-                println!("[dry-run] step '{}': {}", step.id, expanded_cmd);
+                println!("[dry-run] step '{}': {}", step.id, masked_cmd);
             }
             step_results.push(StepResult {
                 id: step.id.clone(),
                 status: StepStatus::Success,
-                output: format!("[dry-run] {expanded_cmd}"),
+                output: format!("[dry-run] {masked_cmd}"),
                 duration_ms: 0,
             });
             send(ExecutionEvent::StepCompleted {
@@ -111,69 +189,157 @@ pub fn execute_workflow(
 
         send(ExecutionEvent::StepStarted {
             step_id: step.id.clone(),
-            cmd_preview: truncate_cmd(&expanded_cmd, 60),
+            cmd_preview: mask_secrets(&truncate_cmd(&expanded_cmd, 60), &secret_values),
         });
 
+        let max_attempts = step.retry.unwrap_or(0) + 1;
+        let retry_delay_secs = step.retry_delay.unwrap_or(0);
+        let mut last_output = String::new();
+        let mut last_exit_code = 0i32;
+        let mut step_succeeded = false;
+        let mut step_timed_out = false;
         let timer = Instant::now();
-        let mut cmd = Command::new("bash");
-        cmd.arg("-c").arg(&expanded_cmd).envs(&env);
-        if let Some(ref dir) = workflow.workdir {
-            cmd.current_dir(dir);
-        }
-        let result = cmd.output();
 
-        let duration_ms = timer.elapsed().as_millis() as u64;
-
-        match result {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let combined = format!("{stdout}{stderr}");
-
-                if output.status.success() {
-                    step_results.push(StepResult {
-                        id: step.id.clone(),
-                        status: StepStatus::Success,
-                        output: combined,
-                        duration_ms,
-                    });
-                    send(ExecutionEvent::StepCompleted {
-                        step_id: step.id.clone(),
-                        status: StepStatus::Success,
-                        duration_ms,
-                    });
-                } else {
-                    let code = output.status.code().unwrap_or(1);
-                    overall_exit = code;
-                    failed_steps.insert(step.id.clone());
-                    step_results.push(StepResult {
-                        id: step.id.clone(),
-                        status: StepStatus::Failed,
-                        output: combined,
-                        duration_ms,
-                    });
-                    send(ExecutionEvent::StepCompleted {
-                        step_id: step.id.clone(),
-                        status: StepStatus::Failed,
-                        duration_ms,
-                    });
+        for attempt in 1..=max_attempts {
+            if attempt > 1 {
+                send(ExecutionEvent::StepRetrying {
+                    step_id: step.id.clone(),
+                    attempt,
+                    max: max_attempts,
+                    delay_secs: retry_delay_secs,
+                });
+                if retry_delay_secs > 0 {
+                    std::thread::sleep(Duration::from_secs(retry_delay_secs));
                 }
             }
-            Err(e) => {
-                overall_exit = 1;
-                failed_steps.insert(step.id.clone());
-                step_results.push(StepResult {
-                    id: step.id.clone(),
-                    status: StepStatus::Failed,
-                    output: format!("failed to execute: {e}"),
-                    duration_ms,
-                });
-                send(ExecutionEvent::StepCompleted {
-                    step_id: step.id.clone(),
-                    status: StepStatus::Failed,
-                    duration_ms,
-                });
+
+            let timeout_secs = step.timeout.or(opts.default_timeout);
+
+            let mut cmd = Command::new("bash");
+            cmd.arg("-c").arg(&expanded_cmd).envs(&env);
+            if let Some(ref dir) = workflow.workdir {
+                cmd.current_dir(dir);
             }
+
+            if timeout_secs.is_some() {
+                cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            }
+
+            let result = if let Some(secs) = timeout_secs {
+                match cmd.spawn() {
+                    Ok(mut child) => {
+                        match child.wait_timeout(Duration::from_secs(secs)) {
+                            Ok(Some(status)) => {
+                                let mut stdout_buf = String::new();
+                                let mut stderr_buf = String::new();
+                                if let Some(mut out) = child.stdout.take() {
+                                    let _ = out.read_to_string(&mut stdout_buf);
+                                }
+                                if let Some(mut err) = child.stderr.take() {
+                                    let _ = err.read_to_string(&mut stderr_buf);
+                                }
+                                last_output = format!("{stdout_buf}{stderr_buf}");
+                                if status.success() {
+                                    step_succeeded = true;
+                                } else {
+                                    last_exit_code = status.code().unwrap_or(1);
+                                }
+                                Ok(())
+                            }
+                            Ok(None) => {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                last_output = format!("step timed out after {secs}s");
+                                step_timed_out = true;
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                match cmd.output() {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        last_output = format!("{stdout}{stderr}");
+                        if output.status.success() {
+                            step_succeeded = true;
+                        } else {
+                            last_exit_code = output.status.code().unwrap_or(1);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            };
+
+            if let Err(e) = result {
+                last_output = format!("failed to execute: {e}");
+                last_exit_code = 1;
+            }
+
+            // Timeout: don't retry
+            if step_timed_out || step_succeeded {
+                break;
+            }
+        }
+
+        let duration_ms = timer.elapsed().as_millis() as u64;
+        let masked_output = mask_secrets(&last_output, &secret_values);
+
+        if step_succeeded {
+            let output = if max_attempts > 1 {
+                masked_output
+            } else {
+                masked_output
+            };
+            step_results.push(StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Success,
+                output,
+                duration_ms,
+            });
+            send(ExecutionEvent::StepCompleted {
+                step_id: step.id.clone(),
+                status: StepStatus::Success,
+                duration_ms,
+            });
+        } else if step_timed_out {
+            let secs = step.timeout.or(opts.default_timeout).unwrap_or(0);
+            overall_exit = 124;
+            failed_steps.insert(step.id.clone());
+            step_results.push(StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Timedout,
+                output: masked_output,
+                duration_ms,
+            });
+            send(ExecutionEvent::StepTimedOut {
+                step_id: step.id.clone(),
+                timeout_secs: secs,
+                duration_ms,
+            });
+        } else {
+            overall_exit = last_exit_code;
+            failed_steps.insert(step.id.clone());
+            let output = if max_attempts > 1 {
+                format!("{masked_output} (after {max_attempts} attempts)")
+            } else {
+                masked_output
+            };
+            step_results.push(StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Failed,
+                output,
+                duration_ms,
+            });
+            send(ExecutionEvent::StepCompleted {
+                step_id: step.id.clone(),
+                status: StepStatus::Failed,
+                duration_ms,
+            });
         }
     }
 
@@ -210,16 +376,26 @@ mod tests {
                     cmd: "echo hello".into(),
                     needs: vec![],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
                 Step {
                     id: "s2".into(),
                     cmd: "echo world".into(),
                     needs: vec!["s1".into()],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
             ],
             env: HashMap::new(),
             workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
         }
     }
 
@@ -256,22 +432,36 @@ mod tests {
                     cmd: "exit 1".into(),
                     needs: vec![],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
                 Step {
                     id: "dependent".into(),
                     cmd: "echo should-not-run".into(),
                     needs: vec!["bad".into()],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
                 Step {
                     id: "independent".into(),
                     cmd: "echo runs-fine".into(),
                     needs: vec![],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
             ],
             env: HashMap::new(),
             workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
         };
 
         let log = execute_workflow(&wf, "test/fail", &ExecuteOpts::default(), None).unwrap();
@@ -293,9 +483,15 @@ mod tests {
                 cmd: "echo $MY_VAR".into(),
                 needs: vec![],
                 parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
             }],
             env: HashMap::from([("MY_VAR".to_string(), "original".to_string())]),
             workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
         };
 
         let opts = ExecuteOpts {
@@ -316,13 +512,305 @@ mod tests {
                 cmd: "pwd".into(),
                 needs: vec![],
                 parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
             }],
             env: HashMap::new(),
             workdir: Some(std::path::PathBuf::from("/tmp")),
+            secrets: Vec::new(),
+            notify: Default::default(),
         };
 
         let log = execute_workflow(&wf, "test/workdir", &ExecuteOpts::default(), None).unwrap();
         assert_eq!(log.exit_code, 0);
         assert!(log.steps[0].output.trim().starts_with("/tmp"));
+    }
+
+    #[test]
+    fn test_step_timeout() {
+        let wf = Workflow {
+            name: "timeout-test".to_string(),
+            steps: vec![Step {
+                id: "slow".into(),
+                cmd: "sleep 10".into(),
+                needs: vec![],
+                parallel: false,
+                timeout: Some(1),
+                run_if: None,
+                retry: None,
+                retry_delay: None,
+            }],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+        };
+
+        let log = execute_workflow(&wf, "test/timeout", &ExecuteOpts::default(), None).unwrap();
+        assert_eq!(log.steps[0].status, StepStatus::Timedout);
+        assert_eq!(log.exit_code, 124);
+        assert!(log.steps[0].output.contains("timed out"));
+    }
+
+    #[test]
+    fn test_default_timeout_override() {
+        let wf = Workflow {
+            name: "default-timeout-test".to_string(),
+            steps: vec![Step {
+                id: "slow".into(),
+                cmd: "sleep 10".into(),
+                needs: vec![],
+                parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
+            }],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+        };
+
+        let opts = ExecuteOpts {
+            default_timeout: Some(1),
+            ..Default::default()
+        };
+
+        let log = execute_workflow(&wf, "test/default-timeout", &opts, None).unwrap();
+        assert_eq!(log.steps[0].status, StepStatus::Timedout);
+    }
+
+    #[test]
+    fn test_step_timeout_overrides_default() {
+        // Step timeout of 1s should override the default of 999s
+        let wf = Workflow {
+            name: "override-test".to_string(),
+            steps: vec![Step {
+                id: "slow".into(),
+                cmd: "sleep 10".into(),
+                needs: vec![],
+                parallel: false,
+                timeout: Some(1),
+                run_if: None,
+                retry: None,
+                retry_delay: None,
+            }],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+        };
+
+        let opts = ExecuteOpts {
+            default_timeout: Some(999),
+            ..Default::default()
+        };
+
+        let log = execute_workflow(&wf, "test/override", &opts, None).unwrap();
+        assert_eq!(log.steps[0].status, StepStatus::Timedout);
+    }
+
+    #[test]
+    fn test_timeout_skips_dependents() {
+        let wf = Workflow {
+            name: "timeout-deps-test".to_string(),
+            steps: vec![
+                Step {
+                    id: "slow".into(),
+                    cmd: "sleep 10".into(),
+                    needs: vec![],
+                    parallel: false,
+                    timeout: Some(1),
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
+                },
+                Step {
+                    id: "dependent".into(),
+                    cmd: "echo should-not-run".into(),
+                    needs: vec!["slow".into()],
+                    parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
+                },
+            ],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+        };
+
+        let log = execute_workflow(&wf, "test/timeout-deps", &ExecuteOpts::default(), None).unwrap();
+        assert_eq!(log.steps[0].status, StepStatus::Timedout);
+        assert_eq!(log.steps[1].status, StepStatus::Skipped);
+    }
+
+    #[test]
+    fn test_run_if_condition_met() {
+        let wf = Workflow {
+            name: "run-if-true".to_string(),
+            steps: vec![Step {
+                id: "s1".into(),
+                cmd: "echo ran".into(),
+                needs: vec![],
+                parallel: false,
+                timeout: None,
+                run_if: Some("true".to_string()),
+                retry: None,
+                retry_delay: None,
+            }],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+        };
+
+        let log = execute_workflow(&wf, "test/run-if", &ExecuteOpts::default(), None).unwrap();
+        assert_eq!(log.steps[0].status, StepStatus::Success);
+        assert!(log.steps[0].output.contains("ran"));
+    }
+
+    #[test]
+    fn test_run_if_condition_not_met() {
+        let wf = Workflow {
+            name: "run-if-false".to_string(),
+            steps: vec![
+                Step {
+                    id: "maybe".into(),
+                    cmd: "echo should-not-run".into(),
+                    needs: vec![],
+                    parallel: false,
+                    timeout: None,
+                    run_if: Some("false".to_string()),
+                    retry: None,
+                    retry_delay: None,
+                },
+                Step {
+                    id: "after".into(),
+                    cmd: "echo runs-anyway".into(),
+                    needs: vec!["maybe".into()],
+                    parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
+                },
+            ],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+        };
+
+        let log = execute_workflow(&wf, "test/run-if-false", &ExecuteOpts::default(), None).unwrap();
+        assert_eq!(log.exit_code, 0);
+        let maybe = log.steps.iter().find(|s| s.id == "maybe").unwrap();
+        assert_eq!(maybe.status, StepStatus::Skipped);
+        assert!(maybe.output.contains("condition not met"));
+        // Dependent still runs because condition-skip doesn't cascade
+        let after = log.steps.iter().find(|s| s.id == "after").unwrap();
+        assert_eq!(after.status, StepStatus::Success);
+    }
+
+    #[test]
+    fn test_retry_succeeds_eventually() {
+        // Use a file counter to succeed on attempt 2
+        let dir = tempfile::TempDir::new().unwrap();
+        let counter = dir.path().join("counter");
+        let cmd = format!(
+            "if [ -f '{}' ]; then echo ok; else touch '{}'; exit 1; fi",
+            counter.display(),
+            counter.display()
+        );
+        let wf = Workflow {
+            name: "retry-test".to_string(),
+            steps: vec![Step {
+                id: "flaky".into(),
+                cmd,
+                needs: vec![],
+                parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: Some(2),
+                retry_delay: Some(0),
+            }],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+        };
+
+        let log = execute_workflow(&wf, "test/retry", &ExecuteOpts::default(), None).unwrap();
+        assert_eq!(log.exit_code, 0);
+        assert_eq!(log.steps[0].status, StepStatus::Success);
+    }
+
+    #[test]
+    fn test_retry_exhausted() {
+        let wf = Workflow {
+            name: "retry-fail".to_string(),
+            steps: vec![Step {
+                id: "always-fail".into(),
+                cmd: "exit 1".into(),
+                needs: vec![],
+                parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: Some(2),
+                retry_delay: Some(0),
+            }],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+        };
+
+        let log = execute_workflow(&wf, "test/retry-fail", &ExecuteOpts::default(), None).unwrap();
+        assert_ne!(log.exit_code, 0);
+        assert_eq!(log.steps[0].status, StepStatus::Failed);
+        assert!(log.steps[0].output.contains("3 attempts"));
+    }
+
+    #[test]
+    fn test_secret_masking() {
+        let wf = Workflow {
+            name: "secret-test".to_string(),
+            steps: vec![Step {
+                id: "s1".into(),
+                cmd: "echo hunter2".into(),
+                needs: vec![],
+                parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
+            }],
+            env: HashMap::from([("MY_PASS".to_string(), "hunter2".to_string())]),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+        };
+
+        let opts = ExecuteOpts {
+            secrets: vec!["MY_PASS".to_string()],
+            ..Default::default()
+        };
+
+        let log = execute_workflow(&wf, "test/secret", &opts, None).unwrap();
+        assert!(!log.steps[0].output.contains("hunter2"), "secret should be masked");
+        assert!(log.steps[0].output.contains("[REDACTED]"), "should contain redacted marker");
+    }
+
+    #[test]
+    fn test_mask_secrets_fn() {
+        let secrets = vec!["s3cret".to_string(), "p@ssword".to_string()];
+        let text = "connecting with s3cret and p@ssword";
+        let masked = mask_secrets(text, &secrets);
+        assert_eq!(masked, "connecting with [REDACTED] and [REDACTED]");
     }
 }

@@ -1,7 +1,10 @@
 use std::collections::HashSet;
 use std::sync::mpsc;
 
+use crate::core::ai::{AiResult, AiResponse, AiTool};
+use crate::core::compare::CompareResult;
 use crate::core::config::Config;
+use crate::core::history::HistoryEntry;
 use crate::core::models::{Category, ExecutionEvent, RunLog, StepStatus, Task, Workflow};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -18,31 +21,71 @@ pub enum AppMode {
     ViewingLogs,
     Search,
     Help,
+    Comparing,
     Wizard,
+    ConfirmDelete,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteState {
+    pub task_name: String,
+    pub task_path: std::path::PathBuf,
+    pub category: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WizardStage {
+    ShellHistory,
+    AiPrompt,
+    AiThinking,
     Category,
     TaskName,
     Options,
     Preview,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WizardMode {
+    FromHistory,
+    CloneTask,
+    AiChat,
+}
+
+#[derive(Debug)]
 pub struct WizardState {
+    pub mode: WizardMode,
     pub stage: WizardStage,
-    pub source_task_ref: String,
-    pub source_workflow: Workflow,
+
+    // History stage fields
+    pub history_entries: Vec<HistoryEntry>,
+    pub history_filter: String,
+    pub history_filtered: Vec<usize>,
+    pub history_cursor: usize,
+    pub history_selected: Vec<usize>,
+    pub history_scroll_offset: usize,
+
+    // Clone-task fields (CloneTask mode only)
+    pub source_task_ref: Option<String>,
+    pub source_workflow: Option<Workflow>,
     pub source_run: Option<RunLog>,
-    pub category: String,
-    pub task_name: String,
-    pub category_cursor: Option<usize>,
     pub remove_failed: bool,
     pub remove_skipped: bool,
     pub parallelize: bool,
-    pub preview_scroll: u16,
     pub active_toggle: usize,
+
+    // AI Chat fields
+    pub ai_prompt: String,
+    pub ai_tool: Option<AiTool>,
+    pub ai_result_rx: Option<mpsc::Receiver<AiResult>>,
+    pub ai_commands: Vec<String>,
+    pub ai_error: Option<String>,
+    pub ai_tick: u8,
+
+    // Shared fields
+    pub category: String,
+    pub task_name: String,
+    pub category_cursor: Option<usize>,
+    pub preview_scroll: u16,
     pub save_message: Option<String>,
 }
 
@@ -83,8 +126,14 @@ pub struct App {
     pub executing_task_ref: Option<String>,
     pub step_states: Vec<StepState>,
 
+    // Compare state
+    pub compare_result: Option<CompareResult>,
+
     // Wizard state
     pub wizard: Option<WizardState>,
+
+    // Delete confirmation state
+    pub delete_state: Option<DeleteState>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,7 +166,9 @@ impl App {
             is_executing: false,
             executing_task_ref: None,
             step_states: Vec::new(),
+            compare_result: None,
             wizard: None,
+            delete_state: None,
         }
     }
 
@@ -305,6 +356,29 @@ impl App {
                             duration_ms,
                         ));
                     }
+                    ExecutionEvent::StepTimedOut { step_id, timeout_secs, duration_ms } => {
+                        if let Some(state) = self.step_states.iter_mut().find(|s| s.id == step_id) {
+                            state.status = StepStatus::Timedout;
+                            state.duration_ms = Some(duration_ms);
+                        }
+                        self.footer_log.push(format!(
+                            "[{}] ⏱ {} timed out after {}s ({}ms)",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            step_id,
+                            timeout_secs,
+                            duration_ms,
+                        ));
+                    }
+                    ExecutionEvent::StepRetrying { step_id, attempt, max, delay_secs } => {
+                        self.footer_log.push(format!(
+                            "[{}] ↻ {} retry {}/{} (wait {}s)",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            step_id,
+                            attempt,
+                            max,
+                            delay_secs,
+                        ));
+                    }
                     ExecutionEvent::StepSkipped { step_id } => {
                         self.step_states.push(StepState {
                             id: step_id.clone(),
@@ -366,6 +440,50 @@ impl App {
         if self.footer_log.len() > 100 {
             let start = self.footer_log.len() - 50;
             self.footer_log = self.footer_log[start..].to_vec();
+        }
+    }
+
+    pub fn drain_ai_events(&mut self) {
+        let wiz = match self.wizard.as_mut() {
+            Some(w) if w.stage == WizardStage::AiThinking => w,
+            _ => return,
+        };
+
+        let rx = match wiz.ai_result_rx.as_ref() {
+            Some(rx) => rx,
+            None => return,
+        };
+
+        match rx.try_recv() {
+            Ok(AiResult::Success(AiResponse { commands, task_name, category })) => {
+                // Use AI-suggested name/category, fall back to heuristics
+                wiz.category = category.unwrap_or_else(|| {
+                    let refs: Vec<&str> = commands.iter().map(|s| s.as_str()).collect();
+                    crate::core::history::suggest_category(&refs)
+                });
+                wiz.task_name = task_name.unwrap_or_else(|| {
+                    commands.first()
+                        .map(|c| crate::core::history::derive_task_name(c))
+                        .unwrap_or_else(|| "task".to_string())
+                });
+                wiz.ai_commands = commands;
+                wiz.ai_result_rx = None;
+                wiz.ai_error = None;
+                wiz.stage = WizardStage::Category;
+            }
+            Ok(AiResult::Error(msg)) => {
+                wiz.ai_error = Some(msg);
+                wiz.ai_result_rx = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                wiz.ai_tick = wiz.ai_tick.wrapping_add(1);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                if wiz.ai_error.is_none() {
+                    wiz.ai_error = Some("AI process disconnected unexpectedly".to_string());
+                }
+                wiz.ai_result_rx = None;
+            }
         }
     }
 }

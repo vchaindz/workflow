@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use crate::core::config::Config;
+use crate::core::db;
 use crate::core::discovery::{resolve_task_ref, scan_workflows};
-use crate::core::executor::{execute_workflow, ExecuteOpts};
-use crate::core::logger::write_run_log;
-use crate::core::models::TaskKind;
+use crate::core::executor::{execute_workflow, run_notify, ExecuteOpts};
+use crate::core::models::{StepStatus, TaskKind};
 use crate::core::parser::{parse_shell_task, parse_workflow};
 use crate::error::Result;
 
@@ -13,7 +13,34 @@ pub fn cmd_run(
     task_ref: &str,
     dry_run: bool,
     env_vars: &[String],
+    timeout: Option<u64>,
+    background: bool,
 ) -> Result<i32> {
+    // Background mode: re-exec self without --background, detached from terminal
+    if background {
+        let exe = std::env::current_exe()?;
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("run").arg(task_ref);
+        if dry_run {
+            cmd.arg("--dry-run");
+        }
+        for ev in env_vars {
+            cmd.arg("--env").arg(ev);
+        }
+        if let Some(t) = timeout {
+            cmd.arg("--timeout").arg(t.to_string());
+        }
+        if let Some(ref dir) = config.workflows_dir.canonicalize().ok() {
+            cmd.arg("--dir").arg(dir);
+        }
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        let child = cmd.spawn()?;
+        eprintln!("background: started as PID {}", child.id());
+        return Ok(0);
+    }
+
     let categories = scan_workflows(&config.workflows_dir)?;
     let task = resolve_task_ref(&categories, task_ref)?;
 
@@ -32,9 +59,26 @@ pub fn cmd_run(
         })
         .collect();
 
+    // Resolve timeout: CLI flag overrides config default. --timeout 0 means no timeout.
+    let effective_timeout = match timeout {
+        Some(0) => None,
+        Some(t) => Some(t),
+        None => config.default_timeout,
+    };
+
+    // Merge secrets: workflow + config
+    let mut secrets = workflow.secrets.clone();
+    for s in &config.secrets {
+        if !secrets.contains(s) {
+            secrets.push(s.clone());
+        }
+    }
+
     let opts = ExecuteOpts {
         dry_run,
         env_overrides,
+        default_timeout: effective_timeout,
+        secrets,
     };
 
     let canonical_ref = format!("{}/{}", task.category, task.name);
@@ -42,18 +86,41 @@ pub fn cmd_run(
     let exit_code = run_log.exit_code;
 
     if !dry_run {
-        let log_path = write_run_log(&config.logs_dir(), &run_log)?;
+        let conn = db::open_db(&config.db_path())?;
+        db::insert_run_log(&conn, &run_log)?;
         if exit_code == 0 {
-            eprintln!("success: log written to {}", log_path.display());
+            eprintln!("success: run logged to database");
         } else {
-            eprintln!("failed (exit {}): log written to {}", exit_code, log_path.display());
-            // Print failed step output
+            eprintln!("failed (exit {}): run logged to database", exit_code);
             for step in &run_log.steps {
-                if step.status == crate::core::models::StepStatus::Failed {
-                    eprintln!("--- step '{}' output ---", step.id);
+                if step.status == StepStatus::Failed || step.status == StepStatus::Timedout {
+                    let label = if step.status == StepStatus::Timedout {
+                        "timed out"
+                    } else {
+                        "failed"
+                    };
+                    eprintln!("--- step '{}' {} ---", step.id, label);
                     eprintln!("{}", step.output);
                 }
             }
+        }
+
+        // Notifications: workflow notify overrides config notify
+        let notify_on_failure = workflow.notify.on_failure.as_ref()
+            .or(config.notify.on_failure.as_ref());
+        let notify_on_success = workflow.notify.on_success.as_ref()
+            .or(config.notify.on_success.as_ref());
+
+        let mut notify_vars: HashMap<String, String> = HashMap::new();
+        notify_vars.insert("task_ref".to_string(), canonical_ref.clone());
+        notify_vars.insert("exit_code".to_string(), exit_code.to_string());
+
+        if exit_code == 0 {
+            if let Some(cmd) = notify_on_success {
+                run_notify(cmd, &notify_vars);
+            }
+        } else if let Some(cmd) = notify_on_failure {
+            run_notify(cmd, &notify_vars);
         }
     }
 

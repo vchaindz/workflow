@@ -4,25 +4,41 @@ use std::thread;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::core::ai;
+use crate::core::compare;
 use crate::core::db;
-use crate::core::executor::{execute_workflow, ExecuteOpts};
+use crate::core::executor::{execute_workflow, run_notify, ExecuteOpts};
+use crate::core::history;
 use crate::core::models::{ExecutionEvent, TaskKind};
 use crate::core::parser::{parse_shell_task, parse_workflow};
 use crate::core::wizard;
 use crate::error::Result;
 
-use super::app::{App, AppMode, Focus, WizardStage, WizardState};
+use super::app::{App, AppMode, DeleteState, Focus, WizardMode, WizardStage, WizardState};
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.mode {
         AppMode::Search => handle_search_key(app, key),
         AppMode::Running => Ok(()),
+        AppMode::Comparing => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    app.compare_result = None;
+                    app.mode = AppMode::Normal;
+                }
+                KeyCode::Up => app.detail_scroll = app.detail_scroll.saturating_sub(1),
+                KeyCode::Down => app.detail_scroll = app.detail_scroll.saturating_add(1),
+                _ => {}
+            }
+            Ok(())
+        }
         AppMode::Help => {
             // Any key dismisses help
             app.mode = AppMode::Normal;
             Ok(())
         }
         AppMode::Wizard => handle_wizard_key(app, key),
+        AppMode::ConfirmDelete => handle_confirm_delete_key(app, key),
         _ => handle_normal_key(app, key),
     }
 }
@@ -63,7 +79,11 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.detail_scroll = app.detail_scroll.saturating_add(1);
         }
         KeyCode::Char('L') => view_logs(app)?,
-        KeyCode::Char('w') => start_wizard(app)?,
+        KeyCode::Char('w') => start_history_wizard(app),
+        KeyCode::Char('W') => start_clone_wizard(app)?,
+        KeyCode::Char('c') => compare_selected(app)?,
+        KeyCode::Char('a') => start_ai_wizard(app),
+        KeyCode::Delete => start_delete(app),
         KeyCode::Char('h') => {
             app.mode = AppMode::Help;
         }
@@ -142,10 +162,27 @@ fn run_selected(app: &mut App, dry_run: bool) -> Result<()> {
 
     let db_path = app.config.db_path();
 
+    let default_timeout = app.config.default_timeout;
+
+    // Merge secrets: workflow + config
+    let mut secrets = workflow.secrets.clone();
+    for s in &app.config.secrets {
+        if !secrets.contains(s) {
+            secrets.push(s.clone());
+        }
+    }
+
+    // Clone notify config for background thread
+    let wf_notify = workflow.notify.clone();
+    let cfg_notify = app.config.notify.clone();
+    let task_ref_for_notify = task_ref.clone();
+
     thread::spawn(move || {
         let opts = ExecuteOpts {
             dry_run,
             env_overrides: HashMap::new(),
+            default_timeout,
+            secrets,
         };
 
         match execute_workflow(&workflow, &task_ref, &opts, Some(&tx)) {
@@ -153,6 +190,24 @@ fn run_selected(app: &mut App, dry_run: bool) -> Result<()> {
                 if !dry_run {
                     if let Ok(conn) = db::open_db(&db_path) {
                         let _ = db::insert_run_log(&conn, &run_log);
+                    }
+
+                    // Run notifications
+                    let notify_on_failure = wf_notify.on_failure.as_ref()
+                        .or(cfg_notify.on_failure.as_ref());
+                    let notify_on_success = wf_notify.on_success.as_ref()
+                        .or(cfg_notify.on_success.as_ref());
+
+                    let mut notify_vars: HashMap<String, String> = HashMap::new();
+                    notify_vars.insert("task_ref".to_string(), task_ref_for_notify);
+                    notify_vars.insert("exit_code".to_string(), run_log.exit_code.to_string());
+
+                    if run_log.exit_code == 0 {
+                        if let Some(cmd) = notify_on_success {
+                            run_notify(cmd, &notify_vars);
+                        }
+                    } else if let Some(cmd) = notify_on_failure {
+                        run_notify(cmd, &notify_vars);
                     }
                 }
                 let _ = tx.send(ExecutionEvent::WorkflowFinished { run_log });
@@ -205,7 +260,143 @@ fn view_logs(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-fn start_wizard(app: &mut App) -> Result<()> {
+fn compare_selected(app: &mut App) -> Result<()> {
+    let task = match app.selected_task_ref() {
+        Some(t) => t.clone(),
+        None => return Ok(()),
+    };
+
+    let task_ref = format!("{}/{}", task.category, task.name);
+    let conn = db::open_db(&app.config.db_path())?;
+    let history = db::get_task_history(&conn, &task_ref, 2)?;
+
+    if history.len() < 2 {
+        app.footer_log.push(format!(
+            "[{}] Compare: need at least 2 runs (found {})",
+            chrono::Local::now().format("%H:%M:%S"),
+            history.len(),
+        ));
+        return Ok(());
+    }
+
+    // history is newest-first
+    let result = compare::compare_runs(&history[1], &history[0]);
+    app.compare_result = Some(result);
+    app.mode = AppMode::Comparing;
+    app.focus = Focus::Details;
+    app.detail_scroll = 0;
+
+    Ok(())
+}
+
+fn start_delete(app: &mut App) {
+    let task = match app.selected_task_ref() {
+        Some(t) => t.clone(),
+        None => return,
+    };
+
+    app.delete_state = Some(DeleteState {
+        task_name: task.name.clone(),
+        task_path: task.path.clone(),
+        category: task.category.clone(),
+    });
+    app.mode = AppMode::ConfirmDelete;
+}
+
+fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        app.should_quit = true;
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            if let Some(ref state) = app.delete_state {
+                let path = state.task_path.clone();
+                let name = format!("{}/{}", state.category, state.task_name);
+
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {
+                        app.footer_log.push(format!(
+                            "[{}] Deleted: {}",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            name,
+                        ));
+
+                        // Remove from in-memory categories
+                        for cat in &mut app.categories {
+                            cat.tasks.retain(|t| t.path != path);
+                        }
+                        // Remove empty categories
+                        app.categories.retain(|c| !c.tasks.is_empty());
+
+                        // Fix selection bounds
+                        if app.selected_category >= app.categories.len() && !app.categories.is_empty() {
+                            app.selected_category = app.categories.len() - 1;
+                        }
+                        let task_count = app.categories.get(app.selected_category)
+                            .map(|c| c.tasks.len()).unwrap_or(0);
+                        if app.selected_task >= task_count && task_count > 0 {
+                            app.selected_task = task_count - 1;
+                        }
+                    }
+                    Err(e) => {
+                        app.footer_log.push(format!(
+                            "[{}] Delete failed: {}",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            e,
+                        ));
+                    }
+                }
+            }
+            app.delete_state = None;
+            app.mode = AppMode::Normal;
+        }
+        _ => {
+            // Any other key cancels
+            app.delete_state = None;
+            app.mode = AppMode::Normal;
+        }
+    }
+    Ok(())
+}
+
+fn start_history_wizard(app: &mut App) {
+    let entries = history::load_shell_history(5000);
+    let filtered: Vec<usize> = (0..entries.len()).collect();
+
+    app.wizard = Some(WizardState {
+        mode: WizardMode::FromHistory,
+        stage: WizardStage::ShellHistory,
+        history_entries: entries,
+        history_filter: String::new(),
+        history_filtered: filtered,
+        history_cursor: 0,
+        history_selected: Vec::new(),
+        history_scroll_offset: 0,
+        source_task_ref: None,
+        source_workflow: None,
+        source_run: None,
+        ai_prompt: String::new(),
+        ai_tool: None,
+        ai_result_rx: None,
+        ai_commands: Vec::new(),
+        ai_error: None,
+        ai_tick: 0,
+        category: String::new(),
+        task_name: String::new(),
+        category_cursor: None,
+        remove_failed: false,
+        remove_skipped: false,
+        parallelize: false,
+        active_toggle: 0,
+        preview_scroll: 0,
+        save_message: None,
+    });
+    app.mode = AppMode::Wizard;
+}
+
+fn start_clone_wizard(app: &mut App) -> Result<()> {
     let task = match app.selected_task_ref() {
         Some(t) => t.clone(),
         None => return Ok(()),
@@ -218,7 +409,6 @@ fn start_wizard(app: &mut App) -> Result<()> {
 
     let task_ref = format!("{}/{}", task.category, task.name);
 
-    // Try to load last run from DB
     let source_run = db::open_db(&app.config.db_path())
         .ok()
         .and_then(|conn| db::get_task_history(&conn, &task_ref, 1).ok())
@@ -227,18 +417,31 @@ fn start_wizard(app: &mut App) -> Result<()> {
     let has_run = source_run.is_some();
 
     app.wizard = Some(WizardState {
+        mode: WizardMode::CloneTask,
         stage: WizardStage::Category,
-        source_task_ref: task_ref,
-        source_workflow: workflow,
+        history_entries: Vec::new(),
+        history_filter: String::new(),
+        history_filtered: Vec::new(),
+        history_cursor: 0,
+        history_selected: Vec::new(),
+        history_scroll_offset: 0,
+        source_task_ref: Some(task_ref),
+        source_workflow: Some(workflow),
         source_run,
+        ai_prompt: String::new(),
+        ai_tool: None,
+        ai_result_rx: None,
+        ai_commands: Vec::new(),
+        ai_error: None,
+        ai_tick: 0,
         category: task.category.clone(),
         task_name: format!("{}-copy", task.name),
         category_cursor: None,
         remove_failed: has_run,
         remove_skipped: has_run,
         parallelize: false,
-        preview_scroll: 0,
         active_toggle: 0,
+        preview_scroll: 0,
         save_message: None,
     });
     app.mode = AppMode::Wizard;
@@ -246,6 +449,96 @@ fn start_wizard(app: &mut App) -> Result<()> {
     app.detail_scroll = 0;
 
     Ok(())
+}
+
+fn start_ai_wizard(app: &mut App) {
+    let tool = match ai::detect_ai_tool() {
+        Some(t) => t,
+        None => {
+            app.footer_log.push(format!(
+                "[{}] No AI tool found (install `claude` or `codex`)",
+                chrono::Local::now().format("%H:%M:%S"),
+            ));
+            return;
+        }
+    };
+
+    app.wizard = Some(WizardState {
+        mode: WizardMode::AiChat,
+        stage: WizardStage::AiPrompt,
+        history_entries: Vec::new(),
+        history_filter: String::new(),
+        history_filtered: Vec::new(),
+        history_cursor: 0,
+        history_selected: Vec::new(),
+        history_scroll_offset: 0,
+        source_task_ref: None,
+        source_workflow: None,
+        source_run: None,
+        ai_prompt: String::new(),
+        ai_tool: Some(tool),
+        ai_result_rx: None,
+        ai_commands: Vec::new(),
+        ai_error: None,
+        ai_tick: 0,
+        category: String::new(),
+        task_name: String::new(),
+        category_cursor: None,
+        remove_failed: false,
+        remove_skipped: false,
+        parallelize: false,
+        active_toggle: 0,
+        preview_scroll: 0,
+        save_message: None,
+    });
+    app.mode = AppMode::Wizard;
+}
+
+fn handle_wizard_ai_prompt(app: &mut App, key: KeyEvent) {
+    let wiz = app.wizard.as_mut().unwrap();
+
+    match key.code {
+        KeyCode::Enter => {
+            if !wiz.ai_prompt.trim().is_empty() {
+                let tool = wiz.ai_tool.unwrap();
+                let prompt = wiz.ai_prompt.clone();
+                let (tx, rx) = mpsc::channel();
+
+                wiz.ai_result_rx = Some(rx);
+                wiz.ai_error = None;
+                wiz.ai_tick = 0;
+                wiz.stage = WizardStage::AiThinking;
+
+                thread::spawn(move || {
+                    let result = ai::invoke_ai(tool, &prompt);
+                    let _ = tx.send(result);
+                });
+            }
+        }
+        KeyCode::Backspace => {
+            wiz.ai_prompt.pop();
+        }
+        KeyCode::Char(c) => {
+            wiz.ai_prompt.push(c);
+        }
+        _ => {}
+    }
+}
+
+fn handle_wizard_ai_thinking(app: &mut App, key: KeyEvent) {
+    let wiz = app.wizard.as_mut().unwrap();
+    match key.code {
+        KeyCode::Esc => {
+            // If there's an error displayed, go back to prompt to retry
+            if wiz.ai_error.is_some() {
+                wiz.ai_error = None;
+                wiz.stage = WizardStage::AiPrompt;
+            }
+            // Otherwise spinner is running — Esc cancels the whole wizard
+            // (handled by parent match in handle_wizard_key)
+        }
+        _ => {}
+    }
 }
 
 fn handle_wizard_key(app: &mut App, key: KeyEvent) -> Result<()> {
@@ -276,6 +569,9 @@ fn handle_wizard_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.mode = AppMode::Normal;
         }
         _ => match wiz.stage {
+            WizardStage::ShellHistory => handle_wizard_history(app, key),
+            WizardStage::AiPrompt => handle_wizard_ai_prompt(app, key),
+            WizardStage::AiThinking => handle_wizard_ai_thinking(app, key),
             WizardStage::Category => handle_wizard_category(app, key)?,
             WizardStage::TaskName => handle_wizard_taskname(app, key),
             WizardStage::Options => handle_wizard_options(app, key),
@@ -284,6 +580,85 @@ fn handle_wizard_key(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn handle_wizard_history(app: &mut App, key: KeyEvent) {
+    let wiz = app.wizard.as_mut().unwrap();
+
+    match key.code {
+        KeyCode::Up => {
+            if wiz.history_cursor > 0 {
+                wiz.history_cursor -= 1;
+                if wiz.history_cursor < wiz.history_scroll_offset {
+                    wiz.history_scroll_offset = wiz.history_cursor;
+                }
+            }
+        }
+        KeyCode::Down => {
+            if !wiz.history_filtered.is_empty()
+                && wiz.history_cursor + 1 < wiz.history_filtered.len()
+            {
+                wiz.history_cursor += 1;
+                // Scroll viewport (visible area ~20 lines for history)
+                let visible = 20usize;
+                if wiz.history_cursor >= wiz.history_scroll_offset + visible {
+                    wiz.history_scroll_offset = wiz.history_cursor.saturating_sub(visible - 1);
+                }
+            }
+        }
+        KeyCode::Char(' ') => {
+            if let Some(&real_idx) = wiz.history_filtered.get(wiz.history_cursor) {
+                // Toggle selection (ordered)
+                if let Some(pos) = wiz.history_selected.iter().position(|&i| i == real_idx) {
+                    wiz.history_selected.remove(pos);
+                } else {
+                    wiz.history_selected.push(real_idx);
+                }
+            }
+        }
+        KeyCode::Enter => {
+            if !wiz.history_selected.is_empty() {
+                // Gather selected commands in selection order
+                let commands: Vec<&str> = wiz
+                    .history_selected
+                    .iter()
+                    .filter_map(|&i| wiz.history_entries.get(i))
+                    .map(|e| e.command.as_str())
+                    .collect();
+
+                wiz.category = history::suggest_category(&commands);
+                if let Some(first) = commands.first() {
+                    wiz.task_name = history::derive_task_name(first);
+                }
+                wiz.stage = WizardStage::Category;
+            }
+        }
+        KeyCode::Backspace => {
+            wiz.history_filter.pop();
+            update_history_filter(wiz);
+        }
+        KeyCode::Char(c) => {
+            wiz.history_filter.push(c);
+            update_history_filter(wiz);
+        }
+        _ => {}
+    }
+}
+
+fn update_history_filter(wiz: &mut WizardState) {
+    let query = wiz.history_filter.to_lowercase();
+    wiz.history_filtered = if query.is_empty() {
+        (0..wiz.history_entries.len()).collect()
+    } else {
+        wiz.history_entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.command.to_lowercase().contains(&query))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    wiz.history_cursor = 0;
+    wiz.history_scroll_offset = 0;
 }
 
 fn handle_wizard_category(app: &mut App, key: KeyEvent) -> Result<()> {
@@ -295,6 +670,14 @@ fn handle_wizard_category(app: &mut App, key: KeyEvent) -> Result<()> {
             if !wiz.category.is_empty() {
                 wiz.stage = WizardStage::TaskName;
             }
+        }
+        KeyCode::BackTab => {
+            match wiz.mode {
+                WizardMode::FromHistory => wiz.stage = WizardStage::ShellHistory,
+                WizardMode::AiChat => wiz.stage = WizardStage::AiPrompt,
+                WizardMode::CloneTask => {}
+            }
+            return Ok(());
         }
         KeyCode::Up => {
             if cat_names.is_empty() {
@@ -332,7 +715,13 @@ fn handle_wizard_taskname(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Enter | KeyCode::Tab => {
             if !wiz.task_name.is_empty() {
-                wiz.stage = WizardStage::Options;
+                match wiz.mode {
+                    WizardMode::CloneTask => wiz.stage = WizardStage::Options,
+                    WizardMode::FromHistory | WizardMode::AiChat => {
+                        wiz.stage = WizardStage::Preview;
+                        wiz.preview_scroll = 0;
+                    }
+                }
             }
         }
         KeyCode::BackTab => {
@@ -381,7 +770,10 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::BackTab => {
             let wiz = app.wizard.as_mut().unwrap();
-            wiz.stage = WizardStage::Options;
+            match wiz.mode {
+                WizardMode::CloneTask => wiz.stage = WizardStage::Options,
+                WizardMode::FromHistory | WizardMode::AiChat => wiz.stage = WizardStage::TaskName,
+            }
             return Ok(());
         }
         KeyCode::Up => {
@@ -393,15 +785,33 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
             wiz.preview_scroll = wiz.preview_scroll.saturating_add(1);
         }
         KeyCode::Enter => {
-            // Generate and save
-            let optimized = wizard::optimize_workflow(
-                &wiz.source_workflow,
-                wiz.source_run.as_ref(),
-                wiz.remove_failed,
-                wiz.remove_skipped,
-                wiz.parallelize,
-            );
-            let yaml = wizard::generate_yaml(&optimized);
+            let yaml = match wiz.mode {
+                WizardMode::FromHistory => {
+                    let commands: Vec<String> = wiz
+                        .history_selected
+                        .iter()
+                        .filter_map(|&i| wiz.history_entries.get(i))
+                        .map(|e| e.command.clone())
+                        .collect();
+                    let wf = wizard::workflow_from_commands(&wiz.task_name, &commands);
+                    wizard::generate_yaml(&wf)
+                }
+                WizardMode::AiChat => {
+                    let wf = wizard::workflow_from_commands(&wiz.task_name, &wiz.ai_commands);
+                    wizard::generate_yaml(&wf)
+                }
+                WizardMode::CloneTask => {
+                    let source_wf = wiz.source_workflow.as_ref().unwrap();
+                    let optimized = wizard::optimize_workflow(
+                        source_wf,
+                        wiz.source_run.as_ref(),
+                        wiz.remove_failed,
+                        wiz.remove_skipped,
+                        wiz.parallelize,
+                    );
+                    wizard::generate_yaml(&optimized)
+                }
+            };
             let category = wiz.category.clone();
             let task_name = wiz.task_name.clone();
 

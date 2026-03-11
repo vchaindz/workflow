@@ -13,6 +13,10 @@ pub struct Cli {
     /// Override workflows directory
     #[arg(long, global = true)]
     pub dir: Option<std::path::PathBuf>,
+
+    /// Disable TUI, fail if no subcommand given
+    #[arg(long, global = true)]
+    pub no_tui: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -29,6 +33,14 @@ pub enum Commands {
         /// Set environment variables (KEY=value)
         #[arg(long = "env", value_name = "KEY=VALUE")]
         env_vars: Vec<String>,
+
+        /// Override default step timeout (seconds, 0 = no timeout)
+        #[arg(long)]
+        timeout: Option<u64>,
+
+        /// Run in background, detach from terminal
+        #[arg(long)]
+        background: bool,
     },
 
     /// List all discovered workflows and tasks
@@ -42,6 +54,38 @@ pub enum Commands {
     Status {
         /// Task reference
         task: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Compare two runs of a task
+    Compare {
+        /// Task reference (e.g., backup/db-full)
+        task: String,
+
+        /// Specific run ID to compare (default: latest)
+        #[arg(long)]
+        run: Option<String>,
+
+        /// Compare against this run ID (default: previous)
+        #[arg(long = "with")]
+        with: Option<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Use AI (claude/codex) for analysis
+        #[arg(long)]
+        ai: bool,
+    },
+
+    /// Validate workflows without executing
+    Validate {
+        /// Task reference (omit to validate all)
+        task: Option<String>,
 
         /// Output as JSON
         #[arg(long)]

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::core::models::{RunLog, Step, StepStatus, Workflow};
@@ -121,6 +121,86 @@ fn renumber_steps(steps: &mut Vec<Step>) {
     }
 }
 
+/// Build a Workflow from raw shell commands.
+/// Generates step IDs from first word of each command (docker-1, git-1, etc.)
+/// Chains steps sequentially via `needs`.
+pub fn workflow_from_commands(name: &str, commands: &[String]) -> Workflow {
+    let mut id_counts: HashMap<String, u32> = HashMap::new();
+    let mut steps = Vec::with_capacity(commands.len());
+    let mut prev_id: Option<String> = None;
+
+    for cmd in commands {
+        let first_word = cmd
+            .trim()
+            .split_whitespace()
+            .next()
+            .unwrap_or("step")
+            .rsplit('/')
+            .next()
+            .unwrap_or("step");
+
+        // Sanitize to [a-z0-9-]
+        let base: String = first_word
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .split('-')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+
+        let base = if base.is_empty() {
+            "step".to_string()
+        } else {
+            base
+        };
+
+        let count = id_counts.entry(base.clone()).or_insert(0);
+        *count += 1;
+        let id = format!("{}-{}", base, count);
+
+        let needs = prev_id.take().into_iter().collect();
+        prev_id = Some(id.clone());
+
+        steps.push(Step {
+            id,
+            cmd: cmd.clone(),
+            needs,
+            parallel: false,
+            timeout: None,
+            run_if: None,
+            retry: None,
+            retry_delay: None,
+        });
+    }
+
+    Workflow {
+        name: name.to_string(),
+        steps,
+        env: HashMap::new(),
+        workdir: None,
+        secrets: Vec::new(),
+        notify: Default::default(),
+    }
+}
+
+/// Check if a YAML scalar value needs quoting.
+fn needs_yaml_quoting(s: &str) -> bool {
+    // Quote if contains characters that are special in YAML
+    s.contains(':') || s.contains('#') || s.contains('"')
+        || s.contains('\'') || s.contains('{') || s.contains('}')
+        || s.contains('[') || s.contains(']') || s.contains('&')
+        || s.contains('*') || s.contains('!') || s.contains('|')
+        || s.contains('>') || s.contains('%') || s.contains('@')
+        || s.contains('`')
+}
+
 /// Serialize a Workflow to clean YAML matching the project's format.
 pub fn generate_yaml(workflow: &Workflow) -> String {
     let mut out = format!("name: {}\n", workflow.name);
@@ -142,9 +222,29 @@ pub fn generate_yaml(workflow: &Workflow) -> String {
     out.push_str("steps:\n");
     for step in &workflow.steps {
         out.push_str(&format!("  - id: {}\n", step.id));
-        out.push_str(&format!("    cmd: {}\n", step.cmd));
+        if needs_yaml_quoting(&step.cmd) {
+            out.push_str(&format!("    cmd: \"{}\"\n", step.cmd.replace('\\', "\\\\").replace('"', "\\\"")));
+        } else {
+            out.push_str(&format!("    cmd: {}\n", step.cmd));
+        }
         if !step.needs.is_empty() {
             out.push_str(&format!("    needs: [{}]\n", step.needs.join(", ")));
+        }
+        if let Some(t) = step.timeout {
+            out.push_str(&format!("    timeout: {}\n", t));
+        }
+        if let Some(ref cond) = step.run_if {
+            if needs_yaml_quoting(cond) {
+                out.push_str(&format!("    run_if: \"{}\"\n", cond.replace('\\', "\\\\").replace('"', "\\\"")));
+            } else {
+                out.push_str(&format!("    run_if: {}\n", cond));
+            }
+        }
+        if let Some(r) = step.retry {
+            out.push_str(&format!("    retry: {}\n", r));
+        }
+        if let Some(d) = step.retry_delay {
+            out.push_str(&format!("    retry_delay: {}\n", d));
         }
         if step.parallel {
             out.push_str("    parallel: true\n");
@@ -184,30 +284,48 @@ mod tests {
             name: "Test Workflow".to_string(),
             env: HashMap::from([("DB".to_string(), "mydb".to_string())]),
             workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
             steps: vec![
                 Step {
                     id: "step-1".to_string(),
                     cmd: "echo setup".to_string(),
                     needs: vec![],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
                 Step {
                     id: "step-2".to_string(),
                     cmd: "echo build".to_string(),
                     needs: vec!["step-1".to_string()],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
                 Step {
                     id: "step-3".to_string(),
                     cmd: "echo test".to_string(),
                     needs: vec!["step-2".to_string()],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
                 Step {
                     id: "deploy".to_string(),
                     cmd: "echo deploy".to_string(),
                     needs: vec!["step-3".to_string()],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
             ],
         }
@@ -302,18 +420,28 @@ mod tests {
             name: "Pipeline".to_string(),
             env: HashMap::new(),
             workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
             steps: vec![
                 Step {
                     id: "step-1".to_string(),
                     cmd: "echo a".to_string(),
                     needs: vec![],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
                 Step {
                     id: "step-2".to_string(),
                     cmd: "echo b".to_string(),
                     needs: vec!["step-1".to_string()],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
             ],
         };
@@ -332,18 +460,28 @@ mod tests {
             name: "My Workflow".to_string(),
             env: HashMap::from([("HOST".to_string(), "localhost".to_string())]),
             workdir: Some(PathBuf::from("/tmp")),
+            secrets: Vec::new(),
+            notify: Default::default(),
             steps: vec![
                 Step {
                     id: "build".to_string(),
                     cmd: "make build".to_string(),
                     needs: vec![],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
                 Step {
                     id: "test".to_string(),
                     cmd: "make test".to_string(),
                     needs: vec!["build".to_string()],
                     parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    retry: None,
+                    retry_delay: None,
                 },
             ],
         };
@@ -380,6 +518,32 @@ mod tests {
     }
 
     #[test]
+    fn test_workflow_from_commands() {
+        let commands = vec![
+            "docker compose up -d".to_string(),
+            "docker ps".to_string(),
+            "git status".to_string(),
+        ];
+        let wf = workflow_from_commands("my-task", &commands);
+
+        assert_eq!(wf.name, "my-task");
+        assert_eq!(wf.steps.len(), 3);
+
+        // IDs derived from first word with counter
+        assert_eq!(wf.steps[0].id, "docker-1");
+        assert_eq!(wf.steps[1].id, "docker-2");
+        assert_eq!(wf.steps[2].id, "git-1");
+
+        // Sequential chaining
+        assert!(wf.steps[0].needs.is_empty());
+        assert_eq!(wf.steps[1].needs, vec!["docker-1"]);
+        assert_eq!(wf.steps[2].needs, vec!["docker-2"]);
+
+        // Commands preserved
+        assert_eq!(wf.steps[0].cmd, "docker compose up -d");
+    }
+
+    #[test]
     fn test_renumber_fills_gaps() {
         let mut steps = vec![
             Step {
@@ -387,12 +551,20 @@ mod tests {
                 cmd: "echo a".to_string(),
                 needs: vec![],
                 parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
             },
             Step {
                 id: "step-5".to_string(),
                 cmd: "echo b".to_string(),
                 needs: vec!["step-1".to_string()],
                 parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
             },
         ];
         renumber_steps(&mut steps);

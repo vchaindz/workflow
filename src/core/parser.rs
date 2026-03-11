@@ -16,6 +16,8 @@ pub fn parse_workflow(path: &Path) -> Result<Workflow> {
         steps,
         env,
         workdir: raw.workdir,
+        secrets: raw.secrets,
+        notify: raw.notify,
     };
 
     validate_workflow(&workflow)?;
@@ -34,17 +36,17 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel: false }
+                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, retry: None, retry_delay: None }
             }
-            RawStep::CmdMap { id: None, cmd, needs: _, parallel } => {
+            RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, retry, retry_delay } => {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel }
+                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay }
             }
-            RawStep::CmdMap { id: Some(id), cmd, needs, parallel } => {
+            RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, retry, retry_delay } => {
                 // Explicit id: no implicit chaining, but don't break the chain for others
-                Step { id, cmd, needs, parallel }
+                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay }
             }
         };
 
@@ -105,8 +107,14 @@ pub fn parse_shell_task(path: &Path) -> Result<Workflow> {
             cmd,
             needs: Vec::new(),
             parallel: false,
+            timeout: None,
+            run_if: None,
+            retry: None,
+            retry_delay: None,
         }],
         env: HashMap::new(),
+        secrets: Vec::new(),
+        notify: Default::default(),
     })
 }
 
@@ -239,18 +247,30 @@ env:
                 cmd: "echo a".into(),
                 needs: vec!["c".into()],
                 parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
             },
             Step {
                 id: "b".into(),
                 cmd: "echo b".into(),
                 needs: vec!["a".into()],
                 parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
             },
             Step {
                 id: "c".into(),
                 cmd: "echo c".into(),
                 needs: vec!["b".into()],
                 parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
             },
         ];
 
@@ -272,24 +292,40 @@ env:
                 cmd: "echo a".into(),
                 needs: vec![],
                 parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
             },
             Step {
                 id: "b".into(),
                 cmd: "echo b".into(),
                 needs: vec!["a".into()],
                 parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
             },
             Step {
                 id: "c".into(),
                 cmd: "echo c".into(),
                 needs: vec!["a".into()],
                 parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
             },
             Step {
                 id: "d".into(),
                 cmd: "echo d".into(),
                 needs: vec!["b".into(), "c".into()],
                 parallel: false,
+                timeout: None,
+                run_if: None,
+                retry: None,
+                retry_delay: None,
             },
         ];
 
@@ -505,5 +541,131 @@ steps:
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("duplicate step id"), "error was: {err}");
+    }
+
+    #[test]
+    fn test_parse_timeout_field() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("timeout.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Timeout Workflow
+steps:
+  - id: fast
+    cmd: echo hello
+    timeout: 30
+  - id: slow
+    cmd: rsync -av /data /backup
+    timeout: 300
+    needs: [fast]
+  - id: notify
+    cmd: curl https://example.com
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.steps.len(), 3);
+        assert_eq!(wf.steps[0].timeout, Some(30));
+        assert_eq!(wf.steps[1].timeout, Some(300));
+        assert_eq!(wf.steps[2].timeout, None);
+    }
+
+    #[test]
+    fn test_parse_run_if_field() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("runif.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Conditional
+steps:
+  - id: check
+    cmd: echo checking
+    run_if: "test -f /tmp/flag"
+  - id: always
+    cmd: echo always
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.steps[0].run_if, Some("test -f /tmp/flag".to_string()));
+        assert_eq!(wf.steps[1].run_if, None);
+    }
+
+    #[test]
+    fn test_parse_retry_fields() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("retry.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Retry Workflow
+steps:
+  - id: fetch
+    cmd: curl https://example.com
+    retry: 3
+    retry_delay: 5
+  - id: noretry
+    cmd: echo done
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.steps[0].retry, Some(3));
+        assert_eq!(wf.steps[0].retry_delay, Some(5));
+        assert_eq!(wf.steps[1].retry, None);
+        assert_eq!(wf.steps[1].retry_delay, None);
+    }
+
+    #[test]
+    fn test_parse_secrets_and_notify() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("secrets.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Secret Workflow
+secrets: [DB_PASS, API_KEY]
+notify:
+  on_failure: "echo failed"
+  on_success: "echo ok"
+steps:
+  - id: s1
+    cmd: echo hello
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.secrets, vec!["DB_PASS", "API_KEY"]);
+        assert_eq!(wf.notify.on_failure, Some("echo failed".to_string()));
+        assert_eq!(wf.notify.on_success, Some("echo ok".to_string()));
+    }
+
+    #[test]
+    fn test_parse_without_new_fields_backward_compat() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("old.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Old Style
+steps:
+  - id: s1
+    cmd: echo hello
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert!(wf.secrets.is_empty());
+        assert!(wf.notify.on_failure.is_none());
+        assert!(wf.notify.on_success.is_none());
+        assert_eq!(wf.steps[0].run_if, None);
+        assert_eq!(wf.steps[0].retry, None);
     }
 }

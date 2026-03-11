@@ -24,6 +24,14 @@ pub(crate) enum RawStep {
         needs: Vec<String>,
         #[serde(default)]
         parallel: bool,
+        #[serde(default)]
+        timeout: Option<u64>,
+        #[serde(default)]
+        run_if: Option<String>,
+        #[serde(default)]
+        retry: Option<u32>,
+        #[serde(default)]
+        retry_delay: Option<u64>,
     },
 }
 
@@ -35,6 +43,10 @@ pub(crate) struct RawWorkflow {
     pub env: HashMap<String, EnvValue>,
     #[serde(default)]
     pub workdir: Option<PathBuf>,
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    #[serde(default)]
+    pub notify: NotifyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -68,6 +80,10 @@ pub struct Workflow {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub workdir: Option<PathBuf>,
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    #[serde(default)]
+    pub notify: NotifyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +94,14 @@ pub struct Step {
     pub needs: Vec<String>,
     #[serde(default)]
     pub parallel: bool,
+    #[serde(default)]
+    pub timeout: Option<u64>,
+    #[serde(default)]
+    pub run_if: Option<String>,
+    #[serde(default)]
+    pub retry: Option<u32>,
+    #[serde(default)]
+    pub retry_delay: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -87,6 +111,7 @@ pub enum StepStatus {
     Success,
     Failed,
     Skipped,
+    Timedout,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,12 +132,22 @@ pub struct RunLog {
     pub exit_code: i32,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NotifyConfig {
+    #[serde(default)]
+    pub on_failure: Option<String>,
+    #[serde(default)]
+    pub on_success: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ExecutionEvent {
     StepStarted { step_id: String, cmd_preview: String },
     StepCompleted { step_id: String, status: StepStatus, duration_ms: u64 },
     StepSkipped { step_id: String },
+    StepRetrying { step_id: String, attempt: u32, max: u32, delay_secs: u64 },
     WorkflowFinished { run_log: RunLog },
+    StepTimedOut { step_id: String, timeout_secs: u64, duration_ms: u64 },
     WorkflowError { message: String },
 }
 
