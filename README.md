@@ -6,6 +6,26 @@ Turn your shell history into reusable workflows — or describe what you need in
 
 No database required for execution — state is tracked via JSON logs and an optional SQLite history. No configuration required — just add files and go.
 
+## Table of Contents
+
+- [Highlights](#highlights)
+- [Install](#install)
+- [Creating Tasks from Shell History](#creating-tasks-from-shell-history)
+- [AI-Generated Workflows](#ai-generated-workflows)
+- [Template Catalog](#template-catalog)
+- [Clone & Optimize](#clone--optimize)
+- [File Structure](#file-structure)
+- [YAML Workflow Format](#yaml-workflow-format)
+- [TUI](#tui)
+- [CLI](#cli)
+- [Run Comparison](#run-comparison)
+- [Configuration](#configuration)
+- [Logging](#logging)
+- [Claude Code Skill](#claude-code-skill)
+- [Building from Source](#building-from-source)
+- [Releases](#releases)
+- [License](#license)
+
 ## Highlights
 
 - **Shell history wizard** — browse your recent shell commands, pick the ones you want, and save them as a workflow in seconds
