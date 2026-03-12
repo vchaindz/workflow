@@ -28,6 +28,7 @@ pub enum AppMode {
     Comparing,
     Wizard,
     ConfirmDelete,
+    Rename,
     RecentRuns,
     SavedTasks,
     OverdueReminder,
@@ -39,6 +40,15 @@ pub struct DeleteState {
     pub task_name: String,
     pub task_path: std::path::PathBuf,
     pub category: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RenameState {
+    pub old_name: String,
+    pub new_name: String,
+    pub task_path: PathBuf,
+    pub category: String,
+    pub extension: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -213,6 +223,9 @@ pub struct App {
     // Delete confirmation state
     pub delete_state: Option<DeleteState>,
 
+    // Rename modal state
+    pub rename_state: Option<RenameState>,
+
     // Recent runs modal
     pub recent_runs: Vec<RunLog>,
     pub recent_runs_cursor: usize,
@@ -301,6 +314,7 @@ impl App {
             compare_result: None,
             wizard: None,
             delete_state: None,
+            rename_state: None,
             recent_runs: Vec::new(),
             recent_runs_cursor: 0,
             saved_tasks_cursor: 0,

@@ -15,7 +15,7 @@ use crate::core::parser::{parse_shell_task, parse_workflow, parse_workflow_from_
 use crate::core::wizard;
 use crate::error::Result;
 
-use super::app::{App, AppMode, DeleteState, Focus, WizardMode, WizardStage, WizardState};
+use super::app::{App, AppMode, DeleteState, Focus, RenameState, WizardMode, WizardStage, WizardState};
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.mode {
@@ -45,6 +45,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         AppMode::VariablePrompt => handle_variable_prompt_key(app, key),
         AppMode::Wizard => handle_wizard_key(app, key),
         AppMode::ConfirmDelete => handle_confirm_delete_key(app, key),
+        AppMode::Rename => handle_rename_key(app, key),
         _ => handle_normal_key(app, key),
     }
 }
@@ -96,6 +97,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('S') => toggle_bookmark(app),
         KeyCode::Char('f') => app.toggle_sort(),
         KeyCode::Char('F') => app.cycle_status_filter(),
+        KeyCode::Char('n') => start_rename(app),
         KeyCode::Delete => start_delete(app),
         KeyCode::Char('h') => {
             app.mode = AppMode::Help;
@@ -636,6 +638,137 @@ fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.delete_state = None;
             app.mode = AppMode::Normal;
         }
+    }
+    Ok(())
+}
+
+fn start_rename(app: &mut App) {
+    let task = match app.selected_task_ref() {
+        Some(t) => t.clone(),
+        None => return,
+    };
+
+    let extension = task.path.extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+
+    app.rename_state = Some(RenameState {
+        old_name: task.name.clone(),
+        new_name: task.name.clone(),
+        task_path: task.path.clone(),
+        category: task.category.clone(),
+        extension,
+    });
+    app.mode = AppMode::Rename;
+}
+
+fn handle_rename_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        app.should_quit = true;
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            app.rename_state = None;
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Backspace => {
+            if let Some(ref mut state) = app.rename_state {
+                state.new_name.pop();
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some(ref mut state) = app.rename_state {
+                state.new_name.push(c);
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(state) = app.rename_state.take() {
+                let new_name = state.new_name.trim().to_string();
+
+                // Validate
+                if new_name.is_empty()
+                    || new_name.contains('/')
+                    || new_name.contains('\\')
+                    || new_name.starts_with('.')
+                {
+                    app.footer_log.push(format!(
+                        "[{}] Rename failed: invalid name",
+                        chrono::Local::now().format("%H:%M:%S"),
+                    ));
+                    app.mode = AppMode::Normal;
+                    return Ok(());
+                }
+
+                if new_name == state.old_name {
+                    app.mode = AppMode::Normal;
+                    return Ok(());
+                }
+
+                let new_filename = format!("{}{}", new_name, state.extension);
+                let new_path = state.task_path.parent().unwrap().join(&new_filename);
+
+                if new_path.exists() {
+                    app.footer_log.push(format!(
+                        "[{}] Rename failed: '{}' already exists",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        new_filename,
+                    ));
+                    app.mode = AppMode::Normal;
+                    return Ok(());
+                }
+
+                match std::fs::rename(&state.task_path, &new_path) {
+                    Ok(()) => {
+                        let old_ref = format!("{}/{}", state.category, state.old_name);
+                        let new_ref = format!("{}/{}", state.category, new_name);
+
+                        // Update SQLite history
+                        let db_path = app.config.workflows_dir.join("history.db");
+                        if let Ok(conn) = db::open_db(&db_path) {
+                            let _ = db::rename_task_ref(&conn, &old_ref, &new_ref);
+                        }
+
+                        // Update bookmarks
+                        if let Some(pos) = app.config.bookmarks.iter().position(|s| *s == old_ref) {
+                            app.config.bookmarks[pos] = new_ref.clone();
+                            let _ = app.config.save_bookmarks();
+                        }
+
+                        // Update in-memory task
+                        for cat in &mut app.categories {
+                            for task in &mut cat.tasks {
+                                if task.path == state.task_path {
+                                    task.name = new_name.clone();
+                                    task.path = new_path.clone();
+                                }
+                            }
+                        }
+
+                        // Rebuild caches
+                        app.build_step_cmd_cache();
+                        app.apply_sort();
+
+                        app.footer_log.push(format!(
+                            "[{}] Renamed: {} → {}",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            old_ref,
+                            new_ref,
+                        ));
+                    }
+                    Err(e) => {
+                        app.footer_log.push(format!(
+                            "[{}] Rename failed: {}",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            e,
+                        ));
+                    }
+                }
+            }
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
     }
     Ok(())
 }

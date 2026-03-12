@@ -75,6 +75,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_confirm_delete(f, app);
     }
 
+    if app.mode == AppMode::Rename {
+        draw_rename(f, app);
+    }
+
     if app.mode == AppMode::StreamingOutput {
         draw_streaming_modal(f, app);
     }
@@ -406,7 +410,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         _ => {
             let sort_label = if app.sort_by_heat { "f:α-sort" } else { "f:heat-sort" };
             let filter_label = format!("F:{}", app.status_filter.next().label());
-            format!("arrows:nav  r:run  d:dry-run  e:edit  c:compare  {sort_label}  {filter_label}  w:new  W:clone  t:template  a:ai  R:recent  s:saved  L:logs  /:search  h:help  q:quit")
+            format!("arrows:nav  r:run  d:dry-run  e:edit  n:rename  c:compare  {sort_label}  {filter_label}  w:new  W:clone  t:template  a:ai  R:recent  s:saved  L:logs  /:search  h:help  q:quit")
         }
     };
 
@@ -1307,6 +1311,62 @@ fn draw_confirm_delete(f: &mut Frame, app: &App) {
     f.render_widget(para, inner);
 }
 
+fn draw_rename(f: &mut Frame, app: &App) {
+    let state = match app.rename_state.as_ref() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let area = f.area();
+    let w = 50.min(area.width.saturating_sub(4));
+    let h = 10.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" Rename Task ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    f.render_widget(block, popup);
+
+    let inner = Rect::new(popup.x + 2, popup.y + 1, popup.width.saturating_sub(4), popup.height.saturating_sub(2));
+
+    let task_ref = format!("{}/{}", state.category, state.old_name);
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Task  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&task_ref, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "New name:",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(&state.new_name, Style::default().fg(Color::Yellow)),
+            Span::styled("_", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
+            Span::styled(&state.extension, Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::styled(" Rename  ", Style::default().fg(Color::DarkGray)),
+            Span::raw("   "),
+            Span::styled(" Esc ", Style::default().fg(Color::Black).bg(Color::White)),
+            Span::styled(" Cancel", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+    f.render_widget(para, inner);
+}
+
 /// Push a bottom-aligned footer with key hints into the lines vec.
 fn push_wizard_footer(lines: &mut Vec<Line>, available_height: u16, hints: &[(&str, &str)]) {
     let target = (available_height as usize).saturating_sub(2);
@@ -1646,6 +1706,7 @@ fn draw_help(f: &mut Frame, app: &App) {
             Line::from("  r           Run selected task"),
             Line::from("  d           Dry-run selected task"),
             Line::from("  e           Edit task in $EDITOR"),
+            Line::from("  n           Rename selected task"),
             Line::from("  w           New task from shell history"),
             Line::from("  W           Clone selected task"),
             Line::from("  a           AI task generator"),

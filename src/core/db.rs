@@ -382,6 +382,15 @@ pub fn check_overdue_tasks(conn: &Connection, categories: &[crate::core::models:
     Ok(overdue)
 }
 
+/// Update task_ref in run history after a rename.
+pub fn rename_task_ref(conn: &Connection, old_ref: &str, new_ref: &str) -> Result<usize> {
+    let count = conn.execute(
+        "UPDATE runs SET task_ref = ?1 WHERE task_ref = ?2",
+        params![new_ref, old_ref],
+    )?;
+    Ok(count)
+}
+
 /// Returns (task_ref, run_count_last_30d) for all tasks that have any runs.
 pub fn get_task_heat(conn: &Connection) -> Result<HashMap<String, u32>> {
     let cutoff = (Utc::now() - chrono::Duration::days(30))
