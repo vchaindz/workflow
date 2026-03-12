@@ -64,6 +64,34 @@ pub enum WizardMode {
     FromTemplate,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StatusFilter {
+    All,
+    Failed,
+    Overdue,
+    NeverRun,
+}
+
+impl StatusFilter {
+    pub fn label(&self) -> &'static str {
+        match self {
+            StatusFilter::All => "All",
+            StatusFilter::Failed => "Failed",
+            StatusFilter::Overdue => "Overdue",
+            StatusFilter::NeverRun => "Never-run",
+        }
+    }
+
+    pub fn next(&self) -> StatusFilter {
+        match self {
+            StatusFilter::All => StatusFilter::Failed,
+            StatusFilter::Failed => StatusFilter::Overdue,
+            StatusFilter::Overdue => StatusFilter::NeverRun,
+            StatusFilter::NeverRun => StatusFilter::All,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct WizardState {
     pub mode: WizardMode,
@@ -199,11 +227,17 @@ pub struct App {
     // Heat-based sorting
     pub sort_by_heat: bool,
 
+    // Status filter
+    pub status_filter: StatusFilter,
+
     // Step command cache for content-aware search (path -> lowercased content)
     pub step_cmd_cache: HashMap<PathBuf, String>,
 
     // Wizard dry-run: return to Wizard after execution finishes
     pub pending_wizard_return: bool,
+
+    // Cached AI tool detection (None = not yet checked)
+    pub cached_ai_tool: Option<Option<AiTool>>,
 
     // Variable prompt modal state
     pub var_prompt_vars: Vec<RuntimeVariable>,
@@ -272,8 +306,10 @@ impl App {
             overdue_tasks: Vec::new(),
             overdue_cursor: 0,
             sort_by_heat: false,
+            status_filter: StatusFilter::All,
             step_cmd_cache: HashMap::new(),
             pending_wizard_return: false,
+            cached_ai_tool: None,
             var_prompt_vars: Vec::new(),
             var_prompt_index: 0,
             var_prompt_choices: Vec::new(),
@@ -313,6 +349,20 @@ impl App {
         }
     }
 
+    pub fn load_last_run_data(&mut self) {
+        let db_path = self.config.workflows_dir.join("history.db");
+        if let Ok(conn) = crate::core::db::open_db(&db_path) {
+            for cat in &mut self.categories {
+                for task in &mut cat.tasks {
+                    let task_ref = format!("{}/{}", cat.name, task.name);
+                    if let Ok(summary) = crate::core::db::get_run_summary(&conn, &task_ref) {
+                        task.last_run = summary;
+                    }
+                }
+            }
+        }
+    }
+
     pub fn load_heat_data(&mut self) {
         let db_path = self.config.workflows_dir.join("history.db");
         if let Ok(conn) = crate::core::db::open_db(&db_path) {
@@ -335,6 +385,11 @@ impl App {
     pub fn toggle_sort(&mut self) {
         self.sort_by_heat = !self.sort_by_heat;
         self.apply_sort();
+    }
+
+    pub fn cycle_status_filter(&mut self) {
+        self.status_filter = self.status_filter.next();
+        self.selected_task = 0;
     }
 
     pub fn apply_sort(&mut self) {
@@ -381,6 +436,14 @@ impl App {
         }
     }
 
+    /// Get the cached AI tool, detecting on first call.
+    pub fn ai_tool(&mut self) -> Option<AiTool> {
+        if self.cached_ai_tool.is_none() {
+            self.cached_ai_tool = Some(crate::core::ai::detect_ai_tool());
+        }
+        self.cached_ai_tool.unwrap()
+    }
+
     pub fn toggle_collapse(&mut self) {
         let idx = self.selected_category;
         if self.collapsed.contains(&idx) {
@@ -406,7 +469,7 @@ impl App {
     }
 
     pub fn filtered_tasks(&self) -> Vec<&Task> {
-        if let Some(ref indices) = self.filtered_indices {
+        let base: Vec<&Task> = if let Some(ref indices) = self.filtered_indices {
             indices
                 .iter()
                 .filter_map(|&(ci, ti)| {
@@ -415,6 +478,20 @@ impl App {
                 .collect()
         } else {
             self.current_tasks().iter().collect()
+        };
+
+        // Apply status filter
+        match self.status_filter {
+            StatusFilter::All => base,
+            StatusFilter::Failed => base.into_iter().filter(|t| {
+                t.last_run.as_ref().map_or(false, |s| s.fail_count > 0 && s.last_failure > s.last_success)
+            }).collect(),
+            StatusFilter::Overdue => base.into_iter().filter(|t| {
+                t.overdue.is_some()
+            }).collect(),
+            StatusFilter::NeverRun => base.into_iter().filter(|t| {
+                t.last_run.is_none()
+            }).collect(),
         }
     }
 
@@ -617,6 +694,14 @@ impl App {
                             chrono::Local::now().format("%H:%M:%S"),
                             step_id,
                             warning,
+                        ));
+                    }
+                    ExecutionEvent::Warning { step_id, message } => {
+                        self.footer_log.push(format!(
+                            "[{}] ⚠ {}: {}",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            step_id,
+                            message,
                         ));
                     }
                     ExecutionEvent::StepRetrying { step_id, attempt, max, delay_secs } => {

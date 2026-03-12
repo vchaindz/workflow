@@ -36,20 +36,54 @@ pub fn open_db(db_path: &Path) -> Result<Connection> {
         );",
     )?;
 
+    // Non-breaking schema migration: add audit columns if missing
+    let has_username: bool = conn
+        .prepare("SELECT username FROM runs LIMIT 0")
+        .is_ok();
+    if !has_username {
+        conn.execute_batch(
+            "ALTER TABLE runs ADD COLUMN username TEXT NOT NULL DEFAULT '';
+             ALTER TABLE runs ADD COLUMN hostname TEXT NOT NULL DEFAULT '';
+             ALTER TABLE runs ADD COLUMN source   TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+
     Ok(conn)
 }
 
+/// Get the current username from the environment.
+pub fn current_username() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Get the current hostname.
+pub fn current_hostname() -> String {
+    hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 pub fn insert_run_log(conn: &Connection, log: &RunLog) -> Result<()> {
+    insert_run_log_with_source(conn, log, "")
+}
+
+pub fn insert_run_log_with_source(conn: &Connection, log: &RunLog, source: &str) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
 
     tx.execute(
-        "INSERT INTO runs (id, task_ref, started, ended, exit_code) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO runs (id, task_ref, started, ended, exit_code, username, hostname, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             log.id,
             log.task_ref,
             log.started.to_rfc3339(),
             log.ended.map(|e| e.to_rfc3339()),
             log.exit_code,
+            current_username(),
+            current_hostname(),
+            source,
         ],
     )?;
 

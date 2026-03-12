@@ -14,6 +14,75 @@ use crate::core::parser::topological_sort;
 use crate::core::template::expand_template;
 use crate::error::Result;
 
+/// Gracefully terminate a child process: SIGTERM first, wait grace period, then SIGKILL.
+#[cfg(unix)]
+fn graceful_kill(child: &mut std::process::Child, grace_secs: u64) {
+    use std::time::{Duration, Instant};
+    let pid = child.id() as i32;
+    // Send SIGTERM
+    unsafe { libc::kill(pid, libc::SIGTERM); }
+    let deadline = Instant::now() + Duration::from_secs(grace_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return, // exited
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => break,
+        }
+    }
+    // Grace period expired — force kill
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(not(unix))]
+fn graceful_kill(child: &mut std::process::Child, _grace_secs: u64) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Classify a step failure from stderr and return an actionable hint.
+fn classify_error(stderr: &str) -> Option<String> {
+    let lower = stderr.to_lowercase();
+    if lower.contains("permission denied") {
+        Some("Hint: check file permissions or try with sudo".to_string())
+    } else if lower.contains("command not found") || lower.contains("no such file or directory") {
+        Some("Hint: command not found — check PATH or install the missing tool".to_string())
+    } else if lower.contains("connection refused") {
+        Some("Hint: connection refused — is the target service running?".to_string())
+    } else if lower.contains("connection timed out") || lower.contains("operation timed out") {
+        Some("Hint: connection timed out — check network/firewall".to_string())
+    } else if lower.contains("disk full") || lower.contains("no space left on device") {
+        Some("Hint: disk full — free up space".to_string())
+    } else if lower.contains("authentication fail") || lower.contains("access denied") {
+        Some("Hint: authentication failed — check credentials".to_string())
+    } else {
+        None
+    }
+}
+
+/// Check if a command contains sudo and warn if sudo access is unavailable.
+fn check_sudo_access(cmd: &str) -> Option<String> {
+    if !cmd.split_whitespace().any(|w| w == "sudo") {
+        return None;
+    }
+    // Test passwordless sudo
+    let result = Command::new("sudo")
+        .arg("-n")
+        .arg("true")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match result {
+        Ok(s) if s.success() => None,
+        _ => Some("This step uses sudo but passwordless sudo is not available — you may be prompted for a password".to_string()),
+    }
+}
+
 /// Check if a command matches known dangerous patterns.
 /// Returns a warning message if dangerous, None if safe.
 pub fn check_dangerous(cmd: &str) -> Option<&'static str> {
@@ -240,6 +309,17 @@ pub fn execute_workflow(
             );
         }
 
+        // Sudo access warning
+        if !opts.dry_run {
+            let expanded_for_check = expand_template(&step.cmd, &template_vars);
+            if let Some(sudo_warning) = check_sudo_access(&expanded_for_check) {
+                send(ExecutionEvent::Warning {
+                    step_id: step.id.clone(),
+                    message: sudo_warning,
+                });
+            }
+        }
+
         let expanded_cmd = expand_template(&step.cmd, &template_vars);
         let masked_cmd = mask_secrets(&expanded_cmd, &secret_values);
 
@@ -383,8 +463,7 @@ pub fn execute_workflow(
                         // Wait for either process to exit or kill signal
                         loop {
                             if let Ok(()) = kill_rx.try_recv() {
-                                let _ = child.kill();
-                                let _ = child.wait();
+                                graceful_kill(&mut child, 5);
                                 break;
                             }
                             match child.try_wait() {
@@ -588,8 +667,7 @@ pub fn execute_workflow(
                                 Ok(())
                             }
                             Ok(None) => {
-                                let _ = child.kill();
-                                let _ = child.wait();
+                                graceful_kill(&mut child, 5);
                                 last_output = format!("step timed out after {secs}s");
                                 step_timed_out = true;
                                 Ok(())
@@ -677,7 +755,7 @@ pub fn execute_workflow(
             let output = if max_attempts > 1 {
                 format!("{masked_output} (after {max_attempts} attempts)")
             } else {
-                masked_output
+                masked_output.clone()
             };
             step_results.push(StepResult {
                 id: step.id.clone(),
@@ -690,6 +768,13 @@ pub fn execute_workflow(
                 status: StepStatus::Failed,
                 duration_ms,
             });
+            // Error classification hint
+            if let Some(hint) = classify_error(&masked_output) {
+                send(ExecutionEvent::Warning {
+                    step_id: step.id.clone(),
+                    message: hint,
+                });
+            }
         }
     }
 

@@ -6,6 +6,7 @@ pub mod import;
 pub mod list;
 pub mod logs;
 pub mod run;
+pub mod schedule;
 pub mod status;
 pub mod templates;
 pub mod validate;
@@ -61,6 +62,11 @@ pub fn dispatch(config: &Config, command: Commands) -> Result<i32> {
 
         Commands::AiUpdate { task, prompt, dry_run, save_as } => {
             ai_update::cmd_ai_update(config, &task, &prompt, dry_run, save_as.as_deref())?;
+            Ok(0)
+        }
+
+        Commands::Schedule { task, cron, systemd, remove } => {
+            schedule::cmd_schedule(config, &task, cron.as_deref(), systemd, remove)?;
             Ok(0)
         }
 

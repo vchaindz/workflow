@@ -202,6 +202,7 @@ pub enum ExecutionEvent {
     StepSkipped { step_id: String },
     StepRetrying { step_id: String, attempt: u32, max: u32, delay_secs: u64 },
     DangerousCommand { step_id: String, warning: String },
+    Warning { step_id: String, message: String },
     StepOutput { step_id: String, line: String },
     WorkflowFinished { run_log: RunLog },
     StepTimedOut { step_id: String, timeout_secs: u64, duration_ms: u64 },

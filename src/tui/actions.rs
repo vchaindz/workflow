@@ -95,6 +95,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('s') => open_saved_tasks(app),
         KeyCode::Char('S') => toggle_bookmark(app),
         KeyCode::Char('f') => app.toggle_sort(),
+        KeyCode::Char('F') => app.cycle_status_filter(),
         KeyCode::Delete => start_delete(app),
         KeyCode::Char('h') => {
             app.mode = AppMode::Help;
@@ -456,7 +457,7 @@ fn launch_workflow(
             Ok(run_log) => {
                 if !dry_run {
                     if let Ok(conn) = db::open_db(&db_path) {
-                        let _ = db::insert_run_log(&conn, &run_log);
+                        let _ = db::insert_run_log_with_source(&conn, &run_log, "tui");
                     }
 
                     // Run notifications
@@ -582,10 +583,21 @@ fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 let path = state.task_path.clone();
                 let name = format!("{}/{}", state.category, state.task_name);
 
-                match std::fs::remove_file(&path) {
+                // Soft delete: move to .trash/ directory
+                let trash_dir = app.config.workflows_dir.join(".trash");
+                let trash_result = (|| -> std::io::Result<()> {
+                    std::fs::create_dir_all(&trash_dir)?;
+                    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+                    let filename = path.file_name().unwrap_or_default().to_string_lossy();
+                    let trash_name = format!("{}_{}", timestamp, filename);
+                    std::fs::rename(&path, trash_dir.join(&trash_name))?;
+                    Ok(())
+                })();
+
+                match trash_result {
                     Ok(()) => {
                         app.footer_log.push(format!(
-                            "[{}] Deleted: {}",
+                            "[{}] Trashed: {} (moved to .trash/)",
                             chrono::Local::now().format("%H:%M:%S"),
                             name,
                         ));
@@ -741,7 +753,7 @@ fn start_clone_wizard(app: &mut App) -> Result<()> {
 }
 
 fn start_ai_wizard(app: &mut App) {
-    let tool = match ai::detect_ai_tool() {
+    let tool = match app.ai_tool() {
         Some(t) => t,
         None => {
             app.footer_log.push(format!(
@@ -795,7 +807,7 @@ fn start_ai_wizard(app: &mut App) {
 }
 
 fn start_ai_update_wizard(app: &mut App) {
-    let tool = match ai::detect_ai_tool() {
+    let tool = match app.ai_tool() {
         Some(t) => t,
         None => {
             app.footer_log.push(format!(

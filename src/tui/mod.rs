@@ -30,8 +30,11 @@ pub fn run_tui(config: Config) -> Result<()> {
     let mut app = App::new(categories, config);
     app.refresh_stats();
     app.load_heat_data();
+    app.load_last_run_data();
     app.build_step_cmd_cache();
     app.check_overdue();
+    // Eagerly detect AI tool so header shows it immediately
+    let _ = app.ai_tool();
 
     // Setup terminal
     enable_raw_mode()?;
@@ -129,6 +132,7 @@ fn rescan(app: &mut App) {
 
     app.categories = new_categories;
     app.load_heat_data();
+    app.load_last_run_data();
     app.build_step_cmd_cache();
     if app.sort_by_heat {
         app.apply_sort();

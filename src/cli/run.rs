@@ -91,7 +91,7 @@ pub fn cmd_run(
 
     if !dry_run {
         let conn = db::open_db(&config.db_path())?;
-        db::insert_run_log(&conn, &run_log)?;
+        db::insert_run_log_with_source(&conn, &run_log, "cli")?;
         if exit_code == 0 {
             eprintln!("success: run logged to database");
         } else {

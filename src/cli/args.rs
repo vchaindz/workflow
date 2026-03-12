@@ -150,6 +150,24 @@ pub enum Commands {
         save_as: Option<String>,
     },
 
+    /// Schedule a task via cron or systemd timer
+    Schedule {
+        /// Task reference (e.g., backup/db-full)
+        task: String,
+
+        /// Cron expression (e.g., "0 2 * * *")
+        #[arg(long)]
+        cron: Option<String>,
+
+        /// Use systemd user timer instead of crontab
+        #[arg(long)]
+        systemd: bool,
+
+        /// Remove an existing schedule
+        #[arg(long)]
+        remove: bool,
+    },
+
     /// View run logs
     Logs {
         /// Task reference (omit for all recent)

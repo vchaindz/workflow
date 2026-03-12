@@ -63,7 +63,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     if app.mode == AppMode::Help {
-        draw_help(f);
+        draw_help(f, app);
     }
 
     if app.mode == AppMode::Wizard {
@@ -133,6 +133,17 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::White)
             },
         ),
+        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            if let Some(Some(tool)) = app.cached_ai_tool {
+                format!("AI: {}", tool.name())
+            } else if app.cached_ai_tool == Some(None) {
+                "AI: none".to_string()
+            } else {
+                "AI: ...".to_string()
+            },
+            Style::default().fg(Color::DarkGray),
+        ),
     ];
 
     let header = Paragraph::new(Line::from(spans))
@@ -146,6 +157,47 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     } else {
         Style::default()
     };
+
+    if app.categories.is_empty() {
+        let block = Block::default()
+            .title("Categories")
+            .borders(Borders::ALL)
+            .border_style(style);
+
+        let empty_lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No workflows found",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(" w ", Style::default().fg(Color::Black).bg(Color::White)),
+                Span::styled(" From history", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled(" a ", Style::default().fg(Color::Black).bg(Color::White)),
+                Span::styled(" AI generate", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled(" t ", Style::default().fg(Color::Black).bg(Color::White)),
+                Span::styled(" Templates", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled(" e ", Style::default().fg(Color::Black).bg(Color::White)),
+                Span::styled(" Open dir", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press h for help",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+
+        let para = Paragraph::new(empty_lines).block(block);
+        f.render_widget(para, area);
+        return;
+    }
 
     let mut items: Vec<ListItem> = Vec::new();
 
@@ -213,16 +265,51 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             Style::default()
         };
 
-        let line = Line::from(vec![
+        // Last-run indicator
+        let run_indicator = if let Some(ref summary) = task.last_run {
+            let (icon, time) = if summary.fail_count > 0 && summary.last_failure > summary.last_success {
+                let t = format_relative_short(summary.last_failure);
+                ("\u{2717}", t) // ✗
+            } else if summary.last_success.is_some() {
+                let t = format_relative_short(summary.last_success);
+                ("\u{2713}", t) // ✓
+            } else {
+                ("", String::new())
+            };
+            if icon.is_empty() {
+                String::new()
+            } else {
+                format!(" {} {}", icon, time)
+            }
+        } else {
+            String::new()
+        };
+        let run_color = if let Some(ref summary) = task.last_run {
+            if summary.fail_count > 0 && summary.last_failure > summary.last_success {
+                Color::Red
+            } else {
+                Color::Green
+            }
+        } else {
+            Color::DarkGray
+        };
+
+        let mut spans = vec![
             Span::styled(format!("{marker} "), name_style),
             Span::styled(format!("{heat_icon} "), Style::default().fg(heat_color)),
             Span::styled(format!("{star}{} [{kind}]", task.name), name_style),
-        ]);
+        ];
+        if !run_indicator.is_empty() {
+            spans.push(Span::styled(run_indicator, Style::default().fg(run_color)));
+        }
+        let line = Line::from(spans);
         items.push(ListItem::new(line));
     }
 
     let title = if app.filtered_indices.is_some() {
         format!("Tasks (search: {})", app.search_query)
+    } else if app.status_filter != super::app::StatusFilter::All {
+        format!("Tasks [{}]", app.status_filter.label())
     } else {
         "Tasks".to_string()
     };
@@ -315,7 +402,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         AppMode::Wizard => " New Task Wizard ".to_string(),
         _ => {
             let sort_label = if app.sort_by_heat { "f:α-sort" } else { "f:heat-sort" };
-            format!("arrows:nav  r:run  d:dry-run  e:edit  c:compare  {sort_label}  w:new  W:clone  t:template  a:ai  R:recent  s:saved  Del:delete  L:logs  /:search  h:help  q:quit")
+            let filter_label = format!("F:{}", app.status_filter.next().label());
+            format!("arrows:nav  r:run  d:dry-run  e:edit  c:compare  {sort_label}  {filter_label}  w:new  t:template  a:ai  R:recent  s:saved  L:logs  /:search  h:help  q:quit")
         }
     };
 
@@ -1187,7 +1275,7 @@ fn draw_confirm_delete(f: &mut Frame, app: &App) {
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "Delete this task permanently?",
+            "Delete this task? (moved to .trash/)",
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -1281,6 +1369,25 @@ fn format_live_progress(app: &App) -> String {
     }
 
     out
+}
+
+/// Format a timestamp as a short relative time like "2d", "5h", "3m".
+fn format_relative_short(ts: Option<chrono::DateTime<chrono::Utc>>) -> String {
+    let ts = match ts {
+        Some(t) => t,
+        None => return String::new(),
+    };
+    let elapsed = chrono::Utc::now() - ts;
+    let mins = elapsed.num_minutes();
+    if mins < 1 {
+        "now".to_string()
+    } else if mins < 60 {
+        format!("{}m", mins)
+    } else if mins < 1440 {
+        format!("{}h", mins / 60)
+    } else {
+        format!("{}d", mins / 1440)
+    }
 }
 
 fn format_task_preview(task: &crate::core::models::Task) -> String {
@@ -1394,52 +1501,85 @@ fn format_run_log(log: &crate::core::models::RunLog) -> String {
     out
 }
 
-fn draw_help(f: &mut Frame) {
+fn draw_help(f: &mut Frame, app: &App) {
     let area = f.area();
     let w = 50.min(area.width.saturating_sub(4));
-    let h = 26.min(area.height.saturating_sub(4));
+    let h = 28.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
 
-    let help_text = vec![
-        Line::from(Span::styled(
-            " workflow ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from("  Up/Down     Navigate items"),
-        Line::from("  Left/Right  Switch panes"),
-        Line::from("  Tab         Next pane"),
-        Line::from("  Enter       Expand/enter category"),
-        Line::from("  +           Expand category"),
-        Line::from("  -           Collapse category"),
-        Line::from("  r           Run selected task"),
-        Line::from("  d           Dry-run selected task"),
-        Line::from("  e           Edit task in $EDITOR"),
-        Line::from("  w           New task from shell history"),
-        Line::from("  W           Clone selected task"),
-        Line::from("  a           AI task generator"),
-        Line::from("  A           AI update selected task"),
-        Line::from("  t           New task from template"),
-        Line::from("  Del         Delete selected task"),
-        Line::from("  c           Compare last 2 runs"),
-        Line::from("  L           View run logs"),
-        Line::from("  R           Recent runs (last 10)"),
-        Line::from("  s           Saved/bookmarked tasks"),
-        Line::from("  S           Toggle bookmark on task"),
-        Line::from("  f           Toggle heat/alpha sort"),
-        Line::from("  /           Search tasks"),
-        Line::from("  q           Quit / close"),
-        Line::from("  Esc         Cancel / dismiss"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Press any key to close",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ];
+    let help_text = if app.wizard.is_some() {
+        // Wizard-mode help
+        vec![
+            Line::from(Span::styled(
+                " Wizard Keys ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("  Enter       Confirm / Save"),
+            Line::from("  Shift+Tab   Go back a step"),
+            Line::from("  Esc         Cancel wizard"),
+            Line::from("  Up/Down     Navigate / scroll"),
+            Line::from("  Space       Toggle selection"),
+            Line::from(""),
+            Line::from(Span::styled(
+                " Preview Stage ",
+                Style::default().fg(Color::Yellow),
+            )),
+            Line::from("  d           Dry-run preview"),
+            Line::from("  r           Refine with AI"),
+            Line::from("  Enter       Save task"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Press any key to close",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]
+    } else {
+        // Normal-mode help
+        vec![
+            Line::from(Span::styled(
+                " workflow ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("  Up/Down     Navigate items"),
+            Line::from("  Left/Right  Switch panes"),
+            Line::from("  Tab         Next pane"),
+            Line::from("  Enter       Expand/enter category"),
+            Line::from("  +           Expand category"),
+            Line::from("  -           Collapse category"),
+            Line::from("  r           Run selected task"),
+            Line::from("  d           Dry-run selected task"),
+            Line::from("  e           Edit task in $EDITOR"),
+            Line::from("  w           New task from shell history"),
+            Line::from("  W           Clone selected task"),
+            Line::from("  a           AI task generator"),
+            Line::from("  A           AI update selected task"),
+            Line::from("  t           New task from template"),
+            Line::from("  Del         Delete selected task"),
+            Line::from("  c           Compare last 2 runs"),
+            Line::from("  F           Filter: All/Failed/Overdue"),
+            Line::from("  L           View run logs"),
+            Line::from("  R           Recent runs (last 10)"),
+            Line::from("  s           Saved/bookmarked tasks"),
+            Line::from("  S           Toggle bookmark on task"),
+            Line::from("  f           Toggle heat/alpha sort"),
+            Line::from("  /           Search tasks"),
+            Line::from("  q           Quit / close"),
+            Line::from("  Esc         Cancel / dismiss"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Press any key to close",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]
+    };
 
     let block = Block::default()
         .title(" Help ")

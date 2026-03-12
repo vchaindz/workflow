@@ -14,6 +14,10 @@ No database required for execution — state is tracked via JSON logs and an opt
 | **Real-world tasks** | Disk reports, systemd health checks, container security audits, k8s pod diagnostics |
 | **Overdue reminders** | Set `overdue: 7` on any task and get notified when maintenance is late |
 | **Cron-friendly CLI** | `workflow run backup/db-full` with proper exit codes for automation |
+| **Schedule from CLI** | `workflow schedule backup/db-full --cron "0 2 * * *"` installs crontab or systemd timers |
+| **Sudo warnings** | Steps using `sudo` get a pre-flight check — warns you before prompting |
+| **Error hints** | Failed steps get actionable hints: "permission denied → check sudo", "command not found → check PATH" |
+| **Audit trail** | Every run records who ran it, from where, and via which interface (TUI/CLI) |
 | **Zero config** | Drop `.sh` or `.yaml` files into `~/.config/workflow/` and go |
 
 ### For Developers
@@ -25,6 +29,11 @@ No database required for execution — state is tracked via JSON logs and an opt
 | **DAG execution engine** | Retries, timeouts, conditionals, cleanup steps, output capture, and dependency graphs |
 | **Interactive TUI** | Browse, run, and monitor workflows with real-time progress |
 | **Hot/cold sorting** | Tasks ranked by run frequency — hot tasks float to the top |
+| **Status filter** | Press `F` to filter tasks: All → Failed → Overdue → Never-run |
+| **Last-run indicators** | Task list shows `✓ 2d` or `✗ 5h` inline so you know what ran and when |
+| **Soft delete** | Deleted tasks move to `.trash/` — recoverable, not permanent |
+| **First-run onboarding** | Empty TUI shows helpful keybindings instead of a blank screen |
+| **Graceful shutdown** | SIGTERM before SIGKILL with 5s grace period for clean process termination |
 | **Export/import** | Share workflows across machines with `workflow export` / `workflow import` |
 
 ## Table of Contents
@@ -43,6 +52,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - [Recent Runs & Bookmarks](#recent-runs--bookmarks)
 - [TUI](#tui)
 - [CLI](#cli)
+- [Scheduling](#scheduling)
 - [Run Comparison](#run-comparison)
 - [Configuration](#configuration)
 - [Logging](#logging)
@@ -53,6 +63,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 
 ## Highlights
 
+- **First-run onboarding** — empty TUI shows quick-start keybindings instead of a blank screen
 - **Dangerous command safety** — blocks `rm -rf /`, fork bombs, and other destructive patterns before execution (override with `--force`)
 - **Shell history wizard** — browse your recent shell commands, pick the ones you want, and save them as a workflow in seconds
 - **AI task generation** — describe a task in natural language, and Claude, Codex, or Gemini generates the workflow steps automatically
@@ -72,6 +83,16 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **Fish shell support** — history wizard reads fish shell history alongside zsh and bash
 - **DAG execution** — multi-step YAML workflows with dependency ordering, conditional steps, retries, and timeouts
 - **Interactive TUI** — three-pane browser with real-time execution progress, search, and log viewing
+- **Scheduling** — install crontab entries or systemd user timers directly from the CLI with `workflow schedule`
+- **Task status filter** — press `F` in the TUI to cycle through All / Failed / Overdue / Never-run filters
+- **Last-run indicators** — each task in the list shows `✓ 2d` or `✗ 5h` at a glance
+- **Soft delete** — deleted tasks move to `.trash/` instead of permanent removal
+- **Audit trail** — every run records username, hostname, and source (tui/cli) in the SQLite database
+- **Sudo pre-flight warning** — steps using `sudo` are tested for passwordless access before execution
+- **Error classification** — step failures get actionable hints (permission denied, command not found, connection refused, disk full)
+- **Graceful signal handling** — SIGTERM with 5s grace period before SIGKILL for clean process shutdown
+- **Context-sensitive help** — help screen shows different keybindings for normal mode vs wizard mode
+- **AI tool caching** — AI availability detected once at startup and shown in the header bar
 - **CLI for automation** — every operation works headless for cron, CI, and scripting
 
 ## Install
@@ -390,6 +411,7 @@ Launch with `workflow` (no arguments):
 | `s` | Saved/bookmarked tasks |
 | `S` | Toggle bookmark on task |
 | `f` | Toggle heat sort (hot tasks first) |
+| `F` | Cycle status filter (All/Failed/Overdue/Never-run) |
 | `/` | Search tasks |
 | `w` | New task from shell history |
 | `a` | New task from AI prompt |
@@ -448,6 +470,11 @@ workflow import my-workflows.tar.gz --overwrite
 workflow templates
 workflow templates --fetch
 
+# Schedule tasks
+workflow schedule backup/db-full --cron "0 2 * * *"
+workflow schedule backup/db-full --systemd
+workflow schedule backup/db-full --remove
+
 # View logs
 workflow logs backup/db-full
 workflow logs --limit 20 --json
@@ -461,6 +488,27 @@ Exit code is 0 on success, non-zero on failure — suitable for cron:
 ```cron
 0 2 * * * workflow run backup/db-full
 ```
+
+## Scheduling
+
+Register tasks as cron jobs or systemd user timers directly from the CLI:
+
+```bash
+# Install a crontab entry
+workflow schedule backup/db-full --cron "0 2 * * *"
+
+# Install a systemd user timer (defaults to daily at 2am)
+workflow schedule backup/db-full --systemd
+
+# With a custom systemd calendar expression
+workflow schedule backup/db-full --systemd --cron "*-*-* 06:00:00"
+
+# Remove a schedule
+workflow schedule backup/db-full --cron "0 2 * * *" --remove
+workflow schedule backup/db-full --systemd --remove
+```
+
+Crontab mode adds a commented, identifiable entry to the user's crontab. Systemd mode generates a `.service` and `.timer` pair in `~/.config/systemd/user/` and enables it immediately.
 
 ## Run Comparison
 
