@@ -20,7 +20,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 
 | | |
 |---|---|
-| **AI workflow generation** | Describe a task in English — Claude, Codex, or Gemini writes the YAML |
+| **AI workflow generation** | Describe a task in English — Claude, Codex, or Gemini writes the YAML, then refine iteratively |
 | **Shell history wizard** | Turn past commands into reusable, parameterized workflows |
 | **DAG execution engine** | Retries, timeouts, conditionals, cleanup steps, output capture, and dependency graphs |
 | **Interactive TUI** | Browse, run, and monitor workflows with real-time progress |
@@ -56,6 +56,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **Dangerous command safety** — blocks `rm -rf /`, fork bombs, and other destructive patterns before execution (override with `--force`)
 - **Shell history wizard** — browse your recent shell commands, pick the ones you want, and save them as a workflow in seconds
 - **AI task generation** — describe a task in natural language, and Claude, Codex, or Gemini generates the workflow steps automatically
+- **AI refinement loop** — press `r` at the preview stage to iteratively refine AI-generated workflows ("add error handling", "use rsync instead") before saving
 - **AI task update** — select an existing task, describe what to change, and AI rewrites the workflow for you
 - **Template catalog** — start from bundled or community templates with variable substitution
 - **Clone & optimize** — duplicate an existing task, strip failed/skipped steps, and parallelize independent branches
@@ -130,6 +131,18 @@ Press `a` in the TUI to describe a task in plain English. If `claude`, `codex`, 
 
 The AI returns clean shell commands — no prose, no markdown — which are assembled into a YAML workflow. You review the preview, adjust the category/name if needed, and save.
 
+### Iterative Refinement
+
+At the preview stage of both AI generation (`a`) and AI update (`A`), press `r` to refine the result. Describe what to change — "add error handling", "use rsync instead of cp", "also add logging" — and the AI rewrites the YAML. Repeat as many times as needed before saving:
+
+```
+Preview → r → "add error handling" → Enter → (AI refines) → Preview
+                                                               ↓
+                                                    r → "also add logging" → Enter → ...
+```
+
+Press `Shift+Tab` from the refine prompt to return to the preview without submitting.
+
 Requires `claude` (Claude Code CLI), `codex` (OpenAI Codex CLI), or `gemini` (Google Gemini CLI) installed and authenticated.
 
 ## AI-Powered Task Update
@@ -147,7 +160,7 @@ Press `A` (Shift-a) on a selected task to update it with AI assistance. Describe
 └──────────────────────────────────────────────────────────┘
 ```
 
-The updated YAML is previewed before saving. Press `Enter` to overwrite the original, or `Esc` to cancel.
+The updated YAML is previewed before saving. Press `r` to refine further with additional instructions, `Enter` to overwrite the original, or `Esc` to cancel.
 
 ### CLI: `ai-update` subcommand
 

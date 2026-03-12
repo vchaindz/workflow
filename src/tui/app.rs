@@ -52,6 +52,7 @@ pub enum WizardStage {
     TaskName,
     Options,
     Preview,
+    AiRefinePrompt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -106,6 +107,9 @@ pub struct WizardState {
     pub ai_source_yaml: String,
     pub ai_source_path: Option<std::path::PathBuf>,
     pub ai_updated_yaml: Option<String>,
+
+    // AI Refine fields
+    pub ai_refine_prompt: String,
 
     // Shared fields
     pub category: String,

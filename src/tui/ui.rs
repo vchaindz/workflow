@@ -395,7 +395,7 @@ fn draw_wizard(f: &mut Frame, app: &App) {
             let s = vec!["Prompt", "AI", "Category", "Name", "Preview"];
             let idx = match wiz.stage {
                 WizardStage::AiPrompt => 0,
-                WizardStage::AiThinking => 1,
+                WizardStage::AiThinking | WizardStage::AiRefinePrompt => 1,
                 WizardStage::Category => 2,
                 WizardStage::TaskName => 3,
                 WizardStage::Preview => 4,
@@ -407,7 +407,7 @@ fn draw_wizard(f: &mut Frame, app: &App) {
             let s = vec!["Prompt", "AI", "Preview"];
             let idx = match wiz.stage {
                 WizardStage::AiPrompt => 0,
-                WizardStage::AiThinking => 1,
+                WizardStage::AiThinking | WizardStage::AiRefinePrompt => 1,
                 WizardStage::Preview => 2,
                 _ => 0,
             };
@@ -876,6 +876,30 @@ fn draw_wizard(f: &mut Frame, app: &App) {
             ]);
         }
 
+        WizardStage::AiRefinePrompt => {
+            lines.push(Line::from(Span::styled(
+                "Refine your workflow",
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                "Describe changes (e.g., add error handling, use rsync instead)",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+
+            lines.push(Line::from(vec![
+                Span::styled("> ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{}_", wiz.ai_refine_prompt),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+
+            push_wizard_footer(&mut lines, inner.height, &[
+                ("Enter", "Refine"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
+            ]);
+        }
+
         WizardStage::Category => {
             lines.push(Line::from(Span::styled(
                 "Choose a category for the new task",
@@ -1064,8 +1088,12 @@ fn draw_wizard(f: &mut Frame, app: &App) {
                     wizard::generate_yaml(&wf)
                 }
                 WizardMode::AiChat => {
-                    let wf = wizard::workflow_from_commands(&wiz.task_name, &wiz.ai_commands);
-                    wizard::generate_yaml(&wf)
+                    if let Some(ref yaml) = wiz.ai_updated_yaml {
+                        yaml.clone()
+                    } else {
+                        let wf = wizard::workflow_from_commands(&wiz.task_name, &wiz.ai_commands);
+                        wizard::generate_yaml(&wf)
+                    }
                 }
                 WizardMode::FromTemplate => {
                     let idx = wiz.template_cursor;
@@ -1108,9 +1136,15 @@ fn draw_wizard(f: &mut Frame, app: &App) {
                 lines.push(Line::from(Span::styled(owned, Style::default().fg(color))));
             }
 
-            push_wizard_footer(&mut lines, inner.height, &[
-                ("Enter", "Save"), ("Up/Down", "Scroll"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
-            ]);
+            if matches!(wiz.mode, WizardMode::AiChat | WizardMode::AiUpdate) {
+                push_wizard_footer(&mut lines, inner.height, &[
+                    ("Enter", "Save"), ("r", "Refine"), ("Up/Down", "Scroll"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
+                ]);
+            } else {
+                push_wizard_footer(&mut lines, inner.height, &[
+                    ("Enter", "Save"), ("Up/Down", "Scroll"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
+                ]);
+            }
         }
     }
 

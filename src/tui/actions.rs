@@ -668,6 +668,7 @@ fn start_history_wizard(app: &mut App) {
         parallelize: false,
         active_toggle: 0,
         preview_scroll: 0,
+        ai_refine_prompt: String::new(),
         save_message: None,
     });
     app.mode = AppMode::Wizard;
@@ -729,6 +730,7 @@ fn start_clone_wizard(app: &mut App) -> Result<()> {
         parallelize: false,
         active_toggle: 0,
         preview_scroll: 0,
+        ai_refine_prompt: String::new(),
         save_message: None,
     });
     app.mode = AppMode::Wizard;
@@ -786,6 +788,7 @@ fn start_ai_wizard(app: &mut App) {
         parallelize: false,
         active_toggle: 0,
         preview_scroll: 0,
+        ai_refine_prompt: String::new(),
         save_message: None,
     });
     app.mode = AppMode::Wizard;
@@ -856,6 +859,7 @@ fn start_ai_update_wizard(app: &mut App) {
         parallelize: false,
         active_toggle: 0,
         preview_scroll: 0,
+        ai_refine_prompt: String::new(),
         save_message: None,
     });
     app.mode = AppMode::Wizard;
@@ -904,10 +908,14 @@ fn handle_wizard_ai_thinking(app: &mut App, key: KeyEvent) {
     let wiz = app.wizard.as_mut().unwrap();
     match key.code {
         KeyCode::Esc => {
-            // If there's an error displayed, go back to prompt to retry
+            // If there's an error displayed, go back to refine prompt or initial prompt
             if wiz.ai_error.is_some() {
                 wiz.ai_error = None;
-                wiz.stage = WizardStage::AiPrompt;
+                if !wiz.ai_refine_prompt.is_empty() {
+                    wiz.stage = WizardStage::AiRefinePrompt;
+                } else {
+                    wiz.stage = WizardStage::AiPrompt;
+                }
             }
             // Otherwise spinner is running — Esc cancels the whole wizard
             // (handled by parent match in handle_wizard_key)
@@ -953,6 +961,7 @@ fn handle_wizard_key(app: &mut App, key: KeyEvent) -> Result<()> {
             WizardStage::TaskName => handle_wizard_taskname(app, key),
             WizardStage::Options => handle_wizard_options(app, key),
             WizardStage::Preview => handle_wizard_preview(app, key)?,
+            WizardStage::AiRefinePrompt => handle_wizard_ai_refine_prompt(app, key),
         },
     }
 
@@ -1149,6 +1158,48 @@ fn handle_wizard_options(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn handle_wizard_ai_refine_prompt(app: &mut App, key: KeyEvent) {
+    let wiz = app.wizard.as_mut().unwrap();
+
+    match key.code {
+        KeyCode::Enter => {
+            if !wiz.ai_refine_prompt.trim().is_empty() {
+                let tool = wiz.ai_tool.unwrap();
+                let refine_prompt = wiz.ai_refine_prompt.clone();
+
+                // Generate current YAML: use ai_updated_yaml if refined before, else from ai_commands
+                let current_yaml = if let Some(ref yaml) = wiz.ai_updated_yaml {
+                    yaml.clone()
+                } else {
+                    let wf = wizard::workflow_from_commands(&wiz.task_name, &wiz.ai_commands);
+                    wizard::generate_yaml(&wf)
+                };
+
+                let (tx, rx) = mpsc::channel();
+                wiz.ai_result_rx = Some(rx);
+                wiz.ai_error = None;
+                wiz.ai_tick = 0;
+                wiz.stage = WizardStage::AiThinking;
+
+                thread::spawn(move || {
+                    let result = ai::invoke_ai_update(tool, &current_yaml, &refine_prompt);
+                    let _ = tx.send(result);
+                });
+            }
+        }
+        KeyCode::BackTab => {
+            wiz.stage = WizardStage::Preview;
+        }
+        KeyCode::Backspace => {
+            wiz.ai_refine_prompt.pop();
+        }
+        KeyCode::Char(c) => {
+            wiz.ai_refine_prompt.push(c);
+        }
+        _ => {}
+    }
+}
+
 fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
     let wiz = app.wizard.as_ref().unwrap();
     match key.code {
@@ -1189,8 +1240,12 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
                     wizard::generate_yaml(&wf)
                 }
                 WizardMode::AiChat => {
-                    let wf = wizard::workflow_from_commands(&wiz.task_name, &wiz.ai_commands);
-                    wizard::generate_yaml(&wf)
+                    if let Some(ref yaml) = wiz.ai_updated_yaml {
+                        yaml.clone()
+                    } else {
+                        let wf = wizard::workflow_from_commands(&wiz.task_name, &wiz.ai_commands);
+                        wizard::generate_yaml(&wf)
+                    }
                 }
                 WizardMode::FromTemplate => {
                     let idx = wiz.template_cursor;
@@ -1239,6 +1294,11 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
                 chrono::Local::now().format("%H:%M:%S"),
                 msg,
             ));
+        }
+        KeyCode::Char('r') if wiz.mode == WizardMode::AiChat || wiz.mode == WizardMode::AiUpdate => {
+            let wiz = app.wizard.as_mut().unwrap();
+            wiz.ai_refine_prompt.clear();
+            wiz.stage = WizardStage::AiRefinePrompt;
         }
         _ => {}
     }
@@ -1295,6 +1355,7 @@ fn start_template_wizard(app: &mut App) {
         parallelize: false,
         active_toggle: 0,
         preview_scroll: 0,
+        ai_refine_prompt: String::new(),
         save_message: None,
     });
     app.mode = AppMode::Wizard;
