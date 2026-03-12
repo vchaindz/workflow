@@ -10,8 +10,8 @@ use crate::core::compare;
 use crate::core::db;
 use crate::core::executor::{execute_workflow, run_notify, ExecuteOpts, StreamingRequest};
 use crate::core::history;
-use crate::core::models::{ExecutionEvent, RuntimeVariable, Task, TaskKind, Workflow};
-use crate::core::parser::{parse_shell_task, parse_workflow};
+use crate::core::models::{ExecutionEvent, RuntimeVariable, Task, TaskHeat, TaskKind, Workflow};
+use crate::core::parser::{parse_shell_task, parse_workflow, parse_workflow_from_str};
 use crate::core::wizard;
 use crate::error::Result;
 
@@ -1200,6 +1200,56 @@ fn handle_wizard_ai_refine_prompt(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Build the preview YAML string from the current wizard state.
+fn get_wizard_preview_yaml(wiz: &WizardState) -> String {
+    match wiz.mode {
+        WizardMode::AiUpdate => {
+            wiz.ai_updated_yaml.clone().unwrap_or_default()
+        }
+        WizardMode::FromHistory => {
+            let commands: Vec<String> = wiz
+                .history_selected
+                .iter()
+                .filter_map(|&i| wiz.history_entries.get(i))
+                .map(|e| e.command.clone())
+                .collect();
+            let wf = wizard::workflow_from_commands(&wiz.task_name, &commands);
+            wizard::generate_yaml(&wf)
+        }
+        WizardMode::AiChat => {
+            if let Some(ref yaml) = wiz.ai_updated_yaml {
+                yaml.clone()
+            } else {
+                let wf = wizard::workflow_from_commands(&wiz.task_name, &wiz.ai_commands);
+                wizard::generate_yaml(&wf)
+            }
+        }
+        WizardMode::FromTemplate => {
+            let idx = wiz.template_cursor;
+            if let Some(entry) = wiz.template_entries.get(idx) {
+                let mut values = HashMap::new();
+                for (name, val, _default) in &wiz.template_var_values {
+                    values.insert(name.clone(), val.clone());
+                }
+                catalog::instantiate_template(entry, &values)
+            } else {
+                String::new()
+            }
+        }
+        WizardMode::CloneTask => {
+            let source_wf = wiz.source_workflow.as_ref().unwrap();
+            let optimized = wizard::optimize_workflow(
+                source_wf,
+                wiz.source_run.as_ref(),
+                wiz.remove_failed,
+                wiz.remove_skipped,
+                wiz.parallelize,
+            );
+            wizard::generate_yaml(&optimized)
+        }
+    }
+}
+
 fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
     let wiz = app.wizard.as_ref().unwrap();
     match key.code {
@@ -1224,53 +1274,39 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
             let wiz = app.wizard.as_mut().unwrap();
             wiz.preview_scroll = wiz.preview_scroll.saturating_add(1);
         }
-        KeyCode::Enter => {
-            let yaml = match wiz.mode {
-                WizardMode::AiUpdate => {
-                    wiz.ai_updated_yaml.clone().unwrap_or_default()
-                }
-                WizardMode::FromHistory => {
-                    let commands: Vec<String> = wiz
-                        .history_selected
-                        .iter()
-                        .filter_map(|&i| wiz.history_entries.get(i))
-                        .map(|e| e.command.clone())
-                        .collect();
-                    let wf = wizard::workflow_from_commands(&wiz.task_name, &commands);
-                    wizard::generate_yaml(&wf)
-                }
-                WizardMode::AiChat => {
-                    if let Some(ref yaml) = wiz.ai_updated_yaml {
-                        yaml.clone()
-                    } else {
-                        let wf = wizard::workflow_from_commands(&wiz.task_name, &wiz.ai_commands);
-                        wizard::generate_yaml(&wf)
-                    }
-                }
-                WizardMode::FromTemplate => {
-                    let idx = wiz.template_cursor;
-                    if let Some(entry) = wiz.template_entries.get(idx) {
-                        let mut values = HashMap::new();
-                        for (name, val, _default) in &wiz.template_var_values {
-                            values.insert(name.clone(), val.clone());
-                        }
-                        catalog::instantiate_template(entry, &values)
-                    } else {
-                        String::new()
-                    }
-                }
-                WizardMode::CloneTask => {
-                    let source_wf = wiz.source_workflow.as_ref().unwrap();
-                    let optimized = wizard::optimize_workflow(
-                        source_wf,
-                        wiz.source_run.as_ref(),
-                        wiz.remove_failed,
-                        wiz.remove_skipped,
-                        wiz.parallelize,
-                    );
-                    wizard::generate_yaml(&optimized)
+        KeyCode::Char('d') => {
+            let yaml = get_wizard_preview_yaml(wiz);
+            if yaml.is_empty() {
+                return Ok(());
+            }
+
+            let workflow = match parse_workflow_from_str(&yaml) {
+                Ok(wf) => wf,
+                Err(e) => {
+                    app.footer_log.push(format!(
+                        "[{}] Dry-run parse error: {}",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        e,
+                    ));
+                    return Ok(());
                 }
             };
+
+            let task = Task {
+                name: wiz.task_name.clone(),
+                category: wiz.category.clone(),
+                kind: TaskKind::YamlWorkflow,
+                path: std::path::PathBuf::from("(preview)"),
+                last_run: None,
+                overdue: None,
+                heat: TaskHeat::Cold,
+            };
+
+            app.pending_wizard_return = true;
+            launch_workflow(app, &task, workflow, true, HashMap::new())?;
+        }
+        KeyCode::Enter => {
+            let yaml = get_wizard_preview_yaml(wiz);
             let category = wiz.category.clone();
             let task_name = wiz.task_name.clone();
 

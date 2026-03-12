@@ -57,6 +57,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **Shell history wizard** — browse your recent shell commands, pick the ones you want, and save them as a workflow in seconds
 - **AI task generation** — describe a task in natural language, and Claude, Codex, or Gemini generates the workflow steps automatically
 - **AI refinement loop** — press `r` at the preview stage to iteratively refine AI-generated workflows ("add error handling", "use rsync instead") before saving
+- **Wizard dry-run preview** — press `d` at the preview stage to dry-run the generated workflow without saving, then return to preview to save or refine
 - **AI task update** — select an existing task, describe what to change, and AI rewrites the workflow for you
 - **Template catalog** — start from bundled or community templates with variable substitution
 - **Clone & optimize** — duplicate an existing task, strip failed/skipped steps, and parallelize independent branches
@@ -113,7 +114,7 @@ Press `w` in the TUI to open the history wizard. It reads your shell history (zs
 └──────────────────────────────────────────────────────────┘
 ```
 
-Select commands with `Space`, press `Enter`, then choose a category and task name. The wizard auto-suggests both based on the commands you picked (e.g., docker commands → category `docker`). Preview the generated YAML before saving.
+Select commands with `Space`, press `Enter`, then choose a category and task name. The wizard auto-suggests both based on the commands you picked (e.g., docker commands → category `docker`). Preview the generated YAML before saving. Press `d` at the preview stage to dry-run the workflow without saving it to disk.
 
 ## AI-Generated Workflows
 
@@ -142,6 +143,10 @@ Preview → r → "add error handling" → Enter → (AI refines) → Preview
 ```
 
 Press `Shift+Tab` from the refine prompt to return to the preview without submitting.
+
+### Dry-Run Preview
+
+At the preview stage of any wizard mode (history, AI, template, or clone), press `d` to dry-run the workflow without saving. The TUI shows `[dry-run]` output for each step, then returns to the preview so you can save, refine, or dry-run again.
 
 Requires `claude` (Claude Code CLI), `codex` (OpenAI Codex CLI), or `gemini` (Google Gemini CLI) installed and authenticated.
 

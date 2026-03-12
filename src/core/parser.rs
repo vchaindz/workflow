@@ -4,11 +4,10 @@ use std::path::Path;
 use crate::core::models::{EnvValue, RawStep, RawWorkflow, Step, Workflow};
 use crate::error::{DzError, Result};
 
-/// Parse a YAML workflow file into a Workflow struct.
-/// Supports three step formats: bare strings, maps without id, and full maps.
-pub fn parse_workflow(path: &Path) -> Result<Workflow> {
-    let contents = std::fs::read_to_string(path)?;
-    let raw: RawWorkflow = serde_yaml::from_str(&contents)?;
+/// Parse a YAML workflow from a string. Used by `parse_workflow()` and for
+/// in-memory parsing (e.g. wizard dry-run preview).
+pub fn parse_workflow_from_str(contents: &str) -> Result<Workflow> {
+    let raw: RawWorkflow = serde_yaml::from_str(contents)?;
     let steps = normalize_steps(raw.steps)?;
     let cleanup = if raw.cleanup.is_empty() {
         Vec::new()
@@ -30,6 +29,13 @@ pub fn parse_workflow(path: &Path) -> Result<Workflow> {
 
     validate_workflow(&workflow)?;
     Ok(workflow)
+}
+
+/// Parse a YAML workflow file into a Workflow struct.
+/// Supports three step formats: bare strings, maps without id, and full maps.
+pub fn parse_workflow(path: &Path) -> Result<Workflow> {
+    let contents = std::fs::read_to_string(path)?;
+    parse_workflow_from_str(&contents)
 }
 
 /// Convert raw flexible-format steps into canonical Steps with auto-IDs and sequential chaining.

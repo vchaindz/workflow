@@ -202,6 +202,9 @@ pub struct App {
     // Step command cache for content-aware search (path -> lowercased content)
     pub step_cmd_cache: HashMap<PathBuf, String>,
 
+    // Wizard dry-run: return to Wizard after execution finishes
+    pub pending_wizard_return: bool,
+
     // Variable prompt modal state
     pub var_prompt_vars: Vec<RuntimeVariable>,
     pub var_prompt_index: usize,
@@ -270,6 +273,7 @@ impl App {
             overdue_cursor: 0,
             sort_by_heat: false,
             step_cmd_cache: HashMap::new(),
+            pending_wizard_return: false,
             var_prompt_vars: Vec::new(),
             var_prompt_index: 0,
             var_prompt_choices: Vec::new(),
@@ -650,6 +654,9 @@ impl App {
                         if self.mode == AppMode::StreamingOutput {
                             // Stay in streaming mode so user can see final output
                             // They'll press Esc/q to close
+                        } else if self.pending_wizard_return {
+                            self.pending_wizard_return = false;
+                            self.mode = AppMode::Wizard;
                         } else {
                             self.mode = AppMode::Normal;
                         }
@@ -668,7 +675,12 @@ impl App {
                             message,
                         ));
                         if self.mode != AppMode::StreamingOutput {
-                            self.mode = AppMode::Normal;
+                            if self.pending_wizard_return {
+                                self.pending_wizard_return = false;
+                                self.mode = AppMode::Wizard;
+                            } else {
+                                self.mode = AppMode::Normal;
+                            }
                         }
                         self.is_executing = false;
                         self.event_rx = None;
@@ -685,7 +697,12 @@ impl App {
                             chrono::Local::now().format("%H:%M:%S"),
                         ));
                         if self.mode != AppMode::StreamingOutput {
-                            self.mode = AppMode::Normal;
+                            if self.pending_wizard_return {
+                                self.pending_wizard_return = false;
+                                self.mode = AppMode::Wizard;
+                            } else {
+                                self.mode = AppMode::Normal;
+                            }
                         }
                         self.is_executing = false;
                     }
@@ -731,7 +748,12 @@ impl App {
         self.streaming_lines.clear();
         self.streaming_scroll = 0;
         if !self.is_executing {
-            self.mode = AppMode::Normal;
+            if self.pending_wizard_return {
+                self.pending_wizard_return = false;
+                self.mode = AppMode::Wizard;
+            } else {
+                self.mode = AppMode::Normal;
+            }
         } else {
             self.mode = AppMode::Running;
         }

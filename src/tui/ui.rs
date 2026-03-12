@@ -1138,11 +1138,11 @@ fn draw_wizard(f: &mut Frame, app: &App) {
 
             if matches!(wiz.mode, WizardMode::AiChat | WizardMode::AiUpdate) {
                 push_wizard_footer(&mut lines, inner.height, &[
-                    ("Enter", "Save"), ("r", "Refine"), ("Up/Down", "Scroll"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
+                    ("Enter", "Save"), ("d", "Dry-run"), ("r", "Refine"), ("Up/Down", "Scroll"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
                 ]);
             } else {
                 push_wizard_footer(&mut lines, inner.height, &[
-                    ("Enter", "Save"), ("Up/Down", "Scroll"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
+                    ("Enter", "Save"), ("d", "Dry-run"), ("Up/Down", "Scroll"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
                 ]);
             }
         }
