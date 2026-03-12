@@ -31,8 +31,10 @@ No database required for execution — state is tracked via JSON logs and an opt
 | **Hot/cold sorting** | Tasks ranked by run frequency — hot tasks float to the top |
 | **Status filter** | Press `F` to filter tasks: All → Failed → Overdue → Never-run |
 | **Last-run indicators** | Task list shows `✓ 2d` or `✗ 5h` inline so you know what ran and when |
+| **Rename tasks & categories** | Press `n` to rename inline — works on tasks and sidebar categories |
 | **Soft delete** | Deleted tasks move to `.trash/` — recoverable, not permanent |
 | **First-run onboarding** | Empty TUI shows helpful keybindings instead of a blank screen |
+| **Secret masking** | Environment variable values are redacted from live output and logs |
 | **Graceful shutdown** | SIGTERM before SIGKILL with 5s grace period for clean process termination |
 | **Export/import** | Share workflows across machines with `workflow export` / `workflow import` |
 
@@ -57,6 +59,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - [Configuration](#configuration)
 - [Logging](#logging)
 - [Claude Code Skill](#claude-code-skill)
+- [Security](#security)
 - [Building from Source](#building-from-source)
 - [Releases](#releases)
 - [License](#license)
@@ -86,6 +89,8 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **Scheduling** — install crontab entries or systemd user timers directly from the CLI with `workflow schedule`
 - **Task status filter** — press `F` in the TUI to cycle through All / Failed / Overdue / Never-run filters
 - **Last-run indicators** — each task in the list shows `✓ 2d` or `✗ 5h` at a glance
+- **Rename tasks & categories** — press `n` in the TUI to rename the selected task or category inline
+- **Secret masking** — env var values from `env:` blocks are automatically redacted in live output and logs
 - **Soft delete** — deleted tasks move to `.trash/` instead of permanent removal
 - **Audit trail** — every run records username, hostname, and source (tui/cli) in the SQLite database
 - **Sudo pre-flight warning** — steps using `sudo` are tested for passwordless access before execution
@@ -385,7 +390,7 @@ workflow run dangerous-task --force
 Launch with `workflow` (no arguments):
 
 ```
-┌─ workflow v0.1.0 ── 12 workflows ── 48 runs ── 2 failed ─────┐
+┌─ workflow v0.4.0 ── 12 workflows ── 48 runs ── 2 failed ─────┐
 │                                                                │
 │ Categories │ Tasks ──────────────┬─ Details ──────────────────│
 │ > backup   │ > db-full    [sh]  │ #!/bin/bash                │
@@ -396,7 +401,7 @@ Launch with `workflow` (no arguments):
 │ [14:32:01] ▶ dump — mysqldump --all-databases > /tmp/db.sql  │
 │ [14:32:03] ✓ dump (1850ms)                                   │
 └───────────────────────────────────────────────────────────────┘
- arrows:nav  r:run  d:dry-run  e:edit  c:compare  f:heat-sort  w:new  W:clone  t:template  a:ai  R:recent  s:saved  Del:delete  L:logs  /:search  h:help  q:quit
+ arrows:nav  r:run  d:dry-run  e:edit  n:rename  c:compare  f:heat-sort  w:new  W:clone  t:template  a:ai  R:recent  s:saved  Del:delete  L:logs  /:search  h:help  q:quit
 ```
 
 | Key | Action |
@@ -418,6 +423,7 @@ Launch with `workflow` (no arguments):
 | `A` | AI update selected task |
 | `t` | New task from template |
 | `W` | Clone & optimize selected task |
+| `n` | Rename selected task or category |
 | `D` | Delete selected task |
 | `?` | Help screen |
 | `q` / `Ctrl-C` | Quit |
@@ -612,6 +618,16 @@ skills/workflow-manager/
 └── references/
     └── api_reference.md  # Complete YAML schema and CLI reference
 ```
+
+## Security
+
+Workflow includes multiple layers of protection:
+
+- **Dangerous command blocking** — `rm -rf /`, fork bombs, `dd` to devices, and other destructive patterns are blocked before execution (override with `--force`)
+- **Secret masking** — values from `env:` blocks are automatically redacted in live TUI output and JSON logs
+- **Path traversal protection** — task references are validated to prevent escaping the workflows directory
+- **Command injection prevention** — template variables and task names are sanitized before shell expansion
+- **Import validation** — archive imports reject paths that would write outside the target directory
 
 ## Building from Source
 
