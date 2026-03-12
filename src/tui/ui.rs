@@ -1,6 +1,6 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
@@ -336,36 +336,38 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(style);
 
-    let content = if app.mode == AppMode::Comparing {
+    let lines: Vec<Line> = if app.mode == AppMode::Comparing {
         if let Some(ref result) = app.compare_result {
-            compare::format_compare(result, false)
+            // Compare still returns a String; wrap as raw text for now
+            Text::raw(compare::format_compare(result, false)).lines.into_iter().collect()
         } else {
-            "No comparison data".to_string()
+            vec![Line::from(Span::styled("No comparison data", Style::default().fg(Color::DarkGray)))]
         }
     } else if app.mode == AppMode::Running {
-        format_live_progress(app)
+        format_live_progress_styled(app)
     } else if app.mode == AppMode::ViewingLogs {
-        format_logs(&app.viewing_logs)
+        format_logs_styled(&app.viewing_logs)
     } else if let Some(ref run_log) = app.run_output {
-        format_run_log(run_log)
+        format_run_log_styled(run_log)
     } else if let Some(task) = app.selected_task_ref() {
         let task_ref = format!("{}/{}", task.category, task.name);
         let last_run = db::open_db(&app.config.db_path())
             .ok()
             .and_then(|conn| db::get_task_history(&conn, &task_ref, 1).ok())
             .and_then(|mut v| if v.is_empty() { None } else { Some(v.remove(0)) });
-        let mut preview = format_task_preview(task);
+        let mut styled = format_task_preview_styled(task);
         if let Some(run_log) = last_run {
-            preview.push_str("\n--- Last Run ---\n");
-            preview.push_str(&format_run_log(&run_log));
+            styled.push(Line::from(""));
+            styled.push(Line::from(Span::styled("--- Last Run ---", Style::default().fg(Color::DarkGray))));
+            styled.push(Line::from(""));
+            styled.extend(format_run_log_styled(&run_log));
         }
-        preview
+        styled
     } else {
-        "Select a task to preview".to_string()
+        vec![Line::from(Span::styled("Select a task to preview", Style::default().fg(Color::DarkGray)))]
     };
 
-    // Render content through tui-markdown for syntax highlighting
-    let text = tui_markdown::from_str(&content);
+    let text = Text::from(lines);
 
     // Approximate line count (including wraps) to clamp scroll
     let inner_width = area.width.saturating_sub(2) as usize; // borders
@@ -1333,26 +1335,30 @@ fn push_wizard_footer(lines: &mut Vec<Line>, available_height: u16, hints: &[(&s
     lines.push(Line::from(spans));
 }
 
-fn format_live_progress(app: &App) -> String {
-    let mut out = String::new();
+fn format_live_progress_styled(app: &App) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     if let Some(ref task_ref) = app.executing_task_ref {
-        out.push_str(&format!("Running: {}\n\n", task_ref));
+        lines.push(Line::from(vec![
+            Span::styled("Running: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(task_ref.clone(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(Line::from(""));
     }
 
     if app.step_states.is_empty() {
-        out.push_str("Preparing...\n");
-        return out;
+        lines.push(Line::from(Span::styled("Preparing...", Style::default().fg(Color::DarkGray))));
+        return lines;
     }
 
     for (i, state) in app.step_states.iter().enumerate() {
-        let icon = match state.status {
-            StepStatus::Running => "▶",
-            StepStatus::Success => "✓",
-            StepStatus::Failed => "✗",
-            StepStatus::Skipped => "⊘",
-            StepStatus::Timedout => "⏱",
-            StepStatus::Interactive => "⇄",
-            StepStatus::Pending => "·",
+        let (icon, icon_color) = match state.status {
+            StepStatus::Running => ("▶", Color::Yellow),
+            StepStatus::Success => ("✓", Color::Green),
+            StepStatus::Failed => ("✗", Color::Red),
+            StepStatus::Skipped => ("⊘", Color::DarkGray),
+            StepStatus::Timedout => ("⏱", Color::Yellow),
+            StepStatus::Interactive => ("⇄", Color::Cyan),
+            StepStatus::Pending => ("·", Color::DarkGray),
         };
 
         let duration = match state.duration_ms {
@@ -1362,14 +1368,26 @@ fn format_live_progress(app: &App) -> String {
             None => String::new(),
         };
 
-        out.push_str(&format!("  {} {}. {}{}\n", icon, i + 1, state.id, duration));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(icon, Style::default().fg(icon_color)),
+            Span::raw(" "),
+            Span::styled(format!("{}.", i + 1), Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled(state.id.clone(), Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(duration, Style::default().fg(Color::DarkGray)),
+        ]));
 
         if !state.cmd_preview.is_empty() && state.status == StepStatus::Running {
-            out.push_str(&format!("       $ {}\n", state.cmd_preview));
+            lines.push(Line::from(vec![
+                Span::raw("       "),
+                Span::styled("$ ", Style::default().fg(Color::Green)),
+                Span::styled(state.cmd_preview.replace('\t', "  "), Style::default().fg(Color::DarkGray)),
+            ]));
         }
     }
 
-    out
+    lines
 }
 
 /// Format a timestamp as a short relative time like "2d", "5h", "3m".
@@ -1391,7 +1409,10 @@ fn format_relative_short(ts: Option<chrono::DateTime<chrono::Utc>>) -> String {
     }
 }
 
-fn format_task_preview(task: &crate::core::models::Task) -> String {
+fn format_task_preview_styled(task: &crate::core::models::Task) -> Vec<Line<'static>> {
+    let label_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let value_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+
     let workflow = match task.kind {
         TaskKind::ShellScript => parse_shell_task(&task.path),
         TaskKind::YamlWorkflow => parse_workflow(&task.path),
@@ -1399,46 +1420,77 @@ fn format_task_preview(task: &crate::core::models::Task) -> String {
 
     match workflow {
         Ok(wf) => {
-            let mut out = format!("Workflow: {}\n", wf.name);
+            let mut lines = Vec::new();
+            lines.push(Line::from(vec![
+                Span::styled("Workflow: ", label_style),
+                Span::styled(wf.name.clone(), value_style),
+            ]));
             if let Some(ref dir) = wf.workdir {
-                out.push_str(&format!("Workdir:  {}\n", dir.display()));
+                lines.push(Line::from(vec![
+                    Span::styled("Workdir:  ", label_style),
+                    Span::styled(dir.display().to_string(), value_style),
+                ]));
             }
             if !wf.env.is_empty() {
-                out.push_str(&format!("Env vars: {}\n", wf.env.len()));
+                lines.push(Line::from(vec![
+                    Span::styled("Env vars: ", label_style),
+                    Span::styled(wf.env.len().to_string(), value_style),
+                ]));
                 for (k, v) in &wf.env {
-                    match v {
-                        EnvValue::Static(s) => out.push_str(&format!("  {k}: {s}\n")),
-                        EnvValue::Dynamic { cmd } => out.push_str(&format!("  {k}: $({cmd})\n")),
-                    }
+                    let val = match v {
+                        EnvValue::Static(s) => s.clone(),
+                        EnvValue::Dynamic { cmd } => format!("$({cmd})"),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(format!("{k}: "), Style::default().fg(Color::White)),
+                        Span::styled(val, Style::default().fg(Color::DarkGray)),
+                    ]));
                 }
             }
-            out.push_str(&format!("Steps:    {}\n\n", wf.steps.len()));
+            lines.push(Line::from(vec![
+                Span::styled("Steps:    ", label_style),
+                Span::styled(wf.steps.len().to_string(), value_style),
+            ]));
+            lines.push(Line::from(""));
 
             for (i, step) in wf.steps.iter().enumerate() {
-                out.push_str(&format!("  {}. [{}]", i + 1, step.id));
+                let mut spans = vec![
+                    Span::raw("  "),
+                    Span::styled(format!("{}.", i + 1), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                    Span::raw(" "),
+                    Span::styled(format!("[{}]", step.id), Style::default().fg(Color::Yellow)),
+                ];
                 if !step.needs.is_empty() {
-                    out.push_str(&format!(" (needs: {})", step.needs.join(", ")));
+                    spans.push(Span::styled(
+                        format!(" (needs: {})", step.needs.join(", ")),
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 }
-                out.push('\n');
-                // Show command, truncated per line
-                let cmd = if step.cmd.len() > 120 {
-                    format!("{}...", &step.cmd[..117])
+                lines.push(Line::from(spans));
+
+                let sanitized = step.cmd.replace('\t', "  ");
+                let cmd = if sanitized.len() > 120 {
+                    format!("{}...", &sanitized[..117])
                 } else {
-                    step.cmd.clone()
+                    sanitized
                 };
-                out.push_str(&format!("     $ {}\n", cmd));
+                lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled("$ ", Style::default().fg(Color::Green)),
+                    Span::styled(cmd, Style::default().fg(Color::White)),
+                ]));
             }
-            out
+            lines
         }
         Err(_) => {
-            // Fallback to raw file content
             match std::fs::read_to_string(&task.path) {
                 Ok(contents) => {
-                    let lines: Vec<&str> = contents.lines().collect();
-                    let max = 50.min(lines.len());
-                    lines[..max].join("\n")
+                    let file_lines: Vec<&str> = contents.lines().collect();
+                    let max = 50.min(file_lines.len());
+                    file_lines[..max].iter().map(|l| Line::from(l.to_string())).collect()
                 }
-                Err(e) => format!("Cannot read file: {e}"),
+                Err(e) => vec![Line::from(Span::styled(format!("Cannot read file: {e}"), Style::default().fg(Color::Red)))],
             }
         }
     }
@@ -1480,32 +1532,62 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(para, area);
 }
 
-fn format_run_log(log: &crate::core::models::RunLog) -> String {
-    let mut out = format!(
-        "Run: {}\nTask: {}\nStarted: {}\nExit: {}\n\n",
-        log.id, log.task_ref, log.started, log.exit_code
-    );
+fn format_run_log_styled(log: &crate::core::models::RunLog) -> Vec<Line<'static>> {
+    let label_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let mut lines = Vec::new();
+
+    lines.push(Line::from(vec![
+        Span::styled("Run:     ", label_style),
+        Span::styled(log.id.clone(), Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Task:    ", label_style),
+        Span::styled(log.task_ref.clone(), Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Started: ", label_style),
+        Span::styled(log.started.to_string(), Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Exit:    ", label_style),
+        Span::styled(
+            log.exit_code.to_string(),
+            if log.exit_code == 0 {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+            },
+        ),
+    ]));
+    lines.push(Line::from(""));
 
     for step in &log.steps {
-        let icon = match step.status {
-            StepStatus::Success => "[OK]",
-            StepStatus::Failed => "[FAIL]",
-            StepStatus::Skipped => "[SKIP]",
-            StepStatus::Timedout => "[TIMEOUT]",
-            StepStatus::Running => "[...]",
-            StepStatus::Interactive => "[INTERACTIVE]",
-            StepStatus::Pending => "[--]",
+        let (icon, icon_style) = match step.status {
+            StepStatus::Success => ("[OK]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            StepStatus::Failed => ("[FAIL]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            StepStatus::Skipped => ("[SKIP]", Style::default().fg(Color::DarkGray)),
+            StepStatus::Timedout => ("[TIMEOUT]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            StepStatus::Running => ("[...]", Style::default().fg(Color::Yellow)),
+            StepStatus::Interactive => ("[INTERACTIVE]", Style::default().fg(Color::Cyan)),
+            StepStatus::Pending => ("[--]", Style::default().fg(Color::DarkGray)),
         };
-        out.push_str(&format!(
-            "{} {} ({}ms)\n",
-            icon, step.id, step.duration_ms
-        ));
+        lines.push(Line::from(vec![
+            Span::styled(icon, icon_style),
+            Span::raw(" "),
+            Span::styled(step.id.clone(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" ({}ms)", step.duration_ms), Style::default().fg(Color::DarkGray)),
+        ]));
         if !step.output.is_empty() {
-            out.push_str(&format!("  {}\n", step.output.trim()));
+            for out_line in step.output.trim().lines() {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(out_line.replace('\t', "  "), Style::default().fg(Color::DarkGray)),
+                ]));
+            }
         }
     }
 
-    out
+    lines
 }
 
 fn draw_help(f: &mut Frame, app: &App) {
@@ -1687,21 +1769,29 @@ fn draw_streaming_modal(f: &mut Frame, app: &App) {
     f.render_widget(status_bar, inner_chunks[1]);
 }
 
-fn format_logs(logs: &[crate::core::models::RunLog]) -> String {
+fn format_logs_styled(logs: &[crate::core::models::RunLog]) -> Vec<Line<'static>> {
     if logs.is_empty() {
-        return "No logs available".to_string();
+        return vec![Line::from(Span::styled("No logs available", Style::default().fg(Color::DarkGray)))];
     }
 
-    let mut out = String::new();
+    let mut lines = Vec::new();
     for log in logs {
-        let status = if log.exit_code == 0 { "OK" } else { "FAIL" };
-        out.push_str(&format!(
-            "[{status}] {} @ {}\n",
-            log.task_ref,
-            log.started.format("%Y-%m-%d %H:%M:%S")
-        ));
+        let (status, status_style) = if log.exit_code == 0 {
+            ("[OK]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        } else {
+            ("[FAIL]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+        };
+        lines.push(Line::from(vec![
+            Span::styled(status, status_style),
+            Span::raw(" "),
+            Span::styled(log.task_ref.clone(), Style::default().fg(Color::White)),
+            Span::styled(
+                format!(" @ {}", log.started.format("%Y-%m-%d %H:%M:%S")),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
     }
-    out
+    lines
 }
 
 fn draw_recent_runs(f: &mut Frame, app: &App) {
