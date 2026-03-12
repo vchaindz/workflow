@@ -23,7 +23,6 @@ toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
 dirs = "5"
 rusqlite = { version = "0.31", features = ["bundled"] }
-tui-markdown = "0.2"
 similar = "2"
 regex = "1"
 is-terminal = "0.4"
