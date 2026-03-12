@@ -7,6 +7,7 @@ use ratatui::Frame;
 use crate::core::db;
 use crate::core::history;
 use crate::core::models::{StepStatus, TaskHeat, TaskKind};
+use crate::core::models::EnvValue;
 use crate::core::parser::{parse_shell_task, parse_workflow};
 use crate::core::wizard;
 
@@ -1404,6 +1405,12 @@ fn format_task_preview(task: &crate::core::models::Task) -> String {
             }
             if !wf.env.is_empty() {
                 out.push_str(&format!("Env vars: {}\n", wf.env.len()));
+                for (k, v) in &wf.env {
+                    match v {
+                        EnvValue::Static(s) => out.push_str(&format!("  {k}: {s}\n")),
+                        EnvValue::Dynamic { cmd } => out.push_str(&format!("  {k}: $({cmd})\n")),
+                    }
+                }
             }
             out.push_str(&format!("Steps:    {}\n\n", wf.steps.len()));
 

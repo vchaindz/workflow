@@ -10,7 +10,7 @@ use wait_timeout::ChildExt;
 
 use crate::core::detect;
 use crate::core::models::{ExecutionEvent, RunLog, Step, StepResult, StepStatus, Workflow};
-use crate::core::parser::topological_sort;
+use crate::core::parser::{resolve_env, topological_sort};
 use crate::core::template::expand_template;
 use crate::error::Result;
 
@@ -220,8 +220,11 @@ pub fn execute_workflow(
     let mut failed_steps: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut overall_exit = 0i32;
 
-    // Merge env: workflow env + overrides
-    let mut env: HashMap<String, String> = workflow.env.clone();
+    // Resolve dynamic env values at execution time (not during parsing)
+    let resolved_env = resolve_env(&workflow.env)?;
+
+    // Merge env: resolved workflow env + overrides
+    let mut env: HashMap<String, String> = resolved_env;
     env.extend(opts.env_overrides.clone());
 
     // Expand {{var}} placeholders in env values (e.g. DZ_CONTAINER: "{{container}}")
@@ -422,19 +425,21 @@ pub fn execute_workflow(
                         let step_id_clone = step.id.clone();
                         let tx_clone = event_tx.map(|t| t.clone());
 
-                        // Stream stdout in a thread
+                        // Stream stdout in a thread (with secret masking)
                         let stdout_handle = stdout.map(|out| {
                             let sid = step_id_clone.clone();
                             let txc = tx_clone.clone();
+                            let secrets_clone = secret_values.clone();
                             std::thread::spawn(move || {
                                 let reader = BufReader::new(out);
                                 for line in reader.lines() {
                                     match line {
                                         Ok(l) => {
                                             if let Some(ref tx) = txc {
+                                                let l_masked = mask_secrets(&l, &secrets_clone);
                                                 let _ = tx.send(ExecutionEvent::StepOutput {
                                                     step_id: sid.clone(),
-                                                    line: l,
+                                                    line: l_masked,
                                                 });
                                             }
                                         }
@@ -444,19 +449,21 @@ pub fn execute_workflow(
                             })
                         });
 
-                        // Stream stderr in a thread
+                        // Stream stderr in a thread (with secret masking)
                         let stderr_handle = stderr.map(|err| {
                             let sid = step.id.clone();
                             let txc = event_tx.map(|t| t.clone());
+                            let secrets_clone = secret_values.clone();
                             std::thread::spawn(move || {
                                 let reader = BufReader::new(err);
                                 for line in reader.lines() {
                                     match line {
                                         Ok(l) => {
                                             if let Some(ref tx) = txc {
+                                                let l_masked = mask_secrets(&l, &secrets_clone);
                                                 let _ = tx.send(ExecutionEvent::StepOutput {
                                                     step_id: sid.clone(),
-                                                    line: l,
+                                                    line: l_masked,
                                                 });
                                             }
                                         }
@@ -883,7 +890,7 @@ fn truncate_cmd(cmd: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::models::Step;
+    use crate::core::models::{EnvValue, Step};
 
     fn echo_workflow() -> Workflow {
         Workflow {
@@ -1018,7 +1025,7 @@ mod tests {
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(),
             }],
-            env: HashMap::from([("MY_VAR".to_string(), "original".to_string())]),
+            env: HashMap::from([("MY_VAR".to_string(), EnvValue::Static("original".to_string()))]),
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
@@ -1362,7 +1369,7 @@ mod tests {
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(),
             }],
-            env: HashMap::from([("MY_PASS".to_string(), "hunter2".to_string())]),
+            env: HashMap::from([("MY_PASS".to_string(), EnvValue::Static("hunter2".to_string()))]),
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use tar::Archive;
@@ -41,7 +41,11 @@ pub fn cmd_import(
 
     for entry in archive.entries()? {
         let entry = entry?;
-        let path = entry.path()?.into_owned();
+        let raw_path = entry.path()?.into_owned();
+        let path = match sanitize_archive_path(&raw_path) {
+            Some(p) => p,
+            None => continue,
+        };
         if entry.header().entry_type().is_file() {
             let dest = workflows_dir.join(&path);
             all_entries.push(path.clone());
@@ -113,7 +117,11 @@ pub fn cmd_import(
 
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let path = entry.path()?.into_owned();
+        let raw_path = entry.path()?.into_owned();
+        let path = match sanitize_archive_path(&raw_path) {
+            Some(p) => p,
+            None => continue,
+        };
         let dest = workflows_dir.join(&path);
 
         if entry.header().entry_type().is_dir() {
@@ -174,6 +182,21 @@ pub fn cmd_import(
     }
 
     Ok(())
+}
+
+/// Reject archive paths that could escape the target directory.
+fn sanitize_archive_path(path: &Path) -> Option<PathBuf> {
+    if path.is_absolute() {
+        eprintln!("  Skipping absolute path: {}", path.display());
+        return None;
+    }
+    for component in path.components() {
+        if matches!(component, Component::ParentDir) {
+            eprintln!("  Skipping path with '..': {}", path.display());
+            return None;
+        }
+    }
+    Some(path.to_path_buf())
 }
 
 fn prompt_conflict(path: &Path) -> Result<ConflictChoice> {

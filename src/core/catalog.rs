@@ -335,6 +335,13 @@ pub fn fetch_templates(cache_dir: &Path, repo_url: &str) -> Result<usize> {
                 let cat = components[templates_pos + 1];
                 let filename = components[templates_pos + 2];
 
+                // Reject traversal attempts
+                if cat.contains("..") || cat.contains('/') || cat.contains('\\')
+                    || filename.contains("..") || filename.contains('/') || filename.contains('\\')
+                {
+                    continue;
+                }
+
                 if filename.ends_with(".yaml") || filename.ends_with(".yml") {
                     let dest_dir = cache_dir.join(cat);
                     std::fs::create_dir_all(&dest_dir)?;

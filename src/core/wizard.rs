@@ -214,8 +214,14 @@ pub fn generate_yaml(workflow: &Workflow) -> String {
         let mut keys: Vec<&String> = workflow.env.keys().collect();
         keys.sort();
         for key in keys {
-            let val = &workflow.env[key];
-            out.push_str(&format!("  {}: \"{}\"\n", key, val));
+            match &workflow.env[key] {
+                crate::core::models::EnvValue::Static(val) => {
+                    out.push_str(&format!("  {}: \"{}\"\n", key, val));
+                }
+                crate::core::models::EnvValue::Dynamic { cmd } => {
+                    out.push_str(&format!("  {}:\n    cmd: \"{}\"\n", key, cmd));
+                }
+            }
         }
     }
 
@@ -289,7 +295,7 @@ mod tests {
     fn sample_workflow() -> Workflow {
         Workflow {
             name: "Test Workflow".to_string(),
-            env: HashMap::from([("DB".to_string(), "mydb".to_string())]),
+            env: HashMap::from([("DB".to_string(), crate::core::models::EnvValue::Static("mydb".to_string()))]),
             workdir: None,
             secrets: Vec::new(),
             notify: Default::default(),
@@ -477,7 +483,7 @@ mod tests {
     fn test_generate_yaml_roundtrip() {
         let wf = Workflow {
             name: "My Workflow".to_string(),
-            env: HashMap::from([("HOST".to_string(), "localhost".to_string())]),
+            env: HashMap::from([("HOST".to_string(), crate::core::models::EnvValue::Static("localhost".to_string()))]),
             workdir: Some(PathBuf::from("/tmp")),
             secrets: Vec::new(),
             notify: Default::default(),

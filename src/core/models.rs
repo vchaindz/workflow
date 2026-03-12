@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// An env value can be a plain string or a dynamic command to execute.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum EnvValue {
     Static(String),
@@ -120,8 +120,8 @@ impl Default for TaskHeat {
 pub struct Workflow {
     pub name: String,
     pub steps: Vec<Step>,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
+    #[serde(default, skip_serializing)]
+    pub env: HashMap<String, EnvValue>,
     #[serde(default)]
     pub workdir: Option<PathBuf>,
     #[serde(default)]

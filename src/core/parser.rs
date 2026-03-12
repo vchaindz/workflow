@@ -14,11 +14,10 @@ pub fn parse_workflow_from_str(contents: &str) -> Result<Workflow> {
     } else {
         normalize_steps(raw.cleanup)?
     };
-    let env = resolve_env(raw.env)?;
     let workflow = Workflow {
         name: raw.name,
         steps,
-        env,
+        env: raw.env,
         workdir: raw.workdir,
         secrets: raw.secrets,
         notify: raw.notify,
@@ -74,17 +73,18 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
 }
 
 /// Resolve env values: static strings pass through, dynamic `cmd` values are executed via bash.
-fn resolve_env(raw_env: HashMap<String, EnvValue>) -> Result<HashMap<String, String>> {
+/// Called at execution time only — never during parsing, validation, or preview.
+pub fn resolve_env(raw_env: &HashMap<String, EnvValue>) -> Result<HashMap<String, String>> {
     let mut resolved = HashMap::new();
-    for (key, val) in raw_env {
+    for (key, val) in raw_env.iter() {
         match val {
             EnvValue::Static(s) => {
-                resolved.insert(key, s);
+                resolved.insert(key.clone(), s.clone());
             }
             EnvValue::Dynamic { cmd } => {
                 let output = std::process::Command::new("bash")
                     .arg("-c")
-                    .arg(&cmd)
+                    .arg(cmd)
                     .output()
                     .map_err(|e| DzError::Execution(format!("env '{key}': {e}")))?;
                 if !output.status.success() {
@@ -94,13 +94,23 @@ fn resolve_env(raw_env: HashMap<String, EnvValue>) -> Result<HashMap<String, Str
                     )));
                 }
                 resolved.insert(
-                    key,
+                    key.clone(),
                     String::from_utf8_lossy(&output.stdout).trim().to_string(),
                 );
             }
         }
     }
     Ok(resolved)
+}
+
+/// Return only static env values (no command execution). For preview/cache/validate.
+pub fn static_env(env: &HashMap<String, EnvValue>) -> HashMap<String, String> {
+    env.iter()
+        .filter_map(|(k, v)| match v {
+            EnvValue::Static(s) => Some((k.clone(), s.clone())),
+            EnvValue::Dynamic { .. } => None,
+        })
+        .collect()
 }
 
 /// Wrap a shell script as a single-step workflow.
@@ -111,7 +121,7 @@ pub fn parse_shell_task(path: &Path) -> Result<Workflow> {
         .unwrap_or("script")
         .to_string();
 
-    let cmd = format!("bash {}", path.display());
+    let cmd = format!("bash '{}'", path.display().to_string().replace('\'', "'\\''"));
 
     Ok(Workflow {
         name,
@@ -242,7 +252,10 @@ env:
         assert_eq!(wf.name, "Test Workflow");
         assert_eq!(wf.steps.len(), 2);
         assert_eq!(wf.steps[1].needs, vec!["step1"]);
-        assert_eq!(wf.env.get("FOO").unwrap(), "bar");
+        match wf.env.get("FOO").unwrap() {
+            EnvValue::Static(s) => assert_eq!(s, "bar"),
+            _ => panic!("expected static env"),
+        }
     }
 
     #[test]
@@ -501,7 +514,7 @@ steps:
     }
 
     #[test]
-    fn test_dynamic_env_resolution() {
+    fn test_dynamic_env_deferred() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("dynenv.yaml");
         fs::write(
@@ -518,13 +531,25 @@ steps:
         )
         .unwrap();
 
+        // Parsing should NOT execute dynamic env commands
         let wf = parse_workflow(&path).unwrap();
-        assert_eq!(wf.env.get("STATIC_VAR").unwrap(), "hello");
-        assert_eq!(wf.env.get("DYNAMIC_VAR").unwrap(), "world");
+        match wf.env.get("STATIC_VAR").unwrap() {
+            EnvValue::Static(s) => assert_eq!(s, "hello"),
+            _ => panic!("expected static env"),
+        }
+        match wf.env.get("DYNAMIC_VAR").unwrap() {
+            EnvValue::Dynamic { cmd } => assert_eq!(cmd, "echo world"),
+            _ => panic!("expected dynamic env"),
+        }
+
+        // resolve_env() should execute the commands
+        let resolved = resolve_env(&wf.env).unwrap();
+        assert_eq!(resolved.get("STATIC_VAR").unwrap(), "hello");
+        assert_eq!(resolved.get("DYNAMIC_VAR").unwrap(), "world");
     }
 
     #[test]
-    fn test_dynamic_env_failure() {
+    fn test_dynamic_env_failure_at_resolve() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("dynfail.yaml");
         fs::write(
@@ -540,7 +565,10 @@ steps:
         )
         .unwrap();
 
-        let result = parse_workflow(&path);
+        // Parsing should succeed (env not resolved yet)
+        let wf = parse_workflow(&path).unwrap();
+        // Resolution should fail
+        let result = resolve_env(&wf.env);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("BAD"), "error was: {err}");
