@@ -4,6 +4,42 @@ use crate::core::config::Config;
 use crate::core::discovery::{resolve_task_ref, scan_workflows};
 use crate::error::{DzError, Result};
 
+/// Reject strings containing shell metacharacters to prevent injection.
+fn validate_shell_safe(s: &str, label: &str) -> Result<()> {
+    if s.chars().any(|c| matches!(c, ';' | '|' | '&' | '$' | '`' | '(' | ')' | '{' | '}' | '>' | '<' | '\n' | '\r' | '\'' | '"')) {
+        return Err(DzError::Execution(format!("{label} contains unsafe characters")));
+    }
+    Ok(())
+}
+
+/// Read the current crontab contents (empty string if none).
+fn read_crontab() -> String {
+    std::process::Command::new("crontab")
+        .arg("-l")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default()
+}
+
+/// Write new content to crontab via `crontab -`.
+fn write_crontab(content: &str) -> Result<()> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| DzError::Execution(format!("failed to run crontab: {e}")))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(content.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(DzError::Execution("crontab write failed".to_string()));
+    }
+    Ok(())
+}
+
 pub fn cmd_schedule(
     config: &Config,
     task_ref: &str,
@@ -11,6 +47,9 @@ pub fn cmd_schedule(
     systemd: bool,
     remove: bool,
 ) -> Result<()> {
+    // Validate inputs against shell injection
+    validate_shell_safe(task_ref, "task reference")?;
+
     // Validate task exists
     let categories = scan_workflows(&config.workflows_dir)?;
     let task = resolve_task_ref(&categories, task_ref)?;
@@ -21,7 +60,9 @@ pub fn cmd_schedule(
     let exe_str = workflow_exe.display().to_string();
 
     let dir_flag = if config.workflows_dir != crate::core::config::Config::default().workflows_dir {
-        format!(" --dir {}", config.workflows_dir.display())
+        let dir_str = config.workflows_dir.display().to_string();
+        validate_shell_safe(&dir_str, "workflows directory path")?;
+        format!(" --dir {}", dir_str)
     } else {
         String::new()
     };
@@ -49,12 +90,7 @@ fn install_crontab_entry(task_ref: &str, exe: &str, dir_flag: &str, cron_expr: &
     let marker = format!("# workflow:{}", task_ref);
     let entry = format!("{} {}{} run {} --no-tui", cron_expr, exe, dir_flag, task_ref);
 
-    // Read existing crontab
-    let existing = std::process::Command::new("crontab")
-        .arg("-l")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
+    let existing = read_crontab();
 
     // Remove old entry for same task if present
     let filtered: Vec<&str> = existing
@@ -68,21 +104,7 @@ fn install_crontab_entry(task_ref: &str, exe: &str, dir_flag: &str, cron_expr: &
     }
     new_crontab.push_str(&format!("{}\n{}\n", marker, entry));
 
-    // Install via pipe to crontab -
-    let mut child = std::process::Command::new("crontab")
-        .arg("-")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| DzError::Execution(format!("failed to run crontab: {e}")))?;
-
-    use std::io::Write;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(new_crontab.as_bytes())?;
-    }
-    let status = child.wait()?;
-    if !status.success() {
-        return Err(DzError::Execution("crontab installation failed".to_string()));
-    }
+    write_crontab(&new_crontab)?;
 
     eprintln!("Installed crontab entry for {}", task_ref);
     eprintln!("  {}", entry);
@@ -92,11 +114,7 @@ fn install_crontab_entry(task_ref: &str, exe: &str, dir_flag: &str, cron_expr: &
 fn remove_crontab_entry(task_ref: &str) -> Result<()> {
     let marker = format!("# workflow:{}", task_ref);
 
-    let existing = std::process::Command::new("crontab")
-        .arg("-l")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
+    let existing = read_crontab();
 
     let filtered: Vec<&str> = existing
         .lines()
@@ -105,17 +123,7 @@ fn remove_crontab_entry(task_ref: &str) -> Result<()> {
 
     let new_crontab = format!("{}\n", filtered.join("\n"));
 
-    let mut child = std::process::Command::new("crontab")
-        .arg("-")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| DzError::Execution(format!("failed to run crontab: {e}")))?;
-
-    use std::io::Write;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(new_crontab.as_bytes())?;
-    }
-    child.wait()?;
+    write_crontab(&new_crontab)?;
 
     eprintln!("Removed crontab entry for {}", task_ref);
     Ok(())
@@ -124,7 +132,8 @@ fn remove_crontab_entry(task_ref: &str) -> Result<()> {
 fn install_systemd_timer(task_ref: &str, exe: &str, dir_flag: &str, on_calendar: &str) -> Result<()> {
     let unit_name = format!("workflow-{}", task_ref.replace('/', "-"));
     let user_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("systemd/user");
     std::fs::create_dir_all(&user_dir)?;
 
@@ -170,7 +179,8 @@ fn remove_systemd_timer(task_ref: &str) -> Result<()> {
         .status();
 
     let user_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("systemd/user");
 
     let _ = std::fs::remove_file(user_dir.join(format!("{}.service", unit_name)));

@@ -20,7 +20,13 @@ fn graceful_kill(child: &mut std::process::Child, grace_secs: u64) {
     use std::time::{Duration, Instant};
     let pid = child.id() as i32;
     // Send SIGTERM
-    unsafe { libc::kill(pid, libc::SIGTERM); }
+    let ret = unsafe { libc::kill(pid, libc::SIGTERM) };
+    if ret != 0 {
+        // Process already gone or invalid PID — just ensure cleanup
+        let _ = child.kill();
+        let _ = child.wait();
+        return;
+    }
     let deadline = Instant::now() + Duration::from_secs(grace_secs);
     loop {
         match child.try_wait() {
@@ -67,7 +73,7 @@ fn classify_error(stderr: &str) -> Option<String> {
 
 /// Check if a command contains sudo and warn if sudo access is unavailable.
 fn check_sudo_access(cmd: &str) -> Option<String> {
-    if !cmd.split_whitespace().any(|w| w == "sudo") {
+    if !cmd.split_whitespace().any(|w| w == "sudo" || w.ends_with("/sudo")) {
         return None;
     }
     // Test passwordless sudo
@@ -752,10 +758,12 @@ pub fn execute_workflow(
         } else {
             overall_exit = last_exit_code;
             failed_steps.insert(step.id.clone());
+            // Compute error hint before consuming masked_output
+            let error_hint = classify_error(&masked_output);
             let output = if max_attempts > 1 {
                 format!("{masked_output} (after {max_attempts} attempts)")
             } else {
-                masked_output.clone()
+                masked_output
             };
             step_results.push(StepResult {
                 id: step.id.clone(),
@@ -769,7 +777,7 @@ pub fn execute_workflow(
                 duration_ms,
             });
             // Error classification hint
-            if let Some(hint) = classify_error(&masked_output) {
+            if let Some(hint) = error_hint {
                 send(ExecutionEvent::Warning {
                     step_id: step.id.clone(),
                     message: hint,

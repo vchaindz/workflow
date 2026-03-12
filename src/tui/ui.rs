@@ -403,7 +403,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         _ => {
             let sort_label = if app.sort_by_heat { "f:α-sort" } else { "f:heat-sort" };
             let filter_label = format!("F:{}", app.status_filter.next().label());
-            format!("arrows:nav  r:run  d:dry-run  e:edit  c:compare  {sort_label}  {filter_label}  w:new  t:template  a:ai  R:recent  s:saved  L:logs  /:search  h:help  q:quit")
+            format!("arrows:nav  r:run  d:dry-run  e:edit  c:compare  {sort_label}  {filter_label}  w:new  W:clone  t:template  a:ai  R:recent  s:saved  L:logs  /:search  h:help  q:quit")
         }
     };
 

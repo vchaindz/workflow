@@ -244,6 +244,69 @@ pub fn get_run_summary(conn: &Connection, task_ref: &str) -> Result<Option<RunSu
     }))
 }
 
+/// Fetch run summaries for all tasks in a single query (batch version of get_run_summary).
+pub fn get_all_run_summaries(conn: &Connection) -> Result<HashMap<String, RunSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT task_ref, exit_code, started, ended FROM runs ORDER BY started DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i32>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+
+    // Group by task_ref, keeping at most 100 entries per task (matching get_run_summary behavior)
+    let mut per_task: HashMap<String, Vec<(i32, String, Option<String>)>> = HashMap::new();
+    for r in rows {
+        let (task_ref, exit_code, started, ended) = r?;
+        let entries = per_task.entry(task_ref).or_default();
+        if entries.len() < 100 {
+            entries.push((exit_code, started, ended));
+        }
+    }
+
+    let mut result = HashMap::new();
+    for (task_ref, entries) in per_task {
+        let mut last_success = None;
+        let mut last_failure = None;
+        let mut fail_count = 0u32;
+
+        for (exit_code, started_str, _) in &entries {
+            let ts = parse_dt(started_str);
+            if *exit_code == 0 {
+                if last_success.is_none() {
+                    last_success = ts;
+                }
+            } else {
+                if last_failure.is_none() {
+                    last_failure = ts;
+                }
+                fail_count += 1;
+            }
+        }
+
+        let last_duration_ms = {
+            let (_, started_str, ended_str) = &entries[0];
+            match (parse_dt(started_str), ended_str.as_deref().and_then(parse_dt)) {
+                (Some(s), Some(e)) => Some((e - s).num_milliseconds() as u64),
+                _ => None,
+            }
+        };
+
+        result.insert(task_ref, RunSummary {
+            last_success,
+            last_failure,
+            fail_count,
+            last_duration_ms,
+        });
+    }
+
+    Ok(result)
+}
+
 pub struct GlobalStats {
     pub total_runs: u64,
     pub failed_runs: u64,

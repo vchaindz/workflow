@@ -222,6 +222,7 @@ pub struct App {
 
     // Overdue reminder modal
     pub overdue_tasks: Vec<OverdueTask>,
+    pub overdue_refs: HashSet<String>,
     pub overdue_cursor: usize,
 
     // Heat-based sorting
@@ -304,6 +305,7 @@ impl App {
             recent_runs_cursor: 0,
             saved_tasks_cursor: 0,
             overdue_tasks: Vec::new(),
+            overdue_refs: HashSet::new(),
             overdue_cursor: 0,
             sort_by_heat: false,
             status_filter: StatusFilter::All,
@@ -341,6 +343,7 @@ impl App {
         if let Ok(conn) = crate::core::db::open_db(&db_path) {
             if let Ok(tasks) = crate::core::db::check_overdue_tasks(&conn, &self.categories) {
                 if !tasks.is_empty() {
+                    self.overdue_refs = tasks.iter().map(|t| t.task_ref.clone()).collect();
                     self.overdue_tasks = tasks;
                     self.overdue_cursor = 0;
                     self.mode = AppMode::OverdueReminder;
@@ -352,11 +355,11 @@ impl App {
     pub fn load_last_run_data(&mut self) {
         let db_path = self.config.workflows_dir.join("history.db");
         if let Ok(conn) = crate::core::db::open_db(&db_path) {
-            for cat in &mut self.categories {
-                for task in &mut cat.tasks {
-                    let task_ref = format!("{}/{}", cat.name, task.name);
-                    if let Ok(summary) = crate::core::db::get_run_summary(&conn, &task_ref) {
-                        task.last_run = summary;
+            if let Ok(summaries) = crate::core::db::get_all_run_summaries(&conn) {
+                for cat in &mut self.categories {
+                    for task in &mut cat.tasks {
+                        let task_ref = format!("{}/{}", cat.name, task.name);
+                        task.last_run = summaries.get(&task_ref).cloned();
                     }
                 }
             }
@@ -487,7 +490,8 @@ impl App {
                 t.last_run.as_ref().map_or(false, |s| s.fail_count > 0 && s.last_failure > s.last_success)
             }).collect(),
             StatusFilter::Overdue => base.into_iter().filter(|t| {
-                t.overdue.is_some()
+                let task_ref = format!("{}/{}", t.category, t.name);
+                self.overdue_refs.contains(&task_ref)
             }).collect(),
             StatusFilter::NeverRun => base.into_iter().filter(|t| {
                 t.last_run.is_none()
