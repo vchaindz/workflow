@@ -15,7 +15,7 @@ use crate::core::parser::{parse_shell_task, parse_workflow, parse_workflow_from_
 use crate::core::wizard;
 use crate::error::Result;
 
-use super::app::{App, AppMode, DeleteState, Focus, RenameState, WizardMode, WizardStage, WizardState};
+use super::app::{App, AppMode, DeleteState, Focus, RenameState, RenameTarget, WizardMode, WizardStage, WizardState};
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.mode {
@@ -643,23 +643,41 @@ fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 fn start_rename(app: &mut App) {
-    let task = match app.selected_task_ref() {
-        Some(t) => t.clone(),
-        None => return,
-    };
-
-    let extension = task.path.extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
-
-    app.rename_state = Some(RenameState {
-        old_name: task.name.clone(),
-        new_name: task.name.clone(),
-        task_path: task.path.clone(),
-        category: task.category.clone(),
-        extension,
-    });
-    app.mode = AppMode::Rename;
+    match app.focus {
+        Focus::Sidebar => {
+            let cat = match app.categories.get(app.selected_category) {
+                Some(c) => c,
+                None => return,
+            };
+            app.rename_state = Some(RenameState {
+                target: RenameTarget::Category,
+                old_name: cat.name.clone(),
+                new_name: cat.name.clone(),
+                task_path: cat.path.clone(),
+                category: cat.name.clone(),
+                extension: String::new(),
+            });
+            app.mode = AppMode::Rename;
+        }
+        _ => {
+            let task = match app.selected_task_ref() {
+                Some(t) => t.clone(),
+                None => return,
+            };
+            let extension = task.path.extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
+            app.rename_state = Some(RenameState {
+                target: RenameTarget::Task,
+                old_name: task.name.clone(),
+                new_name: task.name.clone(),
+                task_path: task.path.clone(),
+                category: task.category.clone(),
+                extension,
+            });
+            app.mode = AppMode::Rename;
+        }
+    }
 }
 
 fn handle_rename_key(app: &mut App, key: KeyEvent) -> Result<()> {
@@ -706,63 +724,133 @@ fn handle_rename_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     return Ok(());
                 }
 
-                let new_filename = format!("{}{}", new_name, state.extension);
-                let new_path = state.task_path.parent().unwrap().join(&new_filename);
+                match state.target {
+                    RenameTarget::Task => {
+                        let new_filename = format!("{}{}", new_name, state.extension);
+                        let new_path = state.task_path.parent().unwrap().join(&new_filename);
 
-                if new_path.exists() {
-                    app.footer_log.push(format!(
-                        "[{}] Rename failed: '{}' already exists",
-                        chrono::Local::now().format("%H:%M:%S"),
-                        new_filename,
-                    ));
-                    app.mode = AppMode::Normal;
-                    return Ok(());
-                }
-
-                match std::fs::rename(&state.task_path, &new_path) {
-                    Ok(()) => {
-                        let old_ref = format!("{}/{}", state.category, state.old_name);
-                        let new_ref = format!("{}/{}", state.category, new_name);
-
-                        // Update SQLite history
-                        let db_path = app.config.workflows_dir.join("history.db");
-                        if let Ok(conn) = db::open_db(&db_path) {
-                            let _ = db::rename_task_ref(&conn, &old_ref, &new_ref);
+                        if new_path.exists() {
+                            app.footer_log.push(format!(
+                                "[{}] Rename failed: '{}' already exists",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                new_filename,
+                            ));
+                            app.mode = AppMode::Normal;
+                            return Ok(());
                         }
 
-                        // Update bookmarks
-                        if let Some(pos) = app.config.bookmarks.iter().position(|s| *s == old_ref) {
-                            app.config.bookmarks[pos] = new_ref.clone();
-                            let _ = app.config.save_bookmarks();
-                        }
+                        match std::fs::rename(&state.task_path, &new_path) {
+                            Ok(()) => {
+                                let old_ref = format!("{}/{}", state.category, state.old_name);
+                                let new_ref = format!("{}/{}", state.category, new_name);
 
-                        // Update in-memory task
-                        for cat in &mut app.categories {
-                            for task in &mut cat.tasks {
-                                if task.path == state.task_path {
-                                    task.name = new_name.clone();
-                                    task.path = new_path.clone();
+                                // Update SQLite history
+                                let db_path = app.config.workflows_dir.join("history.db");
+                                if let Ok(conn) = db::open_db(&db_path) {
+                                    let _ = db::rename_task_ref(&conn, &old_ref, &new_ref);
                                 }
+
+                                // Update bookmarks
+                                if let Some(pos) = app.config.bookmarks.iter().position(|s| *s == old_ref) {
+                                    app.config.bookmarks[pos] = new_ref.clone();
+                                    let _ = app.config.save_bookmarks();
+                                }
+
+                                // Update in-memory task
+                                for cat in &mut app.categories {
+                                    for task in &mut cat.tasks {
+                                        if task.path == state.task_path {
+                                            task.name = new_name.clone();
+                                            task.path = new_path.clone();
+                                        }
+                                    }
+                                }
+
+                                // Rebuild caches
+                                app.build_step_cmd_cache();
+                                app.apply_sort();
+
+                                app.footer_log.push(format!(
+                                    "[{}] Renamed: {} → {}",
+                                    chrono::Local::now().format("%H:%M:%S"),
+                                    old_ref,
+                                    new_ref,
+                                ));
+                            }
+                            Err(e) => {
+                                app.footer_log.push(format!(
+                                    "[{}] Rename failed: {}",
+                                    chrono::Local::now().format("%H:%M:%S"),
+                                    e,
+                                ));
                             }
                         }
-
-                        // Rebuild caches
-                        app.build_step_cmd_cache();
-                        app.apply_sort();
-
-                        app.footer_log.push(format!(
-                            "[{}] Renamed: {} → {}",
-                            chrono::Local::now().format("%H:%M:%S"),
-                            old_ref,
-                            new_ref,
-                        ));
                     }
-                    Err(e) => {
-                        app.footer_log.push(format!(
-                            "[{}] Rename failed: {}",
-                            chrono::Local::now().format("%H:%M:%S"),
-                            e,
-                        ));
+                    RenameTarget::Category => {
+                        let new_path = state.task_path.parent().unwrap().join(&new_name);
+
+                        if new_path.exists() {
+                            app.footer_log.push(format!(
+                                "[{}] Rename failed: category '{}' already exists",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                new_name,
+                            ));
+                            app.mode = AppMode::Normal;
+                            return Ok(());
+                        }
+
+                        match std::fs::rename(&state.task_path, &new_path) {
+                            Ok(()) => {
+                                let old_cat = &state.old_name;
+
+                                // Update SQLite history and bookmarks for all tasks in this category
+                                let db_path = app.config.workflows_dir.join("history.db");
+                                let conn = db::open_db(&db_path).ok();
+
+                                if let Some(cat) = app.categories.iter_mut().find(|c| c.name == *old_cat) {
+                                    for task in &mut cat.tasks {
+                                        let old_ref = format!("{}/{}", old_cat, task.name);
+                                        let new_ref = format!("{}/{}", new_name, task.name);
+
+                                        // Update SQLite
+                                        if let Some(ref c) = conn {
+                                            let _ = db::rename_task_ref(c, &old_ref, &new_ref);
+                                        }
+
+                                        // Update bookmarks
+                                        if let Some(pos) = app.config.bookmarks.iter().position(|s| *s == old_ref) {
+                                            app.config.bookmarks[pos] = new_ref;
+                                        }
+
+                                        // Update task path and category field
+                                        task.path = new_path.join(task.path.file_name().unwrap());
+                                        task.category = new_name.clone();
+                                    }
+                                    cat.name = new_name.clone();
+                                    cat.path = new_path;
+                                }
+
+                                let _ = app.config.save_bookmarks();
+
+                                // Rebuild caches
+                                app.build_step_cmd_cache();
+                                app.apply_sort();
+
+                                app.footer_log.push(format!(
+                                    "[{}] Renamed category: {} → {}",
+                                    chrono::Local::now().format("%H:%M:%S"),
+                                    old_cat,
+                                    new_name,
+                                ));
+                            }
+                            Err(e) => {
+                                app.footer_log.push(format!(
+                                    "[{}] Rename failed: {}",
+                                    chrono::Local::now().format("%H:%M:%S"),
+                                    e,
+                                ));
+                            }
+                        }
                     }
                 }
             }

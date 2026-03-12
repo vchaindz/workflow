@@ -1312,10 +1312,15 @@ fn draw_confirm_delete(f: &mut Frame, app: &App) {
 }
 
 fn draw_rename(f: &mut Frame, app: &App) {
+    use crate::tui::app::RenameTarget;
+
     let state = match app.rename_state.as_ref() {
         Some(s) => s,
         None => return,
     };
+
+    let is_category = state.target == RenameTarget::Category;
+    let title = if is_category { " Rename Category " } else { " Rename Task " };
 
     let area = f.area();
     let w = 50.min(area.width.saturating_sub(4));
@@ -1327,7 +1332,7 @@ fn draw_rename(f: &mut Frame, app: &App) {
     f.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" Rename Task ")
+        .title(title)
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -1335,24 +1340,33 @@ fn draw_rename(f: &mut Frame, app: &App) {
 
     let inner = Rect::new(popup.x + 2, popup.y + 1, popup.width.saturating_sub(4), popup.height.saturating_sub(2));
 
-    let task_ref = format!("{}/{}", state.category, state.old_name);
+    let (label, display_name) = if is_category {
+        ("  Category  ", state.old_name.clone())
+    } else {
+        ("  Task  ", format!("{}/{}", state.category, state.old_name))
+    };
+
+    let mut name_spans = vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(&state.new_name, Style::default().fg(Color::Yellow)),
+        Span::styled("_", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
+    ];
+    if !state.extension.is_empty() {
+        name_spans.push(Span::styled(&state.extension, Style::default().fg(Color::DarkGray)));
+    }
+
     let lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Task  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&task_ref, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(label, Style::default().fg(Color::DarkGray)),
+            Span::styled(display_name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             "New name:",
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         )),
-        Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(&state.new_name, Style::default().fg(Color::Yellow)),
-            Span::styled("_", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
-            Span::styled(&state.extension, Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(name_spans),
         Line::from(""),
         Line::from(vec![
             Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Cyan)),
@@ -1706,7 +1720,7 @@ fn draw_help(f: &mut Frame, app: &App) {
             Line::from("  r           Run selected task"),
             Line::from("  d           Dry-run selected task"),
             Line::from("  e           Edit task in $EDITOR"),
-            Line::from("  n           Rename selected task"),
+            Line::from("  n           Rename task/category"),
             Line::from("  w           New task from shell history"),
             Line::from("  W           Clone selected task"),
             Line::from("  a           AI task generator"),

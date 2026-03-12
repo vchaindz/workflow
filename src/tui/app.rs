@@ -42,8 +42,15 @@ pub struct DeleteState {
     pub category: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RenameTarget {
+    Task,
+    Category,
+}
+
 #[derive(Debug, Clone)]
 pub struct RenameState {
+    pub target: RenameTarget,
     pub old_name: String,
     pub new_name: String,
     pub task_path: PathBuf,
