@@ -24,12 +24,54 @@ pub struct Config {
     pub notify: NotifyConfig,
     #[serde(default)]
     pub bookmarks: Vec<String>,
+    #[serde(default)]
+    pub sync: SyncConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HooksConfig {
     pub pre_run: Option<String>,
     pub post_run: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub remote_url: Option<String>,
+    #[serde(default = "default_true")]
+    pub auto_commit: bool,
+    #[serde(default = "default_true")]
+    pub auto_push: bool,
+    #[serde(default = "default_true")]
+    pub auto_pull_on_start: bool,
+    #[serde(default)]
+    pub sync_interval_minutes: Option<u32>,
+    #[serde(default = "default_branch")]
+    pub branch: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_branch() -> String {
+    "main".to_string()
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            remote_url: None,
+            auto_commit: true,
+            auto_push: true,
+            auto_pull_on_start: true,
+            sync_interval_minutes: None,
+            branch: "main".to_string(),
+        }
+    }
 }
 
 fn default_workflows_dir() -> PathBuf {
@@ -58,6 +100,7 @@ impl Default for Config {
             secrets: Vec::new(),
             notify: NotifyConfig::default(),
             bookmarks: Vec::new(),
+            sync: SyncConfig::default(),
         }
     }
 }
@@ -65,13 +108,36 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Result<Self> {
         let config_path = default_workflows_dir().join("config.toml");
-        if config_path.exists() {
+        let mut config = if config_path.exists() {
             let contents = std::fs::read_to_string(&config_path)?;
-            let config: Config = toml::from_str(&contents).map_err(DzError::from)?;
-            Ok(config)
+            toml::from_str(&contents).map_err(DzError::from)?
         } else {
-            Ok(Config::default())
+            Config::default()
+        };
+
+        // Overlay config.local.toml if it exists (machine-specific overrides)
+        let local_path = config.workflows_dir.join("config.local.toml");
+        if local_path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&local_path) {
+                if let Ok(local) = toml::from_str::<Config>(&contents) {
+                    // Overlay non-default fields
+                    if local.editor != default_editor() {
+                        config.editor = local.editor;
+                    }
+                    if local.workflows_dir != default_workflows_dir() {
+                        config.workflows_dir = local.workflows_dir;
+                    }
+                    if !local.theme.is_empty() {
+                        config.theme = local.theme;
+                    }
+                    if local.default_timeout.is_some() {
+                        config.default_timeout = local.default_timeout;
+                    }
+                }
+            }
         }
+
+        Ok(config)
     }
 
     pub fn load_from(path: &std::path::Path) -> Result<Self> {
@@ -101,6 +167,11 @@ impl Config {
             self.bookmarks.push(task_ref.to_string());
             true
         }
+    }
+
+    /// Persist sync config to config.toml, preserving other fields.
+    pub fn save_sync_config(&self) -> Result<()> {
+        self.save_bookmarks()
     }
 
     /// Persist bookmarks to config.toml, preserving other fields.

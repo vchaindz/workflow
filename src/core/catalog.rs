@@ -40,6 +40,8 @@ impl std::fmt::Display for TemplateSource {
 const TRIVY_CVE_CHECK: &str = include_str!("../../templates/security/trivy-cve-check.yaml");
 const CLAUDE_UPDATE: &str = include_str!("../../templates/tools/claude-update.yaml");
 const CODEX_UPDATE: &str = include_str!("../../templates/tools/codex-update.yaml");
+const GIT_SYNC: &str = include_str!("../../templates/tools/git-sync.yaml");
+const GIT_SYNC_PULL: &str = include_str!("../../templates/tools/git-sync-pull.yaml");
 const WEBSITE_CONTENT_CHECK: &str =
     include_str!("../../templates/monitoring/website-content-check.yaml");
 
@@ -142,6 +144,8 @@ pub fn bundled_templates() -> Vec<TemplateEntry> {
         ("security", "trivy-cve-check", TRIVY_CVE_CHECK),
         ("tools", "claude-update", CLAUDE_UPDATE),
         ("tools", "codex-update", CODEX_UPDATE),
+        ("tools", "git-sync", GIT_SYNC),
+        ("tools", "git-sync-pull", GIT_SYNC_PULL),
         ("monitoring", "website-content-check", WEBSITE_CONTENT_CHECK),
         ("docker", "cleanup", DOCKER_CLEANUP),
         ("docker", "compose-status", DOCKER_COMPOSE_STATUS),

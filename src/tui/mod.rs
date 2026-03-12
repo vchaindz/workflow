@@ -36,6 +36,40 @@ pub fn run_tui(config: Config) -> Result<()> {
     // Eagerly detect AI tool so header shows it immediately
     let _ = app.ai_tool();
 
+    // Git sync: refresh status and auto-pull if configured
+    app.refresh_sync_status();
+    if app.config.sync.enabled && app.config.sync.auto_pull_on_start {
+        if let Some(ref info) = app.sync_info {
+            if matches!(info.status, crate::core::sync::SyncStatus::Behind(_)) {
+                let branch = app.config.sync.branch.clone();
+                match crate::core::sync::pull(&app.config.workflows_dir, &branch) {
+                    Ok(crate::core::sync::PullResult::Updated(n)) => {
+                        app.footer_log.push(format!(
+                            "[{}] ● sync: pulled {n} update(s) on startup",
+                            chrono::Local::now().format("%H:%M:%S"),
+                        ));
+                        // Re-scan workflows after pull
+                        if let Ok(cats) = scan_workflows(&app.config.workflows_dir) {
+                            app.categories = cats;
+                            app.load_heat_data();
+                            app.load_last_run_data();
+                            app.build_step_cmd_cache();
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        app.footer_log.push(format!(
+                            "[{}] ⚠ sync pull: {e}",
+                            chrono::Local::now().format("%H:%M:%S"),
+                        ));
+                    }
+                }
+                app.refresh_sync_status();
+            }
+        }
+    }
+    app.check_first_run_sync();
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -91,6 +125,7 @@ fn run_app(
 
                             // Refresh categories in case file was edited
                             rescan(app);
+                            app.trigger_auto_sync();
                             last_rescan = Instant::now();
                             continue;
                         }

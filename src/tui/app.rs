@@ -9,6 +9,7 @@ use crate::core::history::HistoryEntry;
 use crate::core::executor::{InteractiveRequest, StreamingRequest};
 use crate::core::db::OverdueTask;
 use crate::core::models::{Category, ExecutionEvent, RunLog, RuntimeVariable, StepStatus, Task, TaskHeat, Workflow};
+use crate::core::sync::SyncInfo;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -33,6 +34,7 @@ pub enum AppMode {
     SavedTasks,
     OverdueReminder,
     VariablePrompt,
+    GitSync,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +89,12 @@ pub enum StatusFilter {
     Failed,
     Overdue,
     NeverRun,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SyncSetupStage {
+    Menu,
+    RepoUrl,
 }
 
 impl StatusFilter {
@@ -271,6 +279,14 @@ pub struct App {
     pub var_prompt_task: Option<Task>,
     pub var_prompt_workflow: Option<Workflow>,
     pub var_prompt_error: Option<String>,
+
+    // Git sync state
+    pub sync_info: Option<SyncInfo>,
+    pub sync_menu_cursor: usize,
+    pub sync_message: Option<(String, bool)>, // (msg, is_error)
+    pub sync_setup_stage: SyncSetupStage,
+    pub sync_setup_input: String,
+    pub sync_first_run_hint: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -343,6 +359,12 @@ impl App {
             var_prompt_task: None,
             var_prompt_workflow: None,
             var_prompt_error: None,
+            sync_info: None,
+            sync_menu_cursor: 0,
+            sync_message: None,
+            sync_setup_stage: SyncSetupStage::Menu,
+            sync_setup_input: String::new(),
+            sync_first_run_hint: false,
         }
     }
 
@@ -457,6 +479,72 @@ impl App {
                 };
                 self.step_cmd_cache.insert(path.clone(), content);
             }
+        }
+    }
+
+    /// Refresh sync status (lightweight, no fetch).
+    pub fn refresh_sync_status(&mut self) {
+        if crate::core::sync::detect_git() {
+            match crate::core::sync::get_status(&self.config.workflows_dir) {
+                Ok(info) => self.sync_info = Some(info),
+                Err(_) => self.sync_info = None,
+            }
+        }
+    }
+
+    /// Trigger auto-sync (commit + push) if enabled.
+    pub fn trigger_auto_sync(&mut self) {
+        if !self.config.sync.enabled || !self.config.sync.auto_commit {
+            return;
+        }
+        let dir = self.config.workflows_dir.clone();
+        if !crate::core::sync::is_repo(&dir) {
+            return;
+        }
+
+        match crate::core::sync::auto_commit(&dir) {
+            Ok(Some(msg)) => {
+                self.footer_log.push(format!(
+                    "[{}] ● sync: {}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    msg,
+                ));
+                if self.config.sync.auto_push {
+                    let branch = self.config.sync.branch.clone();
+                    match crate::core::sync::push(&dir, &branch) {
+                        Ok(()) => {
+                            self.footer_log.push(format!(
+                                "[{}] ● sync: pushed to origin/{branch}",
+                                chrono::Local::now().format("%H:%M:%S"),
+                            ));
+                        }
+                        Err(e) => {
+                            self.footer_log.push(format!(
+                                "[{}] ⚠ sync push: {e}",
+                                chrono::Local::now().format("%H:%M:%S"),
+                            ));
+                        }
+                    }
+                }
+            }
+            Ok(None) => {} // nothing to commit
+            Err(e) => {
+                self.footer_log.push(format!(
+                    "[{}] ⚠ sync commit: {e}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                ));
+            }
+        }
+        self.refresh_sync_status();
+    }
+
+    /// Check if first-run sync hint should be shown.
+    pub fn check_first_run_sync(&mut self) {
+        if crate::core::sync::detect_git()
+            && !crate::core::sync::is_repo(&self.config.workflows_dir)
+            && !self.config.sync.enabled
+        {
+            self.sync_first_run_hint = true;
         }
     }
 

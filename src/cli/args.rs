@@ -168,6 +168,12 @@ pub enum Commands {
         remove: bool,
     },
 
+    /// Git sync workflows across machines
+    Sync {
+        #[command(subcommand)]
+        action: SyncAction,
+    },
+
     /// View run logs
     Logs {
         /// Task reference (omit for all recent)
@@ -181,4 +187,32 @@ pub enum Commands {
         #[arg(long, default_value = "10")]
         limit: usize,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SyncAction {
+    /// Initialize git repo in workflows directory
+    Init,
+
+    /// Clone workflows from a remote repo
+    Clone {
+        /// Git repository URL
+        url: String,
+    },
+
+    /// Commit and push changes to remote
+    Push {
+        /// Custom commit message
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+
+    /// Pull latest changes from remote
+    Pull,
+
+    /// Show sync status
+    Status,
+
+    /// Interactive guided sync setup
+    Setup,
 }

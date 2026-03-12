@@ -8,6 +8,7 @@ pub mod logs;
 pub mod run;
 pub mod schedule;
 pub mod status;
+pub mod sync;
 pub mod templates;
 pub mod validate;
 
@@ -15,7 +16,7 @@ use crate::core::config::Config;
 use crate::error::Result;
 use args::Commands;
 
-pub fn dispatch(config: &Config, command: Commands) -> Result<i32> {
+pub fn dispatch(config: &mut Config, command: Commands) -> Result<i32> {
     match command {
         Commands::Run {
             task,
@@ -68,6 +69,10 @@ pub fn dispatch(config: &Config, command: Commands) -> Result<i32> {
         Commands::Schedule { task, cron, systemd, remove } => {
             schedule::cmd_schedule(config, &task, cron.as_deref(), systemd, remove)?;
             Ok(0)
+        }
+
+        Commands::Sync { action } => {
+            sync::cmd_sync(config, action)
         }
 
         Commands::Logs { task, json, limit } => {

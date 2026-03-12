@@ -59,6 +59,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - [Configuration](#configuration)
 - [Logging](#logging)
 - [Claude Code Skill](#claude-code-skill)
+- [Sync](#sync)
 - [Security](#security)
 - [Building from Source](#building-from-source)
 - [Releases](#releases)
@@ -617,6 +618,43 @@ skills/workflow-manager/
 ├── SKILL.md              # Skill definition and instructions
 └── references/
     └── api_reference.md  # Complete YAML schema and CLI reference
+```
+
+## Sync
+
+Sync your workflow definitions across machines via a private GitHub repo. Requires `git` on PATH; `gh` (GitHub CLI) is optional but enables automatic repo creation.
+
+```bash
+# One-time setup: init git repo + create private GitHub repo + enable auto-sync
+workflow sync setup
+
+# Or step by step:
+workflow sync init                        # Initialize git repo in workflows dir
+workflow sync clone <url>                 # Clone an existing sync repo (new machine)
+
+# Day-to-day:
+workflow sync push                        # Auto-commit and push changes
+workflow sync push -m "added backup task" # Push with a custom commit message
+workflow sync pull                        # Pull latest from remote
+workflow sync status                      # Show sync status
+```
+
+`workflow sync setup` creates a private GitHub repo named `workflow-app-sync-repo` (via `gh`), enables auto-commit and auto-push in `config.toml`, and pulls on TUI startup. The `.gitignore` excludes `logs/`, `history.db`, and local config.
+
+In the TUI, press `G` to access sync controls — push, pull, and view status without leaving the interface.
+
+### Config
+
+Sync settings in `~/.config/workflow/config.toml`:
+
+```toml
+[sync]
+enabled = true
+auto_commit = true
+auto_push = true
+auto_pull_on_start = true
+branch = "main"
+remote_url = "https://github.com/you/workflow-app-sync-repo"
 ```
 
 ## Security

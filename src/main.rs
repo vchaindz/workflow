@@ -42,7 +42,7 @@ fn main() {
 
     match cli.command {
         Some(cmd) => {
-            let exit_code = match dispatch(&config, cmd) {
+            let exit_code = match dispatch(&mut config, cmd) {
                 Ok(code) => code,
                 Err(e) => {
                     eprintln!("error: {e}");

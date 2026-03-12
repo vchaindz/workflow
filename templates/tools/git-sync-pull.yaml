@@ -1,0 +1,13 @@
+name: Git Sync Pull
+description: Pull latest workflow changes from remote repository
+variables:
+  - name: branch
+    description: Git branch to pull from
+    default: main
+steps:
+  - id: pull
+    cmd: git -C ~/.config/workflow pull origin {{branch}}
+  - id: status
+    cmd: git -C ~/.config/workflow status --short
+    depends_on:
+      - pull

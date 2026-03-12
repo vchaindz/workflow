@@ -43,6 +43,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         AppMode::SavedTasks => handle_saved_tasks_key(app, key),
         AppMode::OverdueReminder => handle_overdue_key(app, key),
         AppMode::VariablePrompt => handle_variable_prompt_key(app, key),
+        AppMode::GitSync => handle_git_sync_key(app, key),
         AppMode::Wizard => handle_wizard_key(app, key),
         AppMode::ConfirmDelete => handle_confirm_delete_key(app, key),
         AppMode::Rename => handle_rename_key(app, key),
@@ -97,6 +98,14 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('S') => toggle_bookmark(app),
         KeyCode::Char('f') => app.toggle_sort(),
         KeyCode::Char('F') => app.cycle_status_filter(),
+        KeyCode::Char('g') => {
+            app.refresh_sync_status();
+            app.sync_menu_cursor = 0;
+            app.sync_message = None;
+            app.sync_setup_stage = super::app::SyncSetupStage::Menu;
+            app.sync_setup_input.clear();
+            app.mode = AppMode::GitSync;
+        }
         KeyCode::Char('n') => start_rename(app),
         KeyCode::Delete => start_delete(app),
         KeyCode::Char('h') => {
@@ -573,6 +582,188 @@ fn start_delete(app: &mut App) {
     app.mode = AppMode::ConfirmDelete;
 }
 
+fn handle_git_sync_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    use crate::core::sync;
+    use super::app::SyncSetupStage;
+
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        app.should_quit = true;
+        return Ok(());
+    }
+
+    match app.sync_setup_stage {
+        SyncSetupStage::RepoUrl => {
+            match key.code {
+                KeyCode::Esc => {
+                    app.sync_setup_stage = SyncSetupStage::Menu;
+                    app.sync_setup_input.clear();
+                }
+                KeyCode::Backspace => { app.sync_setup_input.pop(); }
+                KeyCode::Char(c) => { app.sync_setup_input.push(c); }
+                KeyCode::Enter => {
+                    let url = app.sync_setup_input.trim().to_string();
+                    if !url.is_empty() {
+                        let dir = app.config.workflows_dir.clone();
+                        match sync::setup_remote(&dir, &url) {
+                            Ok(()) => {
+                                app.config.sync.remote_url = Some(url);
+                                app.config.sync.enabled = true;
+                                let _ = app.config.save_sync_config();
+                                app.sync_message = Some(("Remote configured. Sync enabled.".to_string(), false));
+                                app.refresh_sync_status();
+                            }
+                            Err(e) => {
+                                app.sync_message = Some((format!("Error: {e}"), true));
+                            }
+                        }
+                    }
+                    app.sync_setup_stage = SyncSetupStage::Menu;
+                    app.sync_setup_input.clear();
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        SyncSetupStage::Menu => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    app.mode = AppMode::Normal;
+                }
+                KeyCode::Up => {
+                    app.sync_menu_cursor = app.sync_menu_cursor.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    app.sync_menu_cursor = app.sync_menu_cursor.saturating_add(1);
+                }
+                KeyCode::Enter => {
+                    let dir = app.config.workflows_dir.clone();
+                    let is_repo = sync::is_repo(&dir);
+                    let has_remote = app.sync_info.as_ref()
+                        .and_then(|i| i.remote_url.as_ref())
+                        .is_some();
+
+                    if !is_repo {
+                        // Menu: [Init repo] [Clone existing]
+                        match app.sync_menu_cursor {
+                            0 => {
+                                // Init
+                                match sync::init_repo(&dir) {
+                                    Ok(()) => {
+                                        app.config.sync.enabled = true;
+                                        let _ = app.config.save_sync_config();
+                                        app.sync_message = Some(("Git repo initialized.".to_string(), false));
+                                        app.refresh_sync_status();
+                                    }
+                                    Err(e) => {
+                                        app.sync_message = Some((format!("Error: {e}"), true));
+                                    }
+                                }
+                            }
+                            _ => {
+                                // Prompt for URL to clone
+                                app.sync_setup_stage = SyncSetupStage::RepoUrl;
+                                app.sync_setup_input.clear();
+                            }
+                        }
+                    } else if !has_remote {
+                        // Menu: [Add remote URL] [Create GitHub repo (gh)]
+                        match app.sync_menu_cursor {
+                            0 => {
+                                app.sync_setup_stage = SyncSetupStage::RepoUrl;
+                                app.sync_setup_input.clear();
+                            }
+                            _ => {
+                                // Create via gh
+                                if sync::detect_gh() {
+                                    match sync::create_private_repo(&dir) {
+                                        Ok(url) => {
+                                            app.config.sync.remote_url = Some(url.clone());
+                                            app.config.sync.enabled = true;
+                                            let _ = app.config.save_sync_config();
+                                            app.sync_message = Some((format!("Created: {url}"), false));
+                                            app.refresh_sync_status();
+                                        }
+                                        Err(e) => {
+                                            app.sync_message = Some((format!("Error: {e}"), true));
+                                        }
+                                    }
+                                } else {
+                                    app.sync_message = Some(("gh CLI not found".to_string(), true));
+                                }
+                            }
+                        }
+                    } else {
+                        // Menu: [Push] [Pull] [Status] [Toggle auto-sync]
+                        match app.sync_menu_cursor {
+                            0 => {
+                                // Push
+                                match sync::auto_commit(&dir) {
+                                    Ok(Some(msg)) => {
+                                        app.footer_log.push(format!(
+                                            "[{}] ● sync: {msg}",
+                                            chrono::Local::now().format("%H:%M:%S"),
+                                        ));
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => {
+                                        app.sync_message = Some((format!("Commit error: {e}"), true));
+                                        return Ok(());
+                                    }
+                                }
+                                let branch = app.config.sync.branch.clone();
+                                match sync::push(&dir, &branch) {
+                                    Ok(()) => {
+                                        app.sync_message = Some((format!("Pushed to origin/{branch}"), false));
+                                    }
+                                    Err(e) => {
+                                        app.sync_message = Some((format!("Push error: {e}"), true));
+                                    }
+                                }
+                                app.refresh_sync_status();
+                            }
+                            1 => {
+                                // Pull
+                                let branch = app.config.sync.branch.clone();
+                                match sync::pull(&dir, &branch) {
+                                    Ok(sync::PullResult::UpToDate) => {
+                                        app.sync_message = Some(("Already up to date.".to_string(), false));
+                                    }
+                                    Ok(sync::PullResult::Updated(n)) => {
+                                        app.sync_message = Some((format!("Pulled {n} update(s)."), false));
+                                    }
+                                    Ok(sync::PullResult::Conflict(files)) => {
+                                        app.sync_message = Some((format!("Conflicts in {} file(s)! Resolve manually.", files.len()), true));
+                                    }
+                                    Err(e) => {
+                                        app.sync_message = Some((format!("Pull error: {e}"), true));
+                                    }
+                                }
+                                app.refresh_sync_status();
+                            }
+                            2 => {
+                                // Refresh status
+                                app.refresh_sync_status();
+                                app.sync_message = Some(("Status refreshed.".to_string(), false));
+                            }
+                            3 => {
+                                // Toggle auto-sync
+                                app.config.sync.enabled = !app.config.sync.enabled;
+                                let _ = app.config.save_sync_config();
+                                let state = if app.config.sync.enabled { "enabled" } else { "disabled" };
+                                app.sync_message = Some((format!("Auto-sync {state}."), false));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.should_quit = true;
@@ -632,6 +823,7 @@ fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             app.delete_state = None;
             app.mode = AppMode::Normal;
+            app.trigger_auto_sync();
         }
         _ => {
             // Any other key cancels
@@ -855,6 +1047,7 @@ fn handle_rename_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
             }
             app.mode = AppMode::Normal;
+            app.trigger_auto_sync();
         }
         _ => {}
     }
@@ -1563,6 +1756,7 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
                 chrono::Local::now().format("%H:%M:%S"),
                 msg,
             ));
+            app.trigger_auto_sync();
         }
         KeyCode::Char('r') if wiz.mode == WizardMode::AiChat || wiz.mode == WizardMode::AiUpdate => {
             let wiz = app.wizard.as_mut().unwrap();

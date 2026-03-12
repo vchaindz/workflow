@@ -98,6 +98,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.mode == AppMode::VariablePrompt {
         draw_variable_prompt(f, app);
     }
+
+    if app.mode == AppMode::GitSync {
+        draw_git_sync(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -149,6 +153,21 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             },
             Style::default().fg(Color::DarkGray),
         ),
+        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+        {
+            use crate::core::sync::SyncStatus;
+            let (icon, color) = match app.sync_info.as_ref().map(|i| &i.status) {
+                Some(SyncStatus::Clean) => ("●", Color::Green),
+                Some(SyncStatus::Dirty(_)) => ("◐", Color::Yellow),
+                Some(SyncStatus::Ahead(_)) => ("↑", Color::Cyan),
+                Some(SyncStatus::Behind(_)) => ("↓", Color::Magenta),
+                Some(SyncStatus::Diverged(_, _)) => ("⇅", Color::Red),
+                Some(SyncStatus::NoRemote) => ("○", Color::DarkGray),
+                Some(SyncStatus::Offline) => ("○", Color::DarkGray),
+                Some(SyncStatus::NotInitialized) | None => ("○", Color::DarkGray),
+            };
+            Span::styled(format!("{icon} sync"), Style::default().fg(color))
+        },
     ];
 
     let header = Paragraph::new(Line::from(spans))
@@ -410,7 +429,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         _ => {
             let sort_label = if app.sort_by_heat { "f:α-sort" } else { "f:heat-sort" };
             let filter_label = format!("F:{}", app.status_filter.next().label());
-            format!("arrows:nav  r:run  d:dry-run  e:edit  n:rename  c:compare  {sort_label}  {filter_label}  w:new  W:clone  t:template  a:ai  R:recent  s:saved  L:logs  /:search  h:help  q:quit")
+            format!("arrows:nav  r:run  d:dry-run  e:edit  n:rename  c:compare  {sort_label}  {filter_label}  w:new  W:clone  t:template  a:ai  g:sync  R:recent  s:saved  L:logs  /:search  h:help  q:quit")
         }
     };
 
@@ -1667,7 +1686,7 @@ fn format_run_log_styled(log: &crate::core::models::RunLog) -> Vec<Line<'static>
 fn draw_help(f: &mut Frame, app: &App) {
     let area = f.area();
     let w = 50.min(area.width.saturating_sub(4));
-    let h = 28.min(area.height.saturating_sub(4));
+    let h = 30.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
@@ -1733,6 +1752,7 @@ fn draw_help(f: &mut Frame, app: &App) {
             Line::from("  R           Recent runs (last 10)"),
             Line::from("  s           Saved/bookmarked tasks"),
             Line::from("  S           Toggle bookmark on task"),
+            Line::from("  g           Git sync"),
             Line::from("  f           Toggle heat/alpha sort"),
             Line::from("  /           Search tasks"),
             Line::from("  q           Quit / close"),
@@ -2165,6 +2185,133 @@ fn draw_saved_tasks(f: &mut Frame, app: &App) {
     f.render_widget(list, popup);
 }
 
+fn draw_git_sync(f: &mut Frame, app: &App) {
+    use crate::core::sync::SyncStatus;
+    use super::app::SyncSetupStage;
+
+    let area = f.area();
+    let w = 55.min(area.width.saturating_sub(4));
+    let h = 18.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    let is_repo = app.sync_info.as_ref()
+        .map(|i| !matches!(i.status, SyncStatus::NotInitialized))
+        .unwrap_or(false);
+    let has_remote = app.sync_info.as_ref()
+        .and_then(|i| i.remote_url.as_ref())
+        .is_some();
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Status line
+    if let Some(ref info) = app.sync_info {
+        let status_str = match &info.status {
+            SyncStatus::NotInitialized => "Not initialized".to_string(),
+            SyncStatus::Clean => "Clean".to_string(),
+            SyncStatus::Dirty(n) => format!("{n} uncommitted change(s)"),
+            SyncStatus::Ahead(n) => format!("{n} commit(s) ahead"),
+            SyncStatus::Behind(n) => format!("{n} commit(s) behind"),
+            SyncStatus::Diverged(a, b) => format!("Diverged ({a} ahead, {b} behind)"),
+            SyncStatus::NoRemote => "No remote configured".to_string(),
+            SyncStatus::Offline => "Offline".to_string(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Status: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(status_str, Style::default().fg(Color::White)),
+        ]));
+
+        if !info.branch.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  Branch: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&info.branch, Style::default().fg(Color::Cyan)),
+            ]));
+        }
+        if let Some(ref url) = info.remote_url {
+            let display_url = if url.len() > 40 { &url[..40] } else { url.as_str() };
+            lines.push(Line::from(vec![
+                Span::styled("  Remote: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(display_url, Style::default().fg(Color::White)),
+            ]));
+        }
+    }
+
+    let auto_label = if app.config.sync.enabled { "on" } else { "off" };
+    lines.push(Line::from(vec![
+        Span::styled("  Auto-sync: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(auto_label, Style::default().fg(if app.config.sync.enabled { Color::Green } else { Color::Red })),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Input mode for URL
+    if app.sync_setup_stage == SyncSetupStage::RepoUrl {
+        lines.push(Line::from(Span::styled(
+            "  Enter repository URL:",
+            Style::default().fg(Color::Yellow),
+        )));
+        lines.push(Line::from(format!("  > {}▏", app.sync_setup_input)));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Enter: confirm  Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        // Menu items (context-dependent)
+        let menu_items: Vec<&str> = if !is_repo {
+            vec!["Init git repo", "Clone from URL"]
+        } else if !has_remote {
+            vec!["Add remote URL", "Create GitHub repo (gh)"]
+        } else {
+            vec!["Push now", "Pull now", "Refresh status", "Toggle auto-sync"]
+        };
+
+        for (i, item) in menu_items.iter().enumerate() {
+            let is_selected = i == app.sync_menu_cursor % menu_items.len();
+            let prefix = if is_selected { " ▸ " } else { "   " };
+            let style = if is_selected {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(Span::styled(format!("{prefix}{item}"), style)));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Enter: select  Esc: close",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    // Message (success/error)
+    if let Some((ref msg, is_error)) = app.sync_message {
+        lines.push(Line::from(""));
+        let color = if is_error { Color::Red } else { Color::Green };
+        lines.push(Line::from(Span::styled(format!("  {msg}"), Style::default().fg(color))));
+    }
+
+    // First-run hint
+    if app.sync_first_run_hint && !is_repo {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Tip: init a repo to sync workflows across machines",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let block = Block::default()
+        .title(" Git Sync ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    f.render_widget(Clear, popup);
+    let para = Paragraph::new(lines).block(block);
+    f.render_widget(para, popup);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2353,7 +2500,7 @@ steps:
         let mut app = make_render_app(&tmp);
         app.mode = AppMode::Help;
 
-        let buf = render_app(&app, 120, 32);
+        let buf = render_app(&app, 120, 36);
         let text = buffer_text(&buf);
 
         assert!(

@@ -1,0 +1,26 @@
+name: Git Sync Push
+description: Commit and push workflow changes to remote repository
+variables:
+  - name: branch
+    description: Git branch to push to
+    default: main
+  - name: message
+    description: Commit message (leave empty for auto-generated)
+    default: ""
+steps:
+  - id: add
+    cmd: git -C ~/.config/workflow add -A
+  - id: commit
+    cmd: |
+      MSG="{{message}}"
+      if [ -z "$MSG" ]; then
+        CHANGED=$(git -C ~/.config/workflow diff --name-only --cached | wc -l)
+        MSG="Sync $CHANGED workflow changes"
+      fi
+      git -C ~/.config/workflow commit -m "$MSG" || echo "Nothing to commit"
+    depends_on:
+      - add
+  - id: push
+    cmd: git -C ~/.config/workflow push origin {{branch}}
+    depends_on:
+      - commit
