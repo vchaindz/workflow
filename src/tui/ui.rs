@@ -457,20 +457,77 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         AppMode::Comparing => "c:compare | ESC:back | Up/Down:scroll".to_string(),
         AppMode::Wizard => " New Task Wizard ".to_string(),
         _ => {
-            let sort_label = if app.sort_by_heat { "f:α-sort" } else { "f:heat-sort" };
+            let sort_label = if app.sort_by_heat { "o:α-sort" } else { "o:heat-sort" };
             let filter_label = format!("F:{}", app.status_filter.next().label());
             let bg_done = app.background_tasks.iter()
                 .filter(|t| t.result.is_some() || t.error.is_some()).count();
-            let bg_hint = if bg_done > 0 { format!("  B:bg-result({bg_done})") } else { String::new() };
-            let ai_fix_hint = if app.run_output.as_ref().map(|r| r.exit_code != 0).unwrap_or(false)
-                && app.run_output_task_path.is_some()
-                && app.cached_ai_tool.flatten().is_some()
-            {
-                "a:ai-fix  "
-            } else {
-                ""
-            };
-            format!("{ai_fix_hint}arrows:nav  r:run  d:dry-run  e:edit  n:rename  c:compare  {sort_label}  {filter_label}  w:new  W:clone  t:template  a:ai  g:sync  R:recent  s:saved  L:logs  /:search  h:help  q:quit{bg_hint}")
+
+            let has_ai = app.cached_ai_tool.flatten().is_some();
+            let has_failed_run = app.run_output.as_ref().map(|r| r.exit_code != 0).unwrap_or(false)
+                && app.run_output_task_path.is_some();
+            let has_run_output = app.run_output.is_some();
+
+            let mut hints: Vec<&str> = Vec::new();
+
+            // Contextual state hints first (most likely next action)
+            if has_failed_run && has_ai {
+                hints.push("a:ai-fix");
+            }
+            if has_run_output {
+                hints.push("Esc:clear");
+            }
+
+            // Focus-specific hints
+            match app.focus {
+                Focus::Sidebar => {
+                    hints.extend_from_slice(&[
+                        "Enter:expand", "m:rename-cat",
+                        "w:from-history", "t:template",
+                    ]);
+                    if has_ai && !has_failed_run {
+                        hints.push("a:ai");
+                    }
+                }
+                Focus::TaskList => {
+                    hints.extend_from_slice(&[
+                        "r:run", "d:dry-run", "e:edit", "m:rename",
+                    ]);
+                    if has_ai && !has_failed_run {
+                        hints.push("a:ai");
+                    }
+                    if has_ai {
+                        hints.push("A:ai-update");
+                    }
+                    hints.extend_from_slice(&[
+                        "c:compare", "W:clone", "L:logs",
+                        "w:from-history", "t:template",
+                    ]);
+                }
+                Focus::Details => {
+                    hints.extend_from_slice(&[
+                        "r:run", "d:dry-run", "e:edit",
+                    ]);
+                    if has_ai && !has_failed_run {
+                        hints.push("a:ai");
+                    }
+                    if has_ai {
+                        hints.push("A:ai-update");
+                    }
+                    hints.push("l:scroll");
+                }
+            }
+
+            // Global hints always at end
+            hints.extend_from_slice(&[
+                sort_label, &filter_label, "g:sync",
+                "R:recent", "s:saved", "/:search", "h:help", "q:quit",
+            ]);
+
+            let mut line = hints.join("  ");
+            if bg_done > 0 {
+                line.push_str(&format!("  B:bg-result({bg_done})"));
+            }
+            line
         }
     };
 

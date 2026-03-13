@@ -1,6 +1,6 @@
 [package]
 name = "workflow"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 description = "A file-based workflow orchestrator with TUI and CLI, designed for humans and AI agents alike"
 license = "MIT"

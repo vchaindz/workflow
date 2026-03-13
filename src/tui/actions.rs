@@ -118,7 +118,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('R') => open_recent_runs(app)?,
         KeyCode::Char('s') => open_saved_tasks(app),
         KeyCode::Char('S') => toggle_bookmark(app),
-        KeyCode::Char('f') => app.toggle_sort(),
+        KeyCode::Char('o') => app.toggle_sort(),
         KeyCode::Char('F') => app.cycle_status_filter(),
         KeyCode::Char('g') => {
             app.refresh_sync_status();
@@ -128,7 +128,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.sync_setup_input.clear();
             app.mode = AppMode::GitSync;
         }
-        KeyCode::Char('n') => start_rename(app),
+        KeyCode::Char('m') | KeyCode::F(2) => start_rename(app),
         KeyCode::Delete => start_delete(app),
         KeyCode::Char('h') => {
             app.mode = AppMode::Help;

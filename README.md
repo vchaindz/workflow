@@ -31,7 +31,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 | **Hot/cold sorting** | Tasks ranked by run frequency — hot tasks float to the top |
 | **Status filter** | Press `F` to filter tasks: All → Failed → Overdue → Never-run |
 | **Last-run indicators** | Task list shows `✓ 2d` or `✗ 5h` inline so you know what ran and when |
-| **Rename tasks & categories** | Press `n` to rename inline — works on tasks and sidebar categories |
+| **Rename tasks & categories** | Press `m` (or `F2`) to rename inline — works on tasks and sidebar categories |
 | **Soft delete** | Deleted tasks move to `.trash/` — recoverable, not permanent |
 | **First-run onboarding** | Empty TUI shows helpful keybindings instead of a blank screen |
 | **Secret masking** | Environment variable values are redacted from live output and logs |
@@ -79,7 +79,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **Clone & optimize** — duplicate an existing task, strip failed/skipped steps, and parallelize independent branches
 - **Recent runs** — see the last 10 runs across all tasks at a glance, jump to any task from the list
 - **Overdue reminders** — optional `overdue` field on tasks warns you at startup if a task hasn't run within its expected interval
-- **Hot/cold task sorting** — tasks show heat indicators (▲/·/▽) based on run frequency; press `f` to sort hot tasks to the top
+- **Hot/cold task sorting** — tasks show heat indicators (▲/·/▽) based on run frequency; press `o` to sort hot tasks to the top
 - **Bookmarked tasks** — save frequently-used tasks for quick access with a single keypress
 - **Run comparison** — diff two runs of the same task side-by-side, with optional AI analysis
 - **Cleanup steps** — `cleanup:` section runs regardless of success/failure, like a `finally` block
@@ -91,7 +91,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **Scheduling** — install crontab entries or systemd user timers directly from the CLI with `workflow schedule`
 - **Task status filter** — press `F` in the TUI to cycle through All / Failed / Overdue / Never-run filters
 - **Last-run indicators** — each task in the list shows `✓ 2d` or `✗ 5h` at a glance
-- **Rename tasks & categories** — press `n` in the TUI to rename the selected task or category inline
+- **Rename tasks & categories** — press `m` (or `F2`) in the TUI to rename the selected task or category inline
 - **Secret masking** — env var values from `env:` blocks are automatically redacted in live output and logs
 - **Soft delete** — deleted tasks move to `.trash/` instead of permanent removal
 - **Audit trail** — every run records username, hostname, and source (tui/cli) in the SQLite database
@@ -275,7 +275,7 @@ Tasks are automatically classified by how often you run them in the last 30 days
 | Warm | 1–4       | `·`       | Default |
 | Cold | 0         | `▽`       | Blue  |
 
-Heat indicators appear next to every task in the TUI task list. Press `f` to toggle between alphabetical and heat-based sorting — hot tasks float to the top for quick access. Press `f` again to revert to alphabetical order. The status bar shows the current sort mode.
+Heat indicators appear next to every task in the TUI task list. Press `o` to toggle between alphabetical and heat-based sorting — hot tasks float to the top for quick access. Press `o` again to revert to alphabetical order. The status bar shows the current sort mode.
 
 Heat data is loaded from the SQLite history database at startup and refreshed on each automatic rescan.
 
@@ -398,7 +398,7 @@ workflow run dangerous-task --force
 Launch with `workflow` (no arguments):
 
 ```
-┌─ workflow v0.3.3 ── 12 workflows ── 48 runs ── 2 failed ─────┐
+┌─ workflow v0.3.4 ── 12 workflows ── 48 runs ── 2 failed ─────┐
 │                                                                │
 │ Categories │ Tasks ──────────────┬─ Details ──────────────────│
 │ > backup   │ > db-full    [sh]  │ #!/bin/bash                │
@@ -409,7 +409,7 @@ Launch with `workflow` (no arguments):
 │ [14:32:01] ▶ dump — mysqldump --all-databases > /tmp/db.sql  │
 │ [14:32:03] ✓ dump (1850ms)                                   │
 └───────────────────────────────────────────────────────────────┘
- arrows:nav  r:run  d:dry-run  e:edit  n:rename  c:compare  f:heat-sort  w:new  W:clone  t:template  a:ai  R:recent  s:saved  Del:delete  L:logs  /:search  h:help  q:quit
+ arrows:nav  r:run  d:dry-run  e:edit  m:rename  c:compare  o:heat-sort  w:new  W:clone  t:template  a:ai  R:recent  s:saved  Del:delete  L:logs  /:search  h:help  q:quit
 ```
 
 | Key | Action |
@@ -423,7 +423,7 @@ Launch with `workflow` (no arguments):
 | `R` | Recent runs (last 10) |
 | `s` | Saved/bookmarked tasks |
 | `S` | Toggle bookmark on task |
-| `f` | Toggle heat sort (hot tasks first) |
+| `o` | Toggle heat sort (hot tasks first) |
 | `F` | Cycle status filter (All/Failed/Overdue/Never-run) |
 | `/` | Search tasks |
 | `w` | New task from shell history |
@@ -431,7 +431,7 @@ Launch with `workflow` (no arguments):
 | `A` | AI update selected task |
 | `t` | New task from template |
 | `W` | Clone & optimize selected task |
-| `n` | Rename selected task or category |
+| `m` / `F2` | Rename selected task or category |
 | `D` | Delete selected task |
 | `?` | Help screen |
 | `q` / `Ctrl-C` | Quit |
