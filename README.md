@@ -71,6 +71,7 @@ No database required for execution — state is tracked via JSON logs and an opt
 - **Dangerous command safety** — blocks `rm -rf /`, fork bombs, and other destructive patterns before execution (override with `--force`)
 - **Shell history wizard** — browse your recent shell commands, pick the ones you want, and save them as a workflow in seconds
 - **AI task generation** — describe a task in natural language, and Claude, Codex, or Gemini generates the workflow steps automatically
+- **AI fix on error** — when a task fails or a `choices_cmd` errors out, press `a` to have AI analyze the error and propose a fix via the existing update/preview flow
 - **AI refinement loop** — press `r` at the preview stage to iteratively refine AI-generated workflows ("add error handling", "use rsync instead") before saving
 - **Wizard dry-run preview** — press `d` at the preview stage to dry-run the generated workflow without saving, then return to preview to save or refine
 - **AI task update** — select an existing task, describe what to change, and AI rewrites the workflow for you
@@ -193,6 +194,12 @@ Press `A` (Shift-a) on a selected task to update it with AI assistance. Describe
 ```
 
 The updated YAML is previewed before saving. Press `r` to refine further with additional instructions, `Enter` to overwrite the original, or `Esc` to cancel.
+
+## AI Fix on Error
+
+When a workflow run fails, the status bar shows `a:ai-fix`. Press `a` to have AI analyze the failed steps and their error output, then propose a corrected YAML. The fix flows through the same AI update preview — review, refine with `r`, and save when satisfied.
+
+This also works for `choices_cmd` failures. If a variable's `choices_cmd` errors out, the error modal shows `a ai-fix` — press `a` to have AI fix the command to be more robust and portable.
 
 ### CLI: `ai-update` subcommand
 
@@ -391,7 +398,7 @@ workflow run dangerous-task --force
 Launch with `workflow` (no arguments):
 
 ```
-┌─ workflow v0.4.0 ── 12 workflows ── 48 runs ── 2 failed ─────┐
+┌─ workflow v0.3.3 ── 12 workflows ── 48 runs ── 2 failed ─────┐
 │                                                                │
 │ Categories │ Tasks ──────────────┬─ Details ──────────────────│
 │ > backup   │ > db-full    [sh]  │ #!/bin/bash                │
@@ -420,7 +427,7 @@ Launch with `workflow` (no arguments):
 | `F` | Cycle status filter (All/Failed/Overdue/Never-run) |
 | `/` | Search tasks |
 | `w` | New task from shell history |
-| `a` | New task from AI prompt |
+| `a` | New task from AI prompt (or AI fix when error visible) |
 | `A` | AI update selected task |
 | `t` | New task from template |
 | `W` | Clone & optimize selected task |

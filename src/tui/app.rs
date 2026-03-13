@@ -287,6 +287,7 @@ pub struct App {
     pub is_executing: bool,
     pub executing_task_ref: Option<String>,
     pub step_states: Vec<StepState>,
+    pub run_output_task_path: Option<PathBuf>,
 
     // Interactive step channel (executor → TUI suspend request)
     pub interactive_rx: Option<mpsc::Receiver<InteractiveRequest>>,
@@ -417,6 +418,7 @@ impl App {
             is_executing: false,
             executing_task_ref: None,
             step_states: Vec::new(),
+            run_output_task_path: None,
             interactive_rx: None,
             streaming_rx: None,
             streaming_lines: Vec::new(),
@@ -942,6 +944,18 @@ impl App {
                             icon,
                             run_log.exit_code,
                         ));
+                        // Resolve executing_task_ref to a file path for ai-fix
+                        self.run_output_task_path = self.executing_task_ref.as_ref().and_then(|tref| {
+                            let parts: Vec<&str> = tref.splitn(2, '/').collect();
+                            if parts.len() == 2 {
+                                self.categories.iter()
+                                    .find(|c| c.name == parts[0])
+                                    .and_then(|c| c.tasks.iter().find(|t| t.name == parts[1]))
+                                    .map(|t| t.path.clone())
+                            } else {
+                                None
+                            }
+                        });
                         self.run_output = Some(run_log);
                         if self.mode == AppMode::StreamingOutput {
                             // Stay in streaming mode so user can see final output
@@ -1157,6 +1171,18 @@ impl App {
         if let Some(idx) = self.background_tasks.iter().position(|bg| bg.result.is_some() || bg.error.is_some()) {
             let bg = self.background_tasks.remove(idx);
             if let Some(run_log) = bg.result {
+                // Resolve bg task_ref to a file path for ai-fix
+                self.run_output_task_path = {
+                    let parts: Vec<&str> = bg.task_ref.splitn(2, '/').collect();
+                    if parts.len() == 2 {
+                        self.categories.iter()
+                            .find(|c| c.name == parts[0])
+                            .and_then(|c| c.tasks.iter().find(|t| t.name == parts[1]))
+                            .map(|t| t.path.clone())
+                    } else {
+                        None
+                    }
+                };
                 self.run_output = Some(run_log);
                 self.detail_scroll = 0;
             } else if let Some(err) = bg.error {

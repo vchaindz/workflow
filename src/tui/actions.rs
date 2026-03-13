@@ -85,6 +85,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.viewing_logs.clear();
             }
             app.run_output = None;
+            app.run_output_task_path = None;
         }
         KeyCode::Down => app.move_down(),
         KeyCode::Up => app.move_up(),
@@ -103,7 +104,15 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('w') => start_history_wizard(app),
         KeyCode::Char('W') => start_clone_wizard(app)?,
         KeyCode::Char('c') => compare_selected(app)?,
-        KeyCode::Char('a') => start_ai_wizard(app),
+        KeyCode::Char('a') => {
+            if app.run_output.as_ref().map(|r| r.exit_code != 0).unwrap_or(false)
+                && app.run_output_task_path.is_some()
+            {
+                start_ai_fix_from_run(app);
+            } else {
+                start_ai_wizard(app);
+            }
+        }
         KeyCode::Char('A') => start_ai_update_wizard(app),
         KeyCode::Char('t') => start_template_wizard(app),
         KeyCode::Char('R') => open_recent_runs(app)?,
@@ -414,6 +423,9 @@ fn handle_variable_prompt_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.var_prompt_error = None;
                 launch_workflow(app, &task, workflow, dry_run, env_overrides)?;
             }
+        }
+        KeyCode::Char('a') if app.var_prompt_error.is_some() => {
+            start_ai_fix_from_var_prompt(app)?;
         }
         _ => {}
     }
@@ -1483,6 +1495,215 @@ fn start_ai_update_wizard(app: &mut App) {
         save_message: None,
     });
     app.mode = AppMode::Wizard;
+}
+
+fn start_ai_fix_from_run(app: &mut App) {
+    let tool = match app.ai_tool() {
+        Some(t) => t,
+        None => {
+            app.footer_log.push(format!(
+                "[{}] No AI tool found (install `claude`, `codex`, or `gemini`)",
+                chrono::Local::now().format("%H:%M:%S"),
+            ));
+            return;
+        }
+    };
+
+    let task_path = match app.run_output_task_path.as_ref() {
+        Some(p) => p.clone(),
+        None => return,
+    };
+
+    let yaml = match std::fs::read_to_string(&task_path) {
+        Ok(content) => content,
+        Err(e) => {
+            app.footer_log.push(format!(
+                "[{}] Failed to read task: {}",
+                chrono::Local::now().format("%H:%M:%S"),
+                e,
+            ));
+            return;
+        }
+    };
+
+    // Build error context from failed steps
+    let mut error_context = String::new();
+    if let Some(ref run_log) = app.run_output {
+        for step in &run_log.steps {
+            if step.status == crate::core::models::StepStatus::Failed {
+                error_context.push_str(&format!("Step '{}' FAILED:\n", step.id));
+                if !step.output.is_empty() {
+                    error_context.push_str(&step.output);
+                    error_context.push('\n');
+                }
+            }
+        }
+    }
+
+    let prompt = format!(
+        "This workflow failed. Fix the commands.\n\nFAILED STEPS:\n{}",
+        error_context
+    );
+
+    // Resolve category/name from path for the wizard state
+    let (category, task_name) = app.run_output.as_ref()
+        .and_then(|r| {
+            let parts: Vec<&str> = r.task_ref.splitn(2, '/').collect();
+            if parts.len() == 2 { Some((parts[0].to_string(), parts[1].to_string())) } else { None }
+        })
+        .unwrap_or_default();
+
+    let (tx, rx) = mpsc::channel();
+
+    let source_yaml = yaml.clone();
+    let prompt_clone = prompt.clone();
+    thread::spawn(move || {
+        let result = ai::invoke_ai_update(tool, &source_yaml, &prompt_clone);
+        let _ = tx.send(result);
+    });
+
+    app.run_output = None;
+    app.run_output_task_path = None;
+
+    app.wizard = Some(WizardState {
+        mode: WizardMode::AiUpdate,
+        stage: WizardStage::AiThinking,
+        history_entries: Vec::new(),
+        history_filter: String::new(),
+        history_filtered: Vec::new(),
+        history_cursor: 0,
+        history_selected: Vec::new(),
+        history_scroll_offset: 0,
+        source_task_ref: None,
+        source_workflow: None,
+        source_run: None,
+        ai_prompt: prompt,
+        ai_tool: Some(tool),
+        ai_result_rx: Some(rx),
+        ai_commands: Vec::new(),
+        ai_error: None,
+        ai_tick: 0,
+        ai_source_yaml: yaml,
+        ai_source_path: Some(task_path),
+        ai_updated_yaml: None,
+        template_entries: Vec::new(),
+        template_filter: String::new(),
+        template_filtered: Vec::new(),
+        template_cursor: 0,
+        template_scroll_offset: 0,
+        template_var_values: Vec::new(),
+        template_var_cursor: 0,
+        category,
+        task_name,
+        category_cursor: None,
+        remove_failed: false,
+        remove_skipped: false,
+        parallelize: false,
+        active_toggle: 0,
+        preview_scroll: 0,
+        ai_refine_prompt: String::new(),
+        save_message: None,
+    });
+    app.mode = AppMode::Wizard;
+}
+
+fn start_ai_fix_from_var_prompt(app: &mut App) -> Result<()> {
+    let tool = match app.ai_tool() {
+        Some(t) => t,
+        None => {
+            app.footer_log.push(format!(
+                "[{}] No AI tool found (install `claude`, `codex`, or `gemini`)",
+                chrono::Local::now().format("%H:%M:%S"),
+            ));
+            return Ok(());
+        }
+    };
+
+    let task = match app.var_prompt_task.as_ref() {
+        Some(t) => t.clone(),
+        None => return Ok(()),
+    };
+
+    let yaml = match std::fs::read_to_string(&task.path) {
+        Ok(content) => content,
+        Err(e) => {
+            app.footer_log.push(format!(
+                "[{}] Failed to read task: {}",
+                chrono::Local::now().format("%H:%M:%S"),
+                e,
+            ));
+            return Ok(());
+        }
+    };
+
+    let var_name = app.var_prompt_vars.get(app.var_prompt_index)
+        .map(|v| v.name.clone())
+        .unwrap_or_default();
+    let error_msg = app.var_prompt_error.clone().unwrap_or_default();
+
+    let prompt = format!(
+        "The choices_cmd for variable '{}' failed: {}. Fix it to be robust and portable.",
+        var_name, error_msg
+    );
+
+    // Clean up var_prompt state
+    app.var_prompt_vars.clear();
+    app.var_prompt_choices.clear();
+    app.var_prompt_resolved.clear();
+    app.var_prompt_task = None;
+    app.var_prompt_workflow = None;
+    app.var_prompt_error = None;
+
+    let (tx, rx) = mpsc::channel();
+
+    let source_yaml = yaml.clone();
+    let prompt_clone = prompt.clone();
+    thread::spawn(move || {
+        let result = ai::invoke_ai_update(tool, &source_yaml, &prompt_clone);
+        let _ = tx.send(result);
+    });
+
+    app.wizard = Some(WizardState {
+        mode: WizardMode::AiUpdate,
+        stage: WizardStage::AiThinking,
+        history_entries: Vec::new(),
+        history_filter: String::new(),
+        history_filtered: Vec::new(),
+        history_cursor: 0,
+        history_selected: Vec::new(),
+        history_scroll_offset: 0,
+        source_task_ref: None,
+        source_workflow: None,
+        source_run: None,
+        ai_prompt: prompt,
+        ai_tool: Some(tool),
+        ai_result_rx: Some(rx),
+        ai_commands: Vec::new(),
+        ai_error: None,
+        ai_tick: 0,
+        ai_source_yaml: yaml,
+        ai_source_path: Some(task.path.clone()),
+        ai_updated_yaml: None,
+        template_entries: Vec::new(),
+        template_filter: String::new(),
+        template_filtered: Vec::new(),
+        template_cursor: 0,
+        template_scroll_offset: 0,
+        template_var_values: Vec::new(),
+        template_var_cursor: 0,
+        category: task.category.clone(),
+        task_name: task.name.clone(),
+        category_cursor: None,
+        remove_failed: false,
+        remove_skipped: false,
+        parallelize: false,
+        active_toggle: 0,
+        preview_scroll: 0,
+        ai_refine_prompt: String::new(),
+        save_message: None,
+    });
+    app.mode = AppMode::Wizard;
+    Ok(())
 }
 
 fn handle_wizard_ai_prompt(app: &mut App, key: KeyEvent) {

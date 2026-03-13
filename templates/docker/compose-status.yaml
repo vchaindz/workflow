@@ -4,7 +4,7 @@ variables:
   - name: project
     description: Compose project to inspect
     default: ""
-    choices_cmd: "docker compose ls --format '{{.Name}}'"
+    choices_cmd: "docker compose ls --format '{{.Name}}' 2>/dev/null || docker compose ls --quiet 2>/dev/null"
 steps:
   - id: compose-projects
     cmd: |

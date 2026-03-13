@@ -462,7 +462,15 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             let bg_done = app.background_tasks.iter()
                 .filter(|t| t.result.is_some() || t.error.is_some()).count();
             let bg_hint = if bg_done > 0 { format!("  B:bg-result({bg_done})") } else { String::new() };
-            format!("arrows:nav  r:run  d:dry-run  e:edit  n:rename  c:compare  {sort_label}  {filter_label}  w:new  W:clone  t:template  a:ai  g:sync  R:recent  s:saved  L:logs  /:search  h:help  q:quit{bg_hint}")
+            let ai_fix_hint = if app.run_output.as_ref().map(|r| r.exit_code != 0).unwrap_or(false)
+                && app.run_output_task_path.is_some()
+                && app.cached_ai_tool.flatten().is_some()
+            {
+                "a:ai-fix  "
+            } else {
+                ""
+            };
+            format!("{ai_fix_hint}arrows:nav  r:run  d:dry-run  e:edit  n:rename  c:compare  {sort_label}  {filter_label}  w:new  W:clone  t:template  a:ai  g:sync  R:recent  s:saved  L:logs  /:search  h:help  q:quit{bg_hint}")
         }
     };
 
@@ -2143,15 +2151,25 @@ fn draw_variable_prompt(f: &mut Frame, app: &App) {
     f.render_widget(list, layout[1]);
 
     // Hints
-    let hint = Paragraph::new(Line::from(vec![
-        Span::styled(" ↑↓", Style::default().fg(Color::Cyan)),
-        Span::raw(" select · "),
-        Span::styled("Enter", Style::default().fg(Color::Cyan)),
-        Span::raw(" confirm · "),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::raw(" cancel"),
-    ]))
-    .alignment(Alignment::Center);
+    let hint_spans = if app.var_prompt_error.is_some() && app.cached_ai_tool.flatten().is_some() {
+        vec![
+            Span::styled(" a", Style::default().fg(Color::Yellow)),
+            Span::raw(" ai-fix · "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
+        ]
+    } else {
+        vec![
+            Span::styled(" ↑↓", Style::default().fg(Color::Cyan)),
+            Span::raw(" select · "),
+            Span::styled("Enter", Style::default().fg(Color::Cyan)),
+            Span::raw(" confirm · "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
+        ]
+    };
+    let hint = Paragraph::new(Line::from(hint_spans))
+        .alignment(Alignment::Center);
     f.render_widget(hint, layout[2]);
 }
 
