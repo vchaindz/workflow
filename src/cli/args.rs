@@ -288,4 +288,10 @@ pub enum SyncAction {
 
     /// Interactive guided sync setup
     Setup,
+
+    /// List or switch branches
+    Branch {
+        /// Branch name to switch to (omit to list all)
+        name: Option<String>,
+    },
 }

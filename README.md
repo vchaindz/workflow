@@ -256,6 +256,8 @@ workflow sync setup                      # one-time: init + private GitHub repo
 workflow sync push                       # auto-commit and push
 workflow sync pull                       # pull latest
 workflow sync status
+workflow sync branch                     # list all branches
+workflow sync branch customer-acme       # switch branch (auto-commits first)
 ```
 
 Exit code is 0 on success, non-zero on failure — works directly in cron jobs and CI pipelines.
@@ -329,6 +331,17 @@ workflow sync setup    # creates private repo, enables auto-sync
 ```
 
 After setup, changes auto-commit and push. The TUI pulls on startup. Press `G` in the TUI for manual sync controls. Logs, history, and local config stay local.
+
+### Branch switching (multi-tenant workflows)
+
+Each customer or environment can live on its own branch. Switch from the CLI or TUI:
+
+```bash
+workflow sync branch                 # list branches (* marks current)
+workflow sync branch customer-acme   # switch to branch (creates if needed)
+```
+
+In the TUI, press `G` → "Switch branch" to browse and switch interactively. Dirty changes are auto-committed before switching, and workflows are rescanned automatically for the new branch content.
 
 ```toml
 # ~/.config/workflow/config.toml

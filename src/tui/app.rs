@@ -166,6 +166,7 @@ pub enum StatusFilter {
 pub enum SyncSetupStage {
     Menu,
     RepoUrl,
+    BranchList,
 }
 
 impl StatusFilter {
@@ -366,6 +367,10 @@ pub struct App {
     pub sync_setup_stage: SyncSetupStage,
     pub sync_setup_input: String,
     pub sync_first_run_hint: bool,
+
+    // Branch switching
+    pub branch_list: Vec<crate::core::sync::BranchInfo>,
+    pub branch_list_cursor: usize,
 }
 
 pub struct BackgroundTask {
@@ -461,6 +466,8 @@ impl App {
             sync_setup_stage: SyncSetupStage::Menu,
             sync_setup_input: String::new(),
             sync_first_run_hint: false,
+            branch_list: Vec::new(),
+            branch_list_cursor: 0,
         }
     }
 

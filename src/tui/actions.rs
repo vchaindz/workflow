@@ -966,8 +966,82 @@ fn handle_git_sync_key(app: &mut App, key: KeyEvent) -> Result<()> {
                                 let state = if app.config.sync.enabled { "enabled" } else { "disabled" };
                                 app.sync_message = Some((format!("Auto-sync {state}."), false));
                             }
+                            4 => {
+                                // Switch branch
+                                match sync::list_branches(&dir) {
+                                    Ok(branches) => {
+                                        let current_idx = branches.iter().position(|b| b.is_current).unwrap_or(0);
+                                        app.branch_list = branches;
+                                        app.branch_list_cursor = current_idx;
+                                        app.sync_setup_stage = SyncSetupStage::BranchList;
+                                        app.sync_message = None;
+                                    }
+                                    Err(e) => {
+                                        app.sync_message = Some((format!("Error: {e}"), true));
+                                    }
+                                }
+                            }
                             _ => {}
                         }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        SyncSetupStage::BranchList => {
+            match key.code {
+                KeyCode::Esc => {
+                    app.sync_setup_stage = SyncSetupStage::Menu;
+                }
+                KeyCode::Up => {
+                    app.branch_list_cursor = app.branch_list_cursor.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if !app.branch_list.is_empty() {
+                        app.branch_list_cursor = (app.branch_list_cursor + 1).min(app.branch_list.len() - 1);
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(branch) = app.branch_list.get(app.branch_list_cursor) {
+                        let target = branch.name.clone();
+                        let dir = app.config.workflows_dir.clone();
+                        match sync::switch_branch(&dir, &target) {
+                            Ok(sync::SwitchResult::Switched { from, to, committed }) => {
+                                let mut msg = format!("Switched from '{from}' to '{to}'.");
+                                if committed {
+                                    msg = format!("Auto-committed on '{from}'. {msg}");
+                                }
+                                app.config.sync.branch = to;
+                                let _ = app.config.save_sync_config();
+                                app.sync_message = Some((msg, false));
+
+                                // Rescan workflows for new branch content
+                                if let Ok(cats) = crate::core::discovery::scan_workflows(&dir) {
+                                    app.categories = cats;
+                                    app.selected_category = 0;
+                                    app.selected_task = 0;
+                                    app.load_heat_data();
+                                    app.load_last_run_data();
+                                    app.build_step_cmd_cache();
+                                    app.refresh_stats();
+                                    if app.sort_by_heat {
+                                        app.apply_sort();
+                                    }
+                                }
+                            }
+                            Ok(sync::SwitchResult::AlreadyOnBranch) => {
+                                app.sync_message = Some((format!("Already on '{target}'."), false));
+                            }
+                            Ok(sync::SwitchResult::Conflict(msg)) => {
+                                app.sync_message = Some((format!("Switch failed: {msg}"), true));
+                            }
+                            Err(e) => {
+                                app.sync_message = Some((format!("Error: {e}"), true));
+                            }
+                        }
+                        app.sync_setup_stage = SyncSetupStage::Menu;
+                        app.refresh_sync_status();
                     }
                 }
                 _ => {}

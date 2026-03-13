@@ -2306,7 +2306,7 @@ fn draw_git_sync(f: &mut Frame, app: &App) {
 
     let area = f.area();
     let w = 55.min(area.width.saturating_sub(4));
-    let h = 18.min(area.height.saturating_sub(4));
+    let h = 22.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
@@ -2361,7 +2361,40 @@ fn draw_git_sync(f: &mut Frame, app: &App) {
     lines.push(Line::from(""));
 
     // Input mode for URL
-    if app.sync_setup_stage == SyncSetupStage::RepoUrl {
+    if app.sync_setup_stage == SyncSetupStage::BranchList {
+        lines.push(Line::from(Span::styled(
+            "  Select branch:",
+            Style::default().fg(Color::Yellow),
+        )));
+        lines.push(Line::from(""));
+        for (i, branch) in app.branch_list.iter().enumerate() {
+            let is_selected = i == app.branch_list_cursor;
+            let prefix = if is_selected { " > " } else { "   " };
+            let suffix = if branch.is_remote_only { " (remote)" } else { "" };
+            let style = if branch.is_current {
+                Style::default().fg(Color::Green).add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() })
+            } else if is_selected {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{prefix}{}{suffix}", branch.name),
+                style,
+            )));
+        }
+        if app.branch_list.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "   (no branches found)",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Enter: switch  Esc: back",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else if app.sync_setup_stage == SyncSetupStage::RepoUrl {
         lines.push(Line::from(Span::styled(
             "  Enter repository URL:",
             Style::default().fg(Color::Yellow),
@@ -2379,7 +2412,7 @@ fn draw_git_sync(f: &mut Frame, app: &App) {
         } else if !has_remote {
             vec!["Add remote URL", "Create GitHub repo (gh)"]
         } else {
-            vec!["Push now", "Pull now", "Refresh status", "Toggle auto-sync"]
+            vec!["Push now", "Pull now", "Refresh status", "Toggle auto-sync", "Switch branch"]
         };
 
         for (i, item) in menu_items.iter().enumerate() {

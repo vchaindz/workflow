@@ -156,6 +156,51 @@ pub fn cmd_sync(config: &mut Config, action: SyncAction) -> Result<i32> {
             Ok(0)
         }
 
+        SyncAction::Branch { name } => {
+            if !sync::is_repo(dir) {
+                return Err(DzError::Sync(
+                    "Not a git repo. Run `workflow sync init` first.".to_string(),
+                ));
+            }
+
+            match name {
+                None => {
+                    let branches = sync::list_branches(dir)?;
+                    if branches.is_empty() {
+                        println!("No branches found.");
+                    } else {
+                        for b in &branches {
+                            let marker = if b.is_current { "* " } else { "  " };
+                            let suffix = if b.is_remote_only { " (remote)" } else { "" };
+                            println!("{marker}{}{suffix}", b.name);
+                        }
+                    }
+                }
+                Some(target) => {
+                    match sync::switch_branch(dir, &target)? {
+                        sync::SwitchResult::Switched { from, to, committed } => {
+                            if committed {
+                                println!("Auto-committed changes on '{from}'.");
+                            }
+                            println!("Switched from '{from}' to '{to}'.");
+                            config.sync.branch = to;
+                            config.save_sync_config()?;
+                            println!("Config updated.");
+                        }
+                        sync::SwitchResult::AlreadyOnBranch => {
+                            println!("Already on branch '{target}'.");
+                        }
+                        sync::SwitchResult::Conflict(msg) => {
+                            println!("Failed to switch: {msg}");
+                            return Ok(1);
+                        }
+                    }
+                }
+            }
+
+            Ok(0)
+        }
+
         SyncAction::Setup => {
             if !sync::detect_git() {
                 return Err(DzError::Sync("git not found on PATH. Install git first.".to_string()));

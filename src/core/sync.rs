@@ -351,6 +351,134 @@ pub fn clone_repo(url: &str, target: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Information about a git branch.
+#[derive(Debug, Clone)]
+pub struct BranchInfo {
+    pub name: String,
+    pub is_current: bool,
+    pub is_remote_only: bool,
+}
+
+/// Result of switching branches.
+#[derive(Debug)]
+pub enum SwitchResult {
+    Switched {
+        from: String,
+        to: String,
+        committed: bool,
+    },
+    AlreadyOnBranch,
+    Conflict(String),
+}
+
+/// Get the current branch name.
+pub fn get_current_branch(dir: &Path) -> Result<String> {
+    Ok(run_git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_string())
+}
+
+/// List all local and remote branches.
+pub fn list_branches(dir: &Path) -> Result<Vec<BranchInfo>> {
+    let output = run_git(dir, &["branch", "-a", "--no-color"])?;
+    let mut branches: Vec<BranchInfo> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let is_current = line.starts_with('*');
+        let name_part = line.trim_start_matches('*').trim();
+
+        // Skip HEAD pointer lines like "remotes/origin/HEAD -> origin/main"
+        if name_part.contains("->") {
+            continue;
+        }
+
+        if let Some(remote_name) = name_part.strip_prefix("remotes/origin/") {
+            let name = remote_name.to_string();
+            if !seen.contains(&name) {
+                seen.insert(name.clone());
+                branches.push(BranchInfo {
+                    name,
+                    is_current: false,
+                    is_remote_only: true,
+                });
+            }
+        } else {
+            let name = name_part.to_string();
+            // If already added as remote-only, update it
+            if let Some(existing) = branches.iter_mut().find(|b| b.name == name) {
+                existing.is_current = is_current;
+                existing.is_remote_only = false;
+            } else {
+                seen.insert(name.clone());
+                branches.push(BranchInfo {
+                    name,
+                    is_current,
+                    is_remote_only: false,
+                });
+            }
+        }
+    }
+
+    // Sort: current first, then alphabetical
+    branches.sort_by(|a, b| {
+        b.is_current
+            .cmp(&a.is_current)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    Ok(branches)
+}
+
+/// Switch to a different branch, auto-committing dirty changes first.
+pub fn switch_branch(dir: &Path, target: &str) -> Result<SwitchResult> {
+    let current = get_current_branch(dir)?;
+    if current == target {
+        return Ok(SwitchResult::AlreadyOnBranch);
+    }
+
+    // Auto-commit if dirty
+    let porcelain = run_git(dir, &["status", "--porcelain"]).unwrap_or_default();
+    let committed = if !porcelain.trim().is_empty() {
+        auto_commit(dir)?;
+        true
+    } else {
+        false
+    };
+
+    // Check if branch exists locally
+    let local_exists = run_git(dir, &["rev-parse", "--verify", target]).is_ok();
+    // Check if branch exists on remote
+    let remote_ref = format!("origin/{target}");
+    let remote_exists = run_git(dir, &["rev-parse", "--verify", &remote_ref]).is_ok();
+
+    let checkout_result = if local_exists {
+        run_git(dir, &["checkout", target])
+    } else if remote_exists {
+        run_git(dir, &["checkout", "-b", target, &remote_ref])
+    } else {
+        run_git(dir, &["checkout", "-b", target])
+    };
+
+    if let Err(e) = checkout_result {
+        return Ok(SwitchResult::Conflict(format!("{e}")));
+    }
+
+    // Silently try to pull (ignore errors for offline use)
+    let _ = run_git(dir, &["pull", "origin", target]);
+
+    Ok(SwitchResult::Switched {
+        from: current,
+        to: target.to_string(),
+        committed,
+    })
+}
+
 /// Run a git command and return stdout.
 fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
