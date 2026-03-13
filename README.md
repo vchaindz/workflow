@@ -239,6 +239,14 @@ workflow templates --fetch
 workflow export -o my-workflows.tar.gz --include-history
 workflow import my-workflows.tar.gz --overwrite
 
+# Secrets
+workflow secrets init                    # setup encrypted store
+workflow secrets set DB_PASSWORD         # prompt for value
+workflow secrets set API_KEY --value x   # set directly
+workflow secrets list                    # names only
+workflow secrets get DB_PASSWORD         # decrypt and print
+workflow secrets rm DB_PASSWORD          # remove
+
 # Logs
 workflow logs backup/db-full
 workflow logs --limit 20 --json
