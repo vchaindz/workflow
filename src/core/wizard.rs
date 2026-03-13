@@ -176,7 +176,7 @@ pub fn workflow_from_commands(name: &str, commands: &[String]) -> Workflow {
             run_if: None,
             retry: None,
             retry_delay: None,
-            interactive: None, outputs: Vec::new(), call: None,
+            interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
         });
     }
 
@@ -311,7 +311,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
                 Step {
                     id: "step-2".to_string(),
@@ -322,7 +322,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
                 Step {
                     id: "step-3".to_string(),
@@ -333,7 +333,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
                 Step {
                     id: "deploy".to_string(),
@@ -344,7 +344,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
             ],
         }
@@ -454,7 +454,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
                 Step {
                     id: "step-2".to_string(),
@@ -465,7 +465,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
             ],
         };
@@ -499,7 +499,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
                 Step {
                     id: "test".to_string(),
@@ -510,7 +510,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
             ],
         };
@@ -584,7 +584,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             },
             Step {
                 id: "step-5".to_string(),
@@ -595,7 +595,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             },
         ];
         renumber_steps(&mut steps);

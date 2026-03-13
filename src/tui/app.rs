@@ -870,6 +870,30 @@ impl App {
                             exit_code,
                         ));
                     }
+                    ExecutionEvent::ForEachStarted { step_id, item_count } => {
+                        self.footer_log.push(format!(
+                            "[{}] ⟳ {} iterating over {} items",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            step_id,
+                            item_count,
+                        ));
+                    }
+                    ExecutionEvent::ForEachIterationCompleted { step_id, item, index, status, duration_ms } => {
+                        let icon = match status {
+                            StepStatus::Success => "✓",
+                            StepStatus::Failed => "✗",
+                            _ => "·",
+                        };
+                        self.footer_log.push(format!(
+                            "[{}] {} {}[{}] ({}) {}ms",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            icon,
+                            step_id,
+                            item,
+                            index + 1,
+                            duration_ms,
+                        ));
+                    }
                     ExecutionEvent::StepStarted { step_id, cmd_preview } => {
                         self.step_states.push(StepState {
                             id: step_id.clone(),
@@ -1129,6 +1153,25 @@ impl App {
                                 "[{}] {} {}/{} (exit {})",
                                 chrono::Local::now().format("%H:%M:%S"),
                                 icon, parent_step_id, sub_task_ref, exit_code,
+                            ));
+                        }
+                        ExecutionEvent::ForEachStarted { step_id, item_count } => {
+                            bg.footer_log.push(format!(
+                                "[{}] ⟳ {} iterating over {} items",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                step_id, item_count,
+                            ));
+                        }
+                        ExecutionEvent::ForEachIterationCompleted { step_id, item, index, status, duration_ms } => {
+                            let icon = match status {
+                                StepStatus::Success => "✓",
+                                StepStatus::Failed => "✗",
+                                _ => "·",
+                            };
+                            bg.footer_log.push(format!(
+                                "[{}] {} {}[{}] ({}) {}ms",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                icon, step_id, item, index + 1, duration_ms,
                             ));
                         }
                         ExecutionEvent::StepStarted { step_id, cmd_preview } => {

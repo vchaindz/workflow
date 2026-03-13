@@ -9,7 +9,7 @@ use uuid::Uuid;
 use wait_timeout::ChildExt;
 
 use crate::core::detect;
-use crate::core::models::{ExecutionEvent, RunLog, Step, StepResult, StepStatus, Workflow};
+use crate::core::models::{ExecutionEvent, ForEachSource, RunLog, Step, StepResult, StepStatus, Workflow};
 use crate::core::parser::{resolve_env, compute_execution_levels};
 use crate::core::template::expand_template;
 use crate::error::Result;
@@ -717,6 +717,199 @@ fn execute_single_step(
     }
 }
 
+/// Resolve the items for a for_each step. Returns None if the step has no for_each config.
+fn resolve_for_each_items(
+    step: &Step,
+    template_vars: &HashMap<String, String>,
+    env: &HashMap<String, String>,
+    workdir: Option<&std::path::PathBuf>,
+) -> Result<Option<Vec<String>>> {
+    if let Some(ref source) = step.for_each {
+        match source {
+            ForEachSource::StaticList(items) => {
+                // Expand templates in each static item
+                let expanded: Vec<String> = items
+                    .iter()
+                    .map(|item| expand_template(item, template_vars))
+                    .collect();
+                Ok(Some(expanded))
+            }
+            ForEachSource::TemplateRef(tpl) => {
+                let expanded = expand_template(tpl, template_vars);
+                let items: Vec<String> = expanded
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                Ok(Some(items))
+            }
+        }
+    } else if let Some(ref cmd_str) = step.for_each_cmd {
+        let expanded_cmd = expand_template(cmd_str, template_vars);
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&expanded_cmd).envs(env);
+        if let Some(dir) = workdir {
+            cmd.current_dir(dir);
+        }
+        let output = cmd.output().map_err(|e| {
+            crate::error::DzError::Execution(format!(
+                "for_each_cmd failed for step '{}': {e}",
+                step.id
+            ))
+        })?;
+        if !output.status.success() {
+            return Err(crate::error::DzError::Execution(format!(
+                "for_each_cmd failed for step '{}': {}",
+                step.id,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let items: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        Ok(Some(items))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Execute a step with for_each iteration. Returns outcomes for all iterations.
+#[allow(clippy::too_many_arguments)]
+fn execute_for_each_step(
+    step: &Step,
+    items: &[String],
+    workdir: Option<&std::path::PathBuf>,
+    template_vars: &HashMap<String, String>,
+    env: &HashMap<String, String>,
+    secret_values: &[String],
+    dry_run: bool,
+    force: bool,
+    default_timeout: Option<u64>,
+    event_tx: Option<&mpsc::Sender<ExecutionEvent>>,
+    failed_steps: &std::collections::HashSet<String>,
+    workflows_dir: Option<&std::path::PathBuf>,
+    call_depth: u16,
+    max_call_depth: u16,
+) -> Vec<StepOutcome> {
+    let send = |evt: ExecutionEvent| {
+        if let Some(tx) = event_tx {
+            let _ = tx.send(evt);
+        }
+    };
+
+    let item_count = items.len();
+    send(ExecutionEvent::ForEachStarted {
+        step_id: step.id.clone(),
+        item_count,
+    });
+
+    if step.for_each_parallel && !dry_run {
+        // Parallel execution
+        let vars_snapshot = template_vars.clone();
+        let secrets_owned: Vec<String> = secret_values.to_vec();
+        let mut handles = Vec::new();
+
+        for (index, item) in items.iter().enumerate() {
+            let mut iter_vars = vars_snapshot.clone();
+            iter_vars.insert("item".to_string(), item.clone());
+            iter_vars.insert("item_index".to_string(), index.to_string());
+            iter_vars.insert("item_count".to_string(), item_count.to_string());
+
+            let iter_step = Step {
+                id: format!("{}[{}]", step.id, item),
+                ..step.clone()
+            };
+
+            let env_clone = env.clone();
+            let secrets_clone = secrets_owned.clone();
+            let failed_clone = failed_steps.clone();
+            let tx_clone = event_tx.cloned();
+            let workdir_clone = workdir.cloned();
+            let wf_dir_clone = workflows_dir.cloned();
+            let item_clone = item.clone();
+            let step_id = step.id.clone();
+
+            handles.push(std::thread::spawn(move || {
+                let outcome = execute_single_step(
+                    &iter_step,
+                    workdir_clone.as_ref(),
+                    &iter_vars,
+                    &env_clone,
+                    &secrets_clone,
+                    false,
+                    force,
+                    default_timeout,
+                    tx_clone.as_ref(),
+                    &failed_clone,
+                    wf_dir_clone.as_ref(),
+                    call_depth,
+                    max_call_depth,
+                );
+                if let Some(ref tx) = tx_clone {
+                    let _ = tx.send(ExecutionEvent::ForEachIterationCompleted {
+                        step_id,
+                        item: item_clone,
+                        index,
+                        status: outcome.result.status.clone(),
+                        duration_ms: outcome.result.duration_ms,
+                    });
+                }
+                outcome
+            }));
+        }
+
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    } else {
+        // Sequential execution
+        let mut outcomes = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            let mut iter_vars = template_vars.clone();
+            iter_vars.insert("item".to_string(), item.clone());
+            iter_vars.insert("item_index".to_string(), index.to_string());
+            iter_vars.insert("item_count".to_string(), item_count.to_string());
+
+            let iter_step = Step {
+                id: format!("{}[{}]", step.id, item),
+                ..step.clone()
+            };
+
+            let outcome = execute_single_step(
+                &iter_step,
+                workdir,
+                &iter_vars,
+                env,
+                secret_values,
+                dry_run,
+                force,
+                default_timeout,
+                event_tx,
+                failed_steps,
+                workflows_dir,
+                call_depth,
+                max_call_depth,
+            );
+
+            send(ExecutionEvent::ForEachIterationCompleted {
+                step_id: step.id.clone(),
+                item: item.clone(),
+                index,
+                status: outcome.result.status.clone(),
+                duration_ms: outcome.result.duration_ms,
+            });
+
+            let failed = outcome.failed;
+            outcomes.push(outcome);
+
+            if failed && !step.for_each_continue_on_error {
+                break;
+            }
+        }
+        outcomes
+    }
+}
+
 pub fn execute_workflow(
     workflow: &Workflow,
     task_ref: &str,
@@ -796,20 +989,67 @@ pub fn execute_workflow(
             // Single step or empty: run directly without thread overhead
             for &sid in &normal_ids {
                 let step = step_map[sid];
-                let outcome = execute_single_step(
-                    step, workflow.workdir.as_ref(), &template_vars, &env, &secret_values,
-                    opts.dry_run, opts.force, opts.default_timeout,
-                    event_tx, &failed_steps,
-                    opts.workflows_dir.as_ref(), opts.call_depth, opts.max_call_depth,
-                );
-                if outcome.failed {
-                    failed_steps.insert(step.id.clone());
-                    if overall_exit == 0 {
-                        overall_exit = if outcome.result.status == StepStatus::Timedout { 124 } else { 1 };
+
+                // Check for for_each iteration
+                match resolve_for_each_items(step, &template_vars, &env, workflow.workdir.as_ref()) {
+                    Ok(Some(items)) => {
+                        let outcomes = execute_for_each_step(
+                            step, &items, workflow.workdir.as_ref(), &template_vars, &env,
+                            &secret_values, opts.dry_run, opts.force, opts.default_timeout,
+                            event_tx, &failed_steps,
+                            opts.workflows_dir.as_ref(), opts.call_depth, opts.max_call_depth,
+                        );
+                        let mut any_failed = false;
+                        for outcome in outcomes {
+                            if outcome.failed {
+                                any_failed = true;
+                                if overall_exit == 0 {
+                                    overall_exit = if outcome.result.status == StepStatus::Timedout { 124 } else { 1 };
+                                }
+                            }
+                            template_vars.extend(outcome.captured_vars);
+                            step_results.push(outcome.result);
+                        }
+                        if any_failed {
+                            failed_steps.insert(step.id.clone());
+                        }
+                    }
+                    Ok(None) => {
+                        let outcome = execute_single_step(
+                            step, workflow.workdir.as_ref(), &template_vars, &env, &secret_values,
+                            opts.dry_run, opts.force, opts.default_timeout,
+                            event_tx, &failed_steps,
+                            opts.workflows_dir.as_ref(), opts.call_depth, opts.max_call_depth,
+                        );
+                        if outcome.failed {
+                            failed_steps.insert(step.id.clone());
+                            if overall_exit == 0 {
+                                overall_exit = if outcome.result.status == StepStatus::Timedout { 124 } else { 1 };
+                            }
+                        }
+                        template_vars.extend(outcome.captured_vars);
+                        step_results.push(outcome.result);
+                    }
+                    Err(e) => {
+                        send(ExecutionEvent::Warning {
+                            step_id: step.id.clone(),
+                            message: format!("for_each resolution failed: {e}"),
+                        });
+                        failed_steps.insert(step.id.clone());
+                        if overall_exit == 0 { overall_exit = 1; }
+                        step_results.push(StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Failed,
+                            output: format!("for_each resolution failed: {e}"),
+                            duration_ms: 0,
+                        });
+                        send(ExecutionEvent::StepCompleted {
+                            step_id: step.id.clone(),
+                            status: StepStatus::Failed,
+                            duration_ms: 0,
+                        });
                     }
                 }
-                template_vars.extend(outcome.captured_vars);
-                step_results.push(outcome.result);
             }
         } else {
             // Multiple steps: run in parallel threads
@@ -833,25 +1073,59 @@ pub fn execute_workflow(
                 let max_call_depth = opts.max_call_depth;
 
                 handles.push(std::thread::spawn(move || {
-                    execute_single_step(
-                        &step, workdir.as_ref(), &vars, &env_clone, &secrets_clone,
-                        dry_run, force, default_timeout,
-                        tx_clone.as_ref(), &failed_clone,
-                        wf_dir_clone.as_ref(), call_depth, max_call_depth,
-                    )
+                    // Check for for_each iteration
+                    match resolve_for_each_items(&step, &vars, &env_clone, workdir.as_ref()) {
+                        Ok(Some(items)) => {
+                            execute_for_each_step(
+                                &step, &items, workdir.as_ref(), &vars, &env_clone,
+                                &secrets_clone, dry_run, force, default_timeout,
+                                tx_clone.as_ref(), &failed_clone,
+                                wf_dir_clone.as_ref(), call_depth, max_call_depth,
+                            )
+                        }
+                        Ok(None) => {
+                            vec![execute_single_step(
+                                &step, workdir.as_ref(), &vars, &env_clone, &secrets_clone,
+                                dry_run, force, default_timeout,
+                                tx_clone.as_ref(), &failed_clone,
+                                wf_dir_clone.as_ref(), call_depth, max_call_depth,
+                            )]
+                        }
+                        Err(e) => {
+                            if let Some(ref tx) = tx_clone {
+                                let _ = tx.send(ExecutionEvent::StepCompleted {
+                                    step_id: step.id.clone(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: 0,
+                                });
+                            }
+                            vec![StepOutcome {
+                                result: StepResult {
+                                    id: step.id.clone(),
+                                    status: StepStatus::Failed,
+                                    output: format!("for_each resolution failed: {e}"),
+                                    duration_ms: 0,
+                                },
+                                captured_vars: HashMap::new(),
+                                failed: true,
+                            }]
+                        }
+                    }
                 }));
             }
 
             for handle in handles {
-                let outcome = handle.join().unwrap();
-                if outcome.failed {
-                    failed_steps.insert(outcome.result.id.clone());
-                    if overall_exit == 0 {
-                        overall_exit = if outcome.result.status == StepStatus::Timedout { 124 } else { 1 };
+                let outcomes = handle.join().unwrap();
+                for outcome in outcomes {
+                    if outcome.failed {
+                        failed_steps.insert(outcome.result.id.clone());
+                        if overall_exit == 0 {
+                            overall_exit = if outcome.result.status == StepStatus::Timedout { 124 } else { 1 };
+                        }
                     }
+                    template_vars.extend(outcome.captured_vars);
+                    step_results.push(outcome.result);
                 }
-                template_vars.extend(outcome.captured_vars);
-                step_results.push(outcome.result);
             }
         }
 
@@ -1193,7 +1467,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
                 Step {
                     id: "s2".into(),
@@ -1204,7 +1478,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
             ],
             env: HashMap::new(),
@@ -1254,7 +1528,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
                 Step {
                     id: "dependent".into(),
@@ -1265,7 +1539,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
                 Step {
                     id: "independent".into(),
@@ -1276,7 +1550,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
             ],
             env: HashMap::new(),
@@ -1311,7 +1585,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             }],
             env: HashMap::from([("MY_VAR".to_string(), EnvValue::Static("original".to_string()))]),
             workdir: None,
@@ -1344,7 +1618,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             }],
             env: HashMap::new(),
             workdir: Some(std::path::PathBuf::from("/tmp")),
@@ -1373,7 +1647,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1403,7 +1677,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1437,7 +1711,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1471,7 +1745,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
                 Step {
                     id: "dependent".into(),
@@ -1482,7 +1756,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
             ],
             env: HashMap::new(),
@@ -1512,7 +1786,7 @@ mod tests {
                 run_if: Some("true".to_string()),
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1542,7 +1816,7 @@ mod tests {
                     run_if: Some("false".to_string()),
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
                 Step {
                     id: "after".into(),
@@ -1553,7 +1827,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
                 },
             ],
             env: HashMap::new(),
@@ -1596,7 +1870,7 @@ mod tests {
                 run_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
-                interactive: None, outputs: Vec::new(), call: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1625,7 +1899,7 @@ mod tests {
                 run_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
-                interactive: None, outputs: Vec::new(), call: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1655,7 +1929,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             }],
             env: HashMap::from([("MY_PASS".to_string(), EnvValue::Static("hunter2".to_string()))]),
             workdir: None,

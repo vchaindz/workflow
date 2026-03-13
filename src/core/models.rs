@@ -19,6 +19,14 @@ pub struct StepOutput {
     pub pattern: String,
 }
 
+/// Source for for_each iteration: either a static list or a template reference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ForEachSource {
+    StaticList(Vec<String>),
+    TemplateRef(String),
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum RawStep {
@@ -45,6 +53,14 @@ pub(crate) enum RawStep {
         outputs: Vec<StepOutput>,
         #[serde(default)]
         call: Option<String>,
+        #[serde(default)]
+        for_each: Option<ForEachSource>,
+        #[serde(default)]
+        for_each_cmd: Option<String>,
+        #[serde(default)]
+        for_each_parallel: bool,
+        #[serde(default)]
+        for_each_continue_on_error: bool,
     },
 }
 
@@ -158,6 +174,14 @@ pub struct Step {
     pub outputs: Vec<StepOutput>,
     #[serde(default)]
     pub call: Option<String>,
+    #[serde(default)]
+    pub for_each: Option<ForEachSource>,
+    #[serde(default)]
+    pub for_each_cmd: Option<String>,
+    #[serde(default)]
+    pub for_each_parallel: bool,
+    #[serde(default)]
+    pub for_each_continue_on_error: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -207,6 +231,8 @@ pub enum ExecutionEvent {
     LevelStarted { level: usize, step_count: usize },
     SubWorkflowStarted { parent_step_id: String, sub_task_ref: String },
     SubWorkflowFinished { parent_step_id: String, sub_task_ref: String, exit_code: i32 },
+    ForEachStarted { step_id: String, item_count: usize },
+    ForEachIterationCompleted { step_id: String, item: String, index: usize, status: StepStatus, duration_ms: u64 },
     Warning { step_id: String, message: String },
     StepOutput { step_id: String, line: String },
     WorkflowFinished { run_log: RunLog },
