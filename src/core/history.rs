@@ -278,7 +278,6 @@ pub fn suggest_category(commands: &[&str]) -> String {
 /// Extracts the first word, sanitizes to `[a-z0-9-]`, truncates to 30 chars.
 pub fn derive_task_name(cmd: &str) -> String {
     let first_word = cmd
-        .trim()
         .split_whitespace()
         .next()
         .unwrap_or("task")

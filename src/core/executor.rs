@@ -154,6 +154,7 @@ pub struct StreamingRequest {
     pub kill_tx: mpsc::Sender<()>,
 }
 
+#[derive(Default)]
 pub struct ExecuteOpts {
     pub dry_run: bool,
     pub force: bool,
@@ -164,19 +165,6 @@ pub struct ExecuteOpts {
     pub streaming_tx: Option<mpsc::Sender<StreamingRequest>>,
 }
 
-impl Default for ExecuteOpts {
-    fn default() -> Self {
-        Self {
-            dry_run: false,
-            force: false,
-            env_overrides: HashMap::new(),
-            default_timeout: None,
-            secrets: Vec::new(),
-            interactive_tx: None,
-            streaming_tx: None,
-        }
-    }
-}
 
 /// Replace secret values with [REDACTED] in text.
 pub fn mask_secrets(text: &str, secret_values: &[String]) -> String {
@@ -423,7 +411,7 @@ pub fn execute_workflow(
                         let stdout = child.stdout.take();
                         let stderr = child.stderr.take();
                         let step_id_clone = step.id.clone();
-                        let tx_clone = event_tx.map(|t| t.clone());
+                        let tx_clone = event_tx.cloned();
 
                         // Stream stdout in a thread (with secret masking)
                         let stdout_handle = stdout.map(|out| {
@@ -452,7 +440,7 @@ pub fn execute_workflow(
                         // Stream stderr in a thread (with secret masking)
                         let stderr_handle = stderr.map(|err| {
                             let sid = step.id.clone();
-                            let txc = event_tx.map(|t| t.clone());
+                            let txc = event_tx.cloned();
                             let secrets_clone = secret_values.clone();
                             std::thread::spawn(move || {
                                 let reader = BufReader::new(err);

@@ -83,9 +83,11 @@ pub enum TaskKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default)]
 pub enum TaskHeat {
     Hot,  // ≥5 runs in 30d
     Warm, // 1–4 runs in 30d
+    #[default]
     Cold, // 0 runs in 30d
 }
 
@@ -110,11 +112,6 @@ pub struct Task {
     pub heat: TaskHeat,
 }
 
-impl Default for TaskHeat {
-    fn default() -> Self {
-        TaskHeat::Cold
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workflow {

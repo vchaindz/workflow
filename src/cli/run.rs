@@ -31,7 +31,7 @@ pub fn cmd_run(
         if let Some(t) = timeout {
             cmd.arg("--timeout").arg(t.to_string());
         }
-        if let Some(ref dir) = config.workflows_dir.canonicalize().ok() {
+        if let Ok(ref dir) = config.workflows_dir.canonicalize() {
             cmd.arg("--dir").arg(dir);
         }
         cmd.stdin(std::process::Stdio::null());

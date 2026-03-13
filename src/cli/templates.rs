@@ -46,8 +46,8 @@ pub fn cmd_templates(config: &Config, fetch: bool, json: bool) -> Result<()> {
         }
 
         println!(
-            "{:<30} {:<35} {}",
-            "TEMPLATE", "DESCRIPTION", "SOURCE"
+            "{:<30} {:<35} SOURCE",
+            "TEMPLATE", "DESCRIPTION"
         );
         println!("{}", "-".repeat(75));
 

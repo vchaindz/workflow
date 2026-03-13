@@ -297,13 +297,11 @@ fn sanitize_name(s: &str) -> String {
         if i > 0 {
             let prev = chars[i - 1];
             // digit→letter or letter→digit boundary (e.g. top5cpu → top5-cpu)
+            // lowercase→uppercase boundary (e.g. checkNginx → check-Nginx)
             if (prev.is_ascii_digit() && c.is_ascii_alphabetic())
                 || (prev.is_ascii_alphabetic() && c.is_ascii_digit())
+                || (prev.is_ascii_lowercase() && c.is_ascii_uppercase())
             {
-                expanded.push('-');
-            }
-            // lowercase→uppercase boundary (e.g. checkNginx → check-Nginx)
-            else if prev.is_ascii_lowercase() && c.is_ascii_uppercase() {
                 expanded.push('-');
             }
         }

@@ -91,7 +91,7 @@ fn is_auto_id(id: &str) -> bool {
 }
 
 /// Renumber auto-generated step IDs (step-N) to be sequential without gaps.
-fn renumber_steps(steps: &mut Vec<Step>) {
+fn renumber_steps(steps: &mut [Step]) {
     // Build a mapping of old auto-IDs to new sequential IDs
     let mut remap: Vec<(String, String)> = Vec::new();
     let mut counter = 1u32;
@@ -131,7 +131,6 @@ pub fn workflow_from_commands(name: &str, commands: &[String]) -> Workflow {
 
     for cmd in commands {
         let first_word = cmd
-            .trim()
             .split_whitespace()
             .next()
             .unwrap_or("step")

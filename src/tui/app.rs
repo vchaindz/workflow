@@ -692,7 +692,7 @@ impl App {
         match self.status_filter {
             StatusFilter::All => base,
             StatusFilter::Failed => base.into_iter().filter(|t| {
-                t.last_run.as_ref().map_or(false, |s| s.fail_count > 0 && s.last_failure > s.last_success)
+                t.last_run.as_ref().is_some_and(|s| s.fail_count > 0 && s.last_failure > s.last_success)
             }).collect(),
             StatusFilter::Overdue => base.into_iter().filter(|t| {
                 let task_ref = format!("{}/{}", t.category, t.name);

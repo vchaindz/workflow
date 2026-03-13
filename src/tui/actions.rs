@@ -1747,21 +1747,18 @@ fn handle_wizard_ai_prompt(app: &mut App, key: KeyEvent) {
 
 fn handle_wizard_ai_thinking(app: &mut App, key: KeyEvent) {
     let wiz = app.wizard.as_mut().unwrap();
-    match key.code {
-        KeyCode::Esc => {
-            // If there's an error displayed, go back to refine prompt or initial prompt
-            if wiz.ai_error.is_some() {
-                wiz.ai_error = None;
-                if !wiz.ai_refine_prompt.is_empty() {
-                    wiz.stage = WizardStage::AiRefinePrompt;
-                } else {
-                    wiz.stage = WizardStage::AiPrompt;
-                }
+    if key.code == KeyCode::Esc {
+        // If there's an error displayed, go back to refine prompt or initial prompt
+        if wiz.ai_error.is_some() {
+            wiz.ai_error = None;
+            if !wiz.ai_refine_prompt.is_empty() {
+                wiz.stage = WizardStage::AiRefinePrompt;
+            } else {
+                wiz.stage = WizardStage::AiPrompt;
             }
-            // Otherwise spinner is running — Esc cancels the whole wizard
-            // (handled by parent match in handle_wizard_key)
         }
-        _ => {}
+        // Otherwise spinner is running — Esc cancels the whole wizard
+        // (handled by parent match in handle_wizard_key)
     }
 }
 

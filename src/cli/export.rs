@@ -45,11 +45,10 @@ pub fn cmd_export(config: &Config, output: Option<&Path>, include_history: bool)
         }
 
         // Skip history.db unless requested
-        if rel_str == "history.db" || rel_str.starts_with("history.db-") {
-            if !include_history {
+        if (rel_str == "history.db" || rel_str.starts_with("history.db-"))
+            && !include_history {
                 continue;
             }
-        }
 
         // Skip config.toml (user-local config)
         if rel_str == "config.toml" {

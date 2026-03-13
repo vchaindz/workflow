@@ -57,8 +57,7 @@ pub fn cmd_ai_update(
     if let Some(new_name) = save_as {
         // Parse category from task ref
         let category = task_ref
-            .replace('.', "/")
-            .splitn(2, '/')
+            .replace('.', "/").split('/')
             .next()
             .unwrap_or("_default")
             .to_string();
