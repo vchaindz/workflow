@@ -32,6 +32,10 @@ libc = "0.2"
 tar = "0.4"
 flate2 = "1"
 tiny_http = "0.12"
+age = { version = "0.11", features = ["ssh"] }
+ssh-key = { version = "0.6", features = ["ed25519"] }
+zeroize = { version = "1", features = ["derive"] }
+rpassword = "5"
 
 [dev-dependencies]
 assert_cmd = "2"

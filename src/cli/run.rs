@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::core::config::Config;
 use crate::core::db;
@@ -86,6 +87,7 @@ pub fn cmd_run(
         workflows_dir: Some(config.workflows_dir.clone()),
         call_depth: 0,
         max_call_depth: 10,
+        secrets_ssh_key: config.secrets_ssh_key.as_ref().map(PathBuf::from),
     };
 
     let canonical_ref = format!("{}/{}", task.category, task.name);

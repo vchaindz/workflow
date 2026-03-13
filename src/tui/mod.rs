@@ -32,6 +32,7 @@ pub fn run_tui(config: Config) -> Result<()> {
     app.load_heat_data();
     app.load_last_run_data();
     app.build_step_cmd_cache();
+    app.clean_old_trash();
     app.check_overdue();
     // Eagerly detect AI tool so header shows it immediately
     let _ = app.ai_tool();

@@ -47,15 +47,16 @@ pub fn scan_workflows(root: &Path) -> Result<Vec<Category>> {
             }
         }
 
-        // Skip entries inside logs/
-        if path
+        // Skip entries inside logs/ or dot-prefixed directories (e.g. .trash/)
+        if let Some(first_component) = path
             .strip_prefix(root)
             .ok()
             .and_then(|p| p.components().next())
             .and_then(|c| c.as_os_str().to_str())
-            == Some("logs")
         {
-            continue;
+            if first_component == "logs" || first_component.starts_with('.') {
+                continue;
+            }
         }
 
         if !path.is_file() {
@@ -230,6 +231,31 @@ mod tests {
             .tasks
             .iter()
             .any(|t| t.name == "quick"));
+    }
+
+    #[test]
+    fn test_scan_skips_trash_dir() {
+        let dir = setup_test_dir();
+        let root = dir.path();
+
+        // Create .trash/ with a file that would otherwise match
+        fs::create_dir_all(root.join(".trash")).unwrap();
+        fs::write(
+            root.join(".trash/20260313_141522_backup.yaml"),
+            "name: trashed\nsteps:\n  - id: s1\n    cmd: echo trashed\n",
+        )
+        .unwrap();
+
+        let cats = scan_workflows(root).unwrap();
+        let all_tasks: Vec<&str> = cats
+            .iter()
+            .flat_map(|c| c.tasks.iter().map(|t| t.name.as_str()))
+            .collect();
+
+        assert!(
+            !all_tasks.contains(&"20260313_141522_backup"),
+            "trash files should not appear as tasks"
+        );
     }
 
     #[test]

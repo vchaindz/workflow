@@ -1850,6 +1850,7 @@ fn draw_help(f: &mut Frame, app: &App) {
             Line::from("  A           AI update selected task"),
             Line::from("  t           New task from template"),
             Line::from("  Del         Delete selected task"),
+            Line::from("  T           Empty trash"),
             Line::from("  c           Compare last 2 runs"),
             Line::from("  F           Filter: All/Failed/Overdue"),
             Line::from("  L           View run logs"),
@@ -2539,11 +2540,15 @@ fn draw_edit_task(f: &mut Frame, app: &App) {
             format!("  Ln {}, Col {}  ", state.cursor_row + 1, state.cursor_col + 1),
             Style::default().fg(Color::DarkGray),
         );
-        let hints = Span::styled(
-            "Ctrl+S Save  Esc Close",
-            Style::default().fg(Color::DarkGray),
-        );
-        Line::from(vec![mod_indicator, pos, hints])
+        Line::from(vec![
+            mod_indicator, pos,
+            Span::styled("Ctrl+S", Style::default().fg(Color::Cyan)),
+            Span::styled(" Save  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::styled(" Close  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("PgUp/PgDn", Style::default().fg(Color::Cyan)),
+            Span::styled(" Scroll", Style::default().fg(Color::DarkGray)),
+        ])
     };
 
     f.render_widget(Paragraph::new(vec![status_line]), status_area);

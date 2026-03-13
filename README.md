@@ -1,4 +1,7 @@
 [![CI](https://github.com/vchaindz/workflow/actions/workflows/ci.yml/badge.svg)](https://github.com/vchaindz/workflow/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/vchaindz/workflow)](https://github.com/vchaindz/workflow/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.56-blue.svg)]()
 
 # workflow
 
@@ -371,12 +374,51 @@ Then ask Claude naturally — "create a workflow for daily database backups", "l
 
 This makes `workflow` a natural building block for agentic automation: AI agents can create, validate, and execute operational tasks through a well-defined file-based interface without any special APIs.
 
+## Encrypted secrets store
+
+Workflows can reference secrets by name in `secrets:` — but where do the values come from? Instead of leaving passwords in `.bashrc` or `.env` files, `workflow` ships an encrypted secrets store backed by `age` and your SSH key.
+
+```bash
+# One-time setup (auto-detects ~/.ssh/id_ed25519)
+workflow secrets init
+
+# Store secrets (prompts for value securely)
+workflow secrets set DB_PASSWORD
+workflow secrets set API_TOKEN --value sk-live-abc123
+
+# List and retrieve
+workflow secrets list
+workflow secrets get DB_PASSWORD
+
+# Remove
+workflow secrets rm DB_PASSWORD
+```
+
+Secrets are encrypted at rest in `~/.config/workflow/secrets.age` using your SSH public key and decrypted to memory only at runtime. Values are zeroized after use.
+
+### Auto-injection into workflows
+
+When a workflow declares `secrets:`, values are automatically injected from the store at execution time:
+
+```yaml
+name: Deploy
+secrets:
+  - DB_PASSWORD
+  - API_TOKEN
+steps:
+  - id: migrate
+    cmd: DATABASE_URL="postgres://app:$DB_PASSWORD@db/prod" ./migrate.sh
+```
+
+Precedence: explicit `env:` in YAML > `--env` CLI flag > secrets store > environment variables. Secrets never override values you set explicitly. If the store doesn't exist or a secret isn't found, the workflow falls back to environment variables (existing behavior preserved).
+
 ## Security
 
 Multiple layers of protection are built in:
 
 - **Dangerous command blocking** — `rm -rf /`, fork bombs, `dd` to devices, `mkfs` on real devices, and similar destructive patterns are caught before execution. Override with `--force`.
-- **Secret masking** — `env:` values are redacted in live output and log files.
+- **Encrypted secrets store** — secrets encrypted at rest with `age` + SSH key, decrypted to memory only, zeroized after use. File written as 0600.
+- **Secret masking** — `env:` values and injected secrets are redacted in live output and log files.
 - **Path traversal protection** — task references can't escape the workflows directory.
 - **Command injection prevention** — template variables and task names are sanitized.
 - **Import validation** — archive imports reject paths that would write outside the target directory.

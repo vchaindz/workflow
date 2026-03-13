@@ -185,6 +185,18 @@ pub enum Commands {
         bind: String,
     },
 
+    /// Manage encrypted secrets store
+    Secrets {
+        #[command(subcommand)]
+        action: SecretsAction,
+    },
+
+    /// Manage trashed tasks
+    Trash {
+        #[command(subcommand)]
+        action: TrashAction,
+    },
+
     /// View run logs
     Logs {
         /// Task reference (omit for all recent)
@@ -197,6 +209,56 @@ pub enum Commands {
         /// Number of log entries to show
         #[arg(long, default_value = "10")]
         limit: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SecretsAction {
+    /// Initialize the encrypted secrets store
+    Init {
+        /// Path to SSH private key (auto-detected if omitted)
+        #[arg(long)]
+        ssh_key: Option<String>,
+    },
+
+    /// Set a secret value
+    Set {
+        /// Secret name
+        name: String,
+
+        /// Secret value (prompts securely if omitted)
+        #[arg(long)]
+        value: Option<String>,
+    },
+
+    /// Get a decrypted secret value
+    Get {
+        /// Secret name
+        name: String,
+    },
+
+    /// List stored secret names
+    List,
+
+    /// Remove a secret
+    Rm {
+        /// Secret name
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TrashAction {
+    /// List trashed tasks
+    List,
+
+    /// Permanently delete all trashed tasks
+    Empty,
+
+    /// Restore a trashed task
+    Restore {
+        /// Name (or partial match) of the trashed file to restore
+        name: String,
     },
 }
 

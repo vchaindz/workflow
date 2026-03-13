@@ -28,6 +28,9 @@ pub struct Config {
     pub sync: SyncConfig,
     #[serde(default)]
     pub server: ServerConfig,
+    /// Path to SSH private key for secrets encryption/decryption
+    #[serde(default)]
+    pub secrets_ssh_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -137,6 +140,7 @@ impl Default for Config {
             bookmarks: Vec::new(),
             sync: SyncConfig::default(),
             server: ServerConfig::default(),
+            secrets_ssh_key: None,
         }
     }
 }

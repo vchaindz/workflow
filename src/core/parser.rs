@@ -55,11 +55,11 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error }
+                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error }
             }
             RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error } => {
                 // Explicit id: no implicit chaining, but don't break the chain for others
-                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error }
+                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error }
             }
         };
 

@@ -129,6 +129,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.mode = AppMode::GitSync;
         }
         KeyCode::Char('m') | KeyCode::F(2) => start_rename(app),
+        KeyCode::Char('T') => empty_trash(app),
         KeyCode::Delete => start_delete(app),
         KeyCode::Char('h') => {
             app.mode = AppMode::Help;
@@ -492,6 +493,7 @@ fn launch_workflow(
             workflows_dir: Some(workflows_dir),
             call_depth: 0,
             max_call_depth: 10,
+            secrets_ssh_key: None,
         };
 
         match execute_workflow(&workflow, &task_ref, &opts, Some(&tx)) {
@@ -1043,6 +1045,43 @@ fn handle_confirm_delete_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn empty_trash(app: &mut App) {
+    let trash_dir = app.config.workflows_dir.join(".trash");
+
+    let count = if trash_dir.exists() {
+        std::fs::read_dir(&trash_dir)
+            .map(|entries| entries.filter_map(|e| e.ok()).count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    if count == 0 {
+        app.footer_log.push(format!(
+            "[{}] Trash is empty",
+            chrono::Local::now().format("%H:%M:%S"),
+        ));
+        return;
+    }
+
+    match std::fs::remove_dir_all(&trash_dir).and_then(|_| std::fs::create_dir_all(&trash_dir)) {
+        Ok(()) => {
+            app.footer_log.push(format!(
+                "[{}] Emptied trash ({} file(s) removed)",
+                chrono::Local::now().format("%H:%M:%S"),
+                count,
+            ));
+        }
+        Err(e) => {
+            app.footer_log.push(format!(
+                "[{}] Failed to empty trash: {}",
+                chrono::Local::now().format("%H:%M:%S"),
+                e,
+            ));
+        }
+    }
 }
 
 fn start_rename(app: &mut App) {

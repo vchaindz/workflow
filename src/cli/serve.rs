@@ -253,6 +253,7 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
                             workflows_dir: Some(wf_dir_clone),
                             call_depth: 0,
                             max_call_depth: 10,
+                            secrets_ssh_key: None,
                         };
 
                         let run_log = execute_workflow(&workflow, &task_ref_clone, &opts, None)

@@ -7,15 +7,17 @@ pub mod list;
 pub mod logs;
 pub mod run;
 pub mod schedule;
+pub mod secrets;
 pub mod status;
 pub mod sync;
 pub mod templates;
 pub mod serve;
+pub mod trash;
 pub mod validate;
 
 use crate::core::config::Config;
 use crate::error::Result;
-use args::Commands;
+use args::{Commands, SecretsAction};
 
 pub fn dispatch(config: &mut Config, command: Commands) -> Result<i32> {
     match command {
@@ -74,6 +76,32 @@ pub fn dispatch(config: &mut Config, command: Commands) -> Result<i32> {
 
         Commands::Sync { action } => {
             sync::cmd_sync(config, action)
+        }
+
+        Commands::Secrets { action } => {
+            match action {
+                SecretsAction::Init { ssh_key } => {
+                    secrets::cmd_secrets_init(config, ssh_key.as_deref())?;
+                }
+                SecretsAction::Set { name, value } => {
+                    secrets::cmd_secrets_set(config, &name, value.as_deref())?;
+                }
+                SecretsAction::Get { name } => {
+                    secrets::cmd_secrets_get(config, &name)?;
+                }
+                SecretsAction::List => {
+                    secrets::cmd_secrets_list(config)?;
+                }
+                SecretsAction::Rm { name } => {
+                    secrets::cmd_secrets_rm(config, &name)?;
+                }
+            }
+            Ok(0)
+        }
+
+        Commands::Trash { action } => {
+            trash::cmd_trash(config, action)?;
+            Ok(0)
         }
 
         Commands::Serve { port, bind } => serve::cmd_serve(config, port, &bind),

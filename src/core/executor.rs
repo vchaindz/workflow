@@ -165,6 +165,8 @@ pub struct ExecuteOpts {
     pub workflows_dir: Option<std::path::PathBuf>,
     pub call_depth: u16,
     pub max_call_depth: u16,
+    /// SSH private key path for decrypting secrets store
+    pub secrets_ssh_key: Option<std::path::PathBuf>,
 }
 
 impl Default for ExecuteOpts {
@@ -180,6 +182,7 @@ impl Default for ExecuteOpts {
             workflows_dir: None,
             call_depth: 0,
             max_call_depth: 10,
+            secrets_ssh_key: None,
         }
     }
 }
@@ -402,6 +405,7 @@ fn execute_single_step(
                 workflows_dir: Some(wf_dir.to_path_buf()),
                 call_depth: call_depth + 1,
                 max_call_depth,
+                secrets_ssh_key: None,
             };
 
             execute_workflow(&sub_wf, call_ref, &sub_opts, event_tx)
@@ -941,6 +945,25 @@ pub fn execute_workflow(
         .into_iter()
         .map(|(k, v)| (k, expand_template(&v, &snapshot)))
         .collect();
+
+    // Auto-inject secrets from encrypted store (don't overwrite explicit env)
+    if !opts.secrets.is_empty() {
+        if let Some(ref ssh_key) = opts.secrets_ssh_key {
+            if let Some(ref wdir) = opts.workflows_dir {
+                if wdir.join("secrets.age").exists() {
+                    if let Ok(store) = crate::core::secrets::SecretsStore::load(wdir, ssh_key) {
+                        for name in &opts.secrets {
+                            if !env.contains_key(name) {
+                                if let Some(val) = store.get(name) {
+                                    env.insert(name.clone(), val.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Collect actual values of secret-named env vars for masking
     let secret_values: Vec<String> = opts

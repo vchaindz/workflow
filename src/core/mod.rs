@@ -11,4 +11,5 @@ pub mod models;
 pub mod parser;
 pub mod template;
 pub mod sync;
+pub mod secrets;
 pub mod wizard;

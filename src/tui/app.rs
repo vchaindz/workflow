@@ -477,6 +477,32 @@ impl App {
         }
     }
 
+    /// Remove trashed files older than the configured retention period.
+    pub fn clean_old_trash(&self) {
+        let trash_dir = self.config.workflows_dir.join(".trash");
+        if !trash_dir.exists() {
+            return;
+        }
+        let retention_days = self.config.log_retention_days as i64;
+        let entries = match std::fs::read_dir(&trash_dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            // Parse timestamp prefix: YYYYMMDD_HHMMSS_...
+            if name_str.len() >= 15 {
+                if let Ok(ts) = chrono::NaiveDateTime::parse_from_str(&name_str[..15], "%Y%m%d_%H%M%S") {
+                    let age = chrono::Local::now().naive_local() - ts;
+                    if age.num_days() > retention_days {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
     pub fn check_overdue(&mut self) {
         let db_path = self.config.workflows_dir.join("history.db");
         if let Ok(conn) = crate::core::db::open_db(&db_path) {

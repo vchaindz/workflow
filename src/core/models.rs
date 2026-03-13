@@ -54,7 +54,7 @@ pub(crate) enum RawStep {
         #[serde(default)]
         call: Option<String>,
         #[serde(default)]
-        for_each: Option<ForEachSource>,
+        for_each: Option<Box<ForEachSource>>,
         #[serde(default)]
         for_each_cmd: Option<String>,
         #[serde(default)]
