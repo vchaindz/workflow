@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::time::Instant;
 
 use crate::core::ai::{AiResult, AiResponse, AiTool};
 use crate::core::compare::CompareResult;
@@ -35,6 +36,7 @@ pub enum AppMode {
     OverdueReminder,
     VariablePrompt,
     GitSync,
+    EditTask,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +44,75 @@ pub struct DeleteState {
     pub task_name: String,
     pub task_path: std::path::PathBuf,
     pub category: String,
+}
+
+#[derive(Debug)]
+pub struct EditState {
+    pub file_path: PathBuf,
+    pub file_name: String,
+    pub lines: Vec<String>,
+    pub cursor_row: usize,
+    pub cursor_col: usize,
+    pub scroll_row: usize,
+    pub scroll_col: usize,
+    pub modified: bool,
+    pub confirm_discard: bool,
+}
+
+impl EditState {
+    pub fn from_file(path: &std::path::Path, display_name: &str) -> std::io::Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let lines: Vec<String> = if content.is_empty() {
+            vec![String::new()]
+        } else {
+            content.lines().map(|l| l.to_string()).collect()
+        };
+        Ok(Self {
+            file_path: path.to_path_buf(),
+            file_name: display_name.to_string(),
+            lines,
+            cursor_row: 0,
+            cursor_col: 0,
+            scroll_row: 0,
+            scroll_col: 0,
+            modified: false,
+            confirm_discard: false,
+        })
+    }
+
+    pub fn clamp_cursor(&mut self) {
+        if self.cursor_row >= self.lines.len() {
+            self.cursor_row = self.lines.len().saturating_sub(1);
+        }
+        let line_len = self.lines.get(self.cursor_row).map_or(0, |l| l.len());
+        if self.cursor_col > line_len {
+            self.cursor_col = line_len;
+        }
+    }
+
+    pub fn ensure_visible(&mut self, height: usize, width: usize) {
+        // Vertical
+        if self.cursor_row < self.scroll_row {
+            self.scroll_row = self.cursor_row;
+        }
+        if self.cursor_row >= self.scroll_row + height {
+            self.scroll_row = self.cursor_row.saturating_sub(height.saturating_sub(1));
+        }
+        // Horizontal
+        if self.cursor_col < self.scroll_col {
+            self.scroll_col = self.cursor_col;
+        }
+        if self.cursor_col >= self.scroll_col + width {
+            self.scroll_col = self.cursor_col.saturating_sub(width.saturating_sub(1));
+        }
+    }
+
+    pub fn save(&mut self) -> std::io::Result<()> {
+        let content = self.lines.join("\n") + "\n";
+        std::fs::write(&self.file_path, content)?;
+        self.modified = false;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -241,6 +312,9 @@ pub struct App {
     // Rename modal state
     pub rename_state: Option<RenameState>,
 
+    // In-app editor state
+    pub edit_state: Option<EditState>,
+
     // Recent runs modal
     pub recent_runs: Vec<RunLog>,
     pub recent_runs_cursor: usize,
@@ -280,6 +354,10 @@ pub struct App {
     pub var_prompt_workflow: Option<Workflow>,
     pub var_prompt_error: Option<String>,
 
+    // Background tasks
+    pub background_tasks: Vec<BackgroundTask>,
+    pub bg_notification: Option<(String, Instant)>,
+
     // Git sync state
     pub sync_info: Option<SyncInfo>,
     pub sync_menu_cursor: usize,
@@ -287,6 +365,19 @@ pub struct App {
     pub sync_setup_stage: SyncSetupStage,
     pub sync_setup_input: String,
     pub sync_first_run_hint: bool,
+}
+
+pub struct BackgroundTask {
+    pub task_ref: String,
+    pub started_at: chrono::DateTime<chrono::Local>,
+    pub event_rx: mpsc::Receiver<ExecutionEvent>,
+    pub streaming_rx: Option<mpsc::Receiver<StreamingRequest>>,
+    pub interactive_rx: Option<mpsc::Receiver<InteractiveRequest>>,
+    pub step_states: Vec<StepState>,
+    pub footer_log: Vec<String>,
+    pub result: Option<RunLog>,
+    pub error: Option<String>,
+    pub notified: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -338,6 +429,7 @@ impl App {
             wizard: None,
             delete_state: None,
             rename_state: None,
+            edit_state: None,
             recent_runs: Vec::new(),
             recent_runs_cursor: 0,
             saved_tasks_cursor: 0,
@@ -359,6 +451,8 @@ impl App {
             var_prompt_task: None,
             var_prompt_workflow: None,
             var_prompt_error: None,
+            background_tasks: Vec::new(),
+            bg_notification: None,
             sync_info: None,
             sync_menu_cursor: 0,
             sync_message: None,
@@ -916,6 +1010,168 @@ impl App {
         if self.footer_log.len() > 100 {
             let start = self.footer_log.len() - 50;
             self.footer_log = self.footer_log[start..].to_vec();
+        }
+    }
+
+    /// Move the currently running foreground task to the background.
+    pub fn background_current_task(&mut self) {
+        let task_ref = self.executing_task_ref.take().unwrap_or_default();
+        let event_rx = match self.event_rx.take() {
+            Some(rx) => rx,
+            None => return,
+        };
+
+        let bg = BackgroundTask {
+            task_ref,
+            started_at: chrono::Local::now(),
+            event_rx,
+            streaming_rx: self.streaming_rx.take(),
+            interactive_rx: self.interactive_rx.take(),
+            step_states: std::mem::take(&mut self.step_states),
+            footer_log: Vec::new(),
+            result: None,
+            error: None,
+            notified: false,
+        };
+
+        self.background_tasks.push(bg);
+        self.is_executing = false;
+        self.pending_wizard_return = false;
+        self.header_stats.currently_running = false;
+
+        // Clear streaming state if we were in StreamingOutput mode
+        if self.mode == AppMode::StreamingOutput {
+            if let Some(kill_tx) = self.streaming_kill_tx.take() {
+                let _ = kill_tx.send(());
+            }
+            self.streaming_lines.clear();
+            self.streaming_scroll = 0;
+            self.streaming_step_id = None;
+            self.streaming_cmd = None;
+        }
+
+        self.mode = AppMode::Normal;
+        self.focus = Focus::TaskList;
+        self.footer_log.push(format!(
+            "[{}] ● Task moved to background",
+            chrono::Local::now().format("%H:%M:%S"),
+        ));
+    }
+
+    /// Drain events from all background tasks each tick.
+    pub fn drain_background_events(&mut self) {
+        for bg in self.background_tasks.iter_mut() {
+            if bg.result.is_some() || bg.error.is_some() {
+                continue;
+            }
+
+            loop {
+                match bg.event_rx.try_recv() {
+                    Ok(event) => match event {
+                        ExecutionEvent::StepStarted { step_id, cmd_preview } => {
+                            bg.step_states.push(StepState {
+                                id: step_id.clone(),
+                                cmd_preview: cmd_preview.clone(),
+                                status: StepStatus::Running,
+                                duration_ms: None,
+                            });
+                            bg.footer_log.push(format!(
+                                "[{}] ▶ {} — {}",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                step_id, cmd_preview,
+                            ));
+                        }
+                        ExecutionEvent::StepCompleted { step_id, status, duration_ms } => {
+                            if let Some(state) = bg.step_states.iter_mut().find(|s| s.id == step_id) {
+                                state.status = status;
+                                state.duration_ms = Some(duration_ms);
+                            }
+                        }
+                        ExecutionEvent::StepTimedOut { step_id, timeout_secs: _, duration_ms } => {
+                            if let Some(state) = bg.step_states.iter_mut().find(|s| s.id == step_id) {
+                                state.status = StepStatus::Timedout;
+                                state.duration_ms = Some(duration_ms);
+                            }
+                        }
+                        ExecutionEvent::StepSkipped { step_id } => {
+                            bg.step_states.push(StepState {
+                                id: step_id,
+                                cmd_preview: String::new(),
+                                status: StepStatus::Skipped,
+                                duration_ms: None,
+                            });
+                        }
+                        ExecutionEvent::WorkflowFinished { run_log } => {
+                            bg.result = Some(run_log);
+                            bg.notified = false;
+                            break;
+                        }
+                        ExecutionEvent::WorkflowError { message } => {
+                            bg.error = Some(message);
+                            bg.notified = false;
+                            break;
+                        }
+                        // Ignore streaming/interactive/other events in background
+                        _ => {}
+                    },
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        if bg.result.is_none() && bg.error.is_none() {
+                            bg.error = Some("Execution thread disconnected".to_string());
+                            bg.notified = false;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Generate notifications for newly completed tasks
+        for bg in self.background_tasks.iter_mut() {
+            if !bg.notified && (bg.result.is_some() || bg.error.is_some()) {
+                bg.notified = true;
+                let msg = if let Some(ref err) = bg.error {
+                    format!("Background task \"{}\" failed: {}", bg.task_ref, err)
+                } else {
+                    format!("Background task \"{}\" completed", bg.task_ref)
+                };
+                self.footer_log.push(format!(
+                    "[{}] ★ {}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    msg,
+                ));
+                self.bg_notification = Some((msg, Instant::now()));
+            }
+        }
+
+        // Expire notification after 5 seconds
+        if let Some((_, when)) = &self.bg_notification {
+            if when.elapsed() > std::time::Duration::from_secs(5) {
+                self.bg_notification = None;
+            }
+        }
+    }
+
+    /// View the result of the first completed background task.
+    pub fn view_background_result(&mut self) {
+        if let Some(idx) = self.background_tasks.iter().position(|bg| bg.result.is_some() || bg.error.is_some()) {
+            let bg = self.background_tasks.remove(idx);
+            if let Some(run_log) = bg.result {
+                self.run_output = Some(run_log);
+                self.detail_scroll = 0;
+            } else if let Some(err) = bg.error {
+                self.footer_log.push(format!(
+                    "[{}] ✗ Background error: {}",
+                    chrono::Local::now().format("%H:%M:%S"),
+                    err,
+                ));
+            }
+            self.bg_notification = None;
+        } else {
+            self.footer_log.push(format!(
+                "[{}] No completed background tasks",
+                chrono::Local::now().format("%H:%M:%S"),
+            ));
         }
     }
 

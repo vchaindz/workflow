@@ -15,13 +15,24 @@ use crate::core::parser::{parse_shell_task, parse_workflow, parse_workflow_from_
 use crate::core::wizard;
 use crate::error::Result;
 
-use super::app::{App, AppMode, DeleteState, Focus, RenameState, RenameTarget, WizardMode, WizardStage, WizardState};
+use super::app::{App, AppMode, DeleteState, EditState, Focus, RenameState, RenameTarget, WizardMode, WizardStage, WizardState};
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.mode {
         AppMode::Search => handle_search_key(app, key),
-        AppMode::Running => Ok(()),
-        AppMode::StreamingOutput => handle_streaming_key(app, key),
+        AppMode::Running => {
+            if key.code == KeyCode::Char('b') {
+                app.background_current_task();
+            }
+            Ok(())
+        }
+        AppMode::StreamingOutput => {
+            if key.code == KeyCode::Char('b') {
+                app.background_current_task();
+                return Ok(());
+            }
+            handle_streaming_key(app, key)
+        }
         AppMode::Comparing => {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
@@ -47,6 +58,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         AppMode::Wizard => handle_wizard_key(app, key),
         AppMode::ConfirmDelete => handle_confirm_delete_key(app, key),
         AppMode::Rename => handle_rename_key(app, key),
+        AppMode::EditTask => handle_edit_task_key(app, key),
         _ => handle_normal_key(app, key),
     }
 }
@@ -86,6 +98,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             // scroll down in details
             app.detail_scroll = app.detail_scroll.saturating_add(1);
         }
+        KeyCode::Char('B') => app.view_background_result(),
         KeyCode::Char('L') => view_logs(app)?,
         KeyCode::Char('w') => start_history_wizard(app),
         KeyCode::Char('W') => start_clone_wizard(app)?,
@@ -502,21 +515,202 @@ fn launch_workflow(
     Ok(())
 }
 
-fn edit_selected(app: &App) -> Result<()> {
+fn edit_selected(app: &mut App) -> Result<()> {
     let task = match app.selected_task_ref() {
-        Some(t) => t,
+        Some(t) => t.clone(),
         None => return Ok(()),
     };
 
-    let editor = &app.config.editor;
-    let path = task.path.display().to_string();
+    let display_name = format!("{}/{}", task.category, task.name);
+    match EditState::from_file(&task.path, &display_name) {
+        Ok(state) => {
+            app.edit_state = Some(state);
+            app.mode = AppMode::EditTask;
+        }
+        Err(e) => {
+            app.footer_log.push(format!(
+                "[{}] Edit failed: {}",
+                chrono::Local::now().format("%H:%M:%S"),
+                e,
+            ));
+        }
+    }
+    Ok(())
+}
 
-    // We need to restore terminal, run editor, then re-init
-    // This is handled in the TUI mod by returning a special action
-    std::process::Command::new(editor)
-        .arg(&path)
-        .status()
-        .ok();
+fn handle_edit_task_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        app.should_quit = true;
+        return Ok(());
+    }
+
+    // Ctrl+S: save
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+        if let Some(ref mut state) = app.edit_state {
+            match state.save() {
+                Ok(()) => {
+                    app.footer_log.push(format!(
+                        "[{}] Saved {}",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        state.file_name,
+                    ));
+                }
+                Err(e) => {
+                    app.footer_log.push(format!(
+                        "[{}] Save failed: {}",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        e,
+                    ));
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Handle cases that need to drop the borrow before modifying app
+    {
+        let state = match app.edit_state.as_ref() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+
+        // Discard confirmation: 'y' closes editor
+        if state.confirm_discard && matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            app.edit_state = None;
+            app.mode = AppMode::Normal;
+            return Ok(());
+        }
+
+        // Esc on unmodified file: close editor
+        if key.code == KeyCode::Esc && !state.modified {
+            app.edit_state = None;
+            app.mode = AppMode::Normal;
+            return Ok(());
+        }
+    }
+
+    let state = match app.edit_state.as_mut() {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+
+    // Handle discard confirmation (non-close keys)
+    if state.confirm_discard {
+        state.confirm_discard = false;
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            // Modified file: show discard prompt
+            state.confirm_discard = true;
+        }
+        KeyCode::Up => {
+            if state.cursor_row > 0 {
+                state.cursor_row -= 1;
+                state.clamp_cursor();
+            }
+        }
+        KeyCode::Down => {
+            if state.cursor_row + 1 < state.lines.len() {
+                state.cursor_row += 1;
+                state.clamp_cursor();
+            }
+        }
+        KeyCode::Left => {
+            if state.cursor_col > 0 {
+                state.cursor_col -= 1;
+            } else if state.cursor_row > 0 {
+                state.cursor_row -= 1;
+                state.cursor_col = state.lines[state.cursor_row].len();
+            }
+        }
+        KeyCode::Right => {
+            let line_len = state.lines[state.cursor_row].len();
+            if state.cursor_col < line_len {
+                state.cursor_col += 1;
+            } else if state.cursor_row + 1 < state.lines.len() {
+                state.cursor_row += 1;
+                state.cursor_col = 0;
+            }
+        }
+        KeyCode::Home => {
+            state.cursor_col = 0;
+        }
+        KeyCode::End => {
+            state.cursor_col = state.lines[state.cursor_row].len();
+        }
+        KeyCode::PageUp => {
+            state.cursor_row = state.cursor_row.saturating_sub(20);
+            state.clamp_cursor();
+        }
+        KeyCode::PageDown => {
+            state.cursor_row = (state.cursor_row + 20).min(state.lines.len().saturating_sub(1));
+            state.clamp_cursor();
+        }
+        KeyCode::Char(c) => {
+            let row = state.cursor_row;
+            let col = state.cursor_col;
+            state.lines[row].insert(col, c);
+            state.cursor_col += 1;
+            state.modified = true;
+        }
+        KeyCode::Tab => {
+            let row = state.cursor_row;
+            let col = state.cursor_col;
+            state.lines[row].insert_str(col, "  ");
+            state.cursor_col += 2;
+            state.modified = true;
+        }
+        KeyCode::Backspace => {
+            let row = state.cursor_row;
+            let col = state.cursor_col;
+            if col > 0 {
+                state.lines[row].remove(col - 1);
+                state.cursor_col -= 1;
+                state.modified = true;
+            } else if row > 0 {
+                let removed = state.lines.remove(row);
+                state.cursor_row -= 1;
+                state.cursor_col = state.lines[state.cursor_row].len();
+                state.lines[state.cursor_row].push_str(&removed);
+                state.modified = true;
+            }
+        }
+        KeyCode::Delete => {
+            let row = state.cursor_row;
+            let col = state.cursor_col;
+            let line_len = state.lines[row].len();
+            if col < line_len {
+                state.lines[row].remove(col);
+                state.modified = true;
+            } else if row + 1 < state.lines.len() {
+                let next = state.lines.remove(row + 1);
+                state.lines[row].push_str(&next);
+                state.modified = true;
+            }
+        }
+        KeyCode::Enter => {
+            let row = state.cursor_row;
+            let col = state.cursor_col;
+            let rest = state.lines[row][col..].to_string();
+            state.lines[row].truncate(col);
+            state.cursor_row += 1;
+            state.lines.insert(state.cursor_row, rest);
+            state.cursor_col = 0;
+            state.modified = true;
+        }
+        _ => {}
+    }
+
+    // Adjust scroll
+    if let Ok((w, h)) = crossterm::terminal::size() {
+        // Approximate visible area: full screen minus margins and gutter
+        let gutter = 5;
+        let editor_h = (h as usize).saturating_sub(5); // top/bottom margin + status bar
+        let editor_w = (w as usize).saturating_sub(8 + gutter); // side margins + gutter
+        state.ensure_visible(editor_h, editor_w);
+    }
 
     Ok(())
 }

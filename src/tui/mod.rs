@@ -99,6 +99,7 @@ fn run_app(
         app.check_streaming_requests();
 
         app.drain_execution_events();
+        app.drain_background_events();
         app.drain_ai_events();
         terminal.draw(|f| ui::draw(f, app))?;
 
@@ -106,32 +107,16 @@ fn run_app(
             AppEvent::Key(key) => {
                 // Only handle Press events (not Release/Repeat)
                 if key.kind == KeyEventKind::Press {
-                    // For edit action, we need to restore terminal
-                    if key.code == crossterm::event::KeyCode::Char('e')
-                        && app.mode == app::AppMode::Normal
-                    {
-                        if app.selected_task_ref().is_some() {
-                            // Restore terminal for editor
-                            disable_raw_mode()?;
-                            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                            terminal.show_cursor()?;
-
-                            actions::handle_key(app, key)?;
-
-                            // Re-init terminal
-                            enable_raw_mode()?;
-                            execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-                            terminal.clear()?;
-
-                            // Refresh categories in case file was edited
-                            rescan(app);
-                            app.trigger_auto_sync();
-                            last_rescan = Instant::now();
-                            continue;
-                        }
-                    }
+                    let was_editing = app.mode == app::AppMode::EditTask;
 
                     actions::handle_key(app, key)?;
+
+                    // After closing editor, rescan for changes
+                    if was_editing && app.mode != app::AppMode::EditTask {
+                        rescan(app);
+                        app.trigger_auto_sync();
+                        last_rescan = Instant::now();
+                    }
                 }
             }
             AppEvent::Tick => {

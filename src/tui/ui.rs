@@ -102,21 +102,30 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.mode == AppMode::GitSync {
         draw_git_sync(f, app);
     }
+
+    if app.mode == AppMode::EditTask {
+        draw_edit_task(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let version = env!("CARGO_PKG_VERSION");
     let stats = &app.header_stats;
 
-    let running_style = if stats.currently_running {
+    let bg_running = app.background_tasks.iter()
+        .filter(|t| t.result.is_none() && t.error.is_none()).count();
+    let bg_done = app.background_tasks.iter()
+        .filter(|t| t.result.is_some() || t.error.is_some()).count();
+    let fg_running: usize = if stats.currently_running { 1 } else { 0 };
+    let running_count = fg_running + bg_running;
+
+    let running_style = if running_count > 0 {
         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let running_count: usize = if stats.currently_running { 1 } else { 0 };
-
-    let spans = vec![
+    let mut spans = vec![
         Span::styled(
             format!(" workflow v{}", version),
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
@@ -169,6 +178,27 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!("{icon} sync"), Style::default().fg(color))
         },
     ];
+
+    if bg_running > 0 || bg_done > 0 {
+        spans.push(Span::styled("  │  ", Style::default().fg(Color::DarkGray)));
+        let mut bg_parts: Vec<Span> = vec![Span::styled("BG: ", Style::default().fg(Color::DarkGray))];
+        if bg_running > 0 {
+            bg_parts.push(Span::styled(
+                format!("{}⏳", bg_running),
+                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            ));
+        }
+        if bg_done > 0 {
+            if bg_running > 0 {
+                bg_parts.push(Span::styled(" ", Style::default()));
+            }
+            bg_parts.push(Span::styled(
+                format!("{}✓", bg_done),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ));
+        }
+        spans.extend(bg_parts);
+    }
 
     let header = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(Color::Rgb(30, 30, 40)));
@@ -422,14 +452,17 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         AppMode::Search => {
             format!("Search: {}_ | ESC cancel", app.search_query)
         }
-        AppMode::Running => "Running... (output in footer below)".to_string(),
+        AppMode::Running => "Running... b:background  (output in footer below)".to_string(),
         AppMode::StreamingOutput => "Streaming output — Esc/q to close".to_string(),
         AppMode::Comparing => "c:compare | ESC:back | Up/Down:scroll".to_string(),
         AppMode::Wizard => " New Task Wizard ".to_string(),
         _ => {
             let sort_label = if app.sort_by_heat { "f:α-sort" } else { "f:heat-sort" };
             let filter_label = format!("F:{}", app.status_filter.next().label());
-            format!("arrows:nav  r:run  d:dry-run  e:edit  n:rename  c:compare  {sort_label}  {filter_label}  w:new  W:clone  t:template  a:ai  g:sync  R:recent  s:saved  L:logs  /:search  h:help  q:quit")
+            let bg_done = app.background_tasks.iter()
+                .filter(|t| t.result.is_some() || t.error.is_some()).count();
+            let bg_hint = if bg_done > 0 { format!("  B:bg-result({bg_done})") } else { String::new() };
+            format!("arrows:nav  r:run  d:dry-run  e:edit  n:rename  c:compare  {sort_label}  {filter_label}  w:new  W:clone  t:template  a:ai  g:sync  R:recent  s:saved  L:logs  /:search  h:help  q:quit{bg_hint}")
         }
     };
 
@@ -1590,14 +1623,18 @@ fn format_task_preview_styled(task: &crate::core::models::Task) -> Vec<Line<'sta
 }
 
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
+    let bg_running = app.background_tasks.iter()
+        .filter(|t| t.result.is_none() && t.error.is_none()).count();
     let (title, border_color) = if app.is_executing {
-        (" Running... ", Color::Yellow)
+        (" Running... ".to_string(), Color::Yellow)
+    } else if bg_running > 0 {
+        (format!(" Execution Log (BG: {bg_running} running) "), Color::Magenta)
     } else {
-        (" Execution Log ", Color::Green)
+        (" Execution Log ".to_string(), Color::Green)
     };
 
     let block = Block::default()
-        .title(title)
+        .title(title.as_str())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
 
@@ -1606,7 +1643,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let visible_lines: Vec<Line> = app.footer_log[start..]
         .iter()
         .map(|line| {
-            let color = if line.contains("✓") || line.contains("Done") {
+            let color = if line.contains("★") {
+                Color::Magenta
+            } else if line.contains("✓") || line.contains("Done") {
                 Color::Green
             } else if line.contains("✗") || line.contains("Error") || line.contains("FAIL") {
                 Color::Red
@@ -1738,7 +1777,7 @@ fn draw_help(f: &mut Frame, app: &App) {
             Line::from("  -           Collapse category"),
             Line::from("  r           Run selected task"),
             Line::from("  d           Dry-run selected task"),
-            Line::from("  e           Edit task in $EDITOR"),
+            Line::from("  e           Edit task (in-app editor)"),
             Line::from("  n           Rename task/category"),
             Line::from("  w           New task from shell history"),
             Line::from("  W           Clone selected task"),
@@ -2310,6 +2349,138 @@ fn draw_git_sync(f: &mut Frame, app: &App) {
     f.render_widget(Clear, popup);
     let para = Paragraph::new(lines).block(block);
     f.render_widget(para, popup);
+}
+
+fn draw_edit_task(f: &mut Frame, app: &App) {
+    let state = match app.edit_state.as_ref() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let area = f.area();
+    let margin_x: u16 = 2;
+    let margin_y: u16 = 1;
+    let w = area.width.saturating_sub(margin_x * 2);
+    let h = area.height.saturating_sub(margin_y * 2);
+    if w < 10 || h < 5 {
+        return;
+    }
+    let popup = Rect::new(area.x + margin_x, area.y + margin_y, w, h);
+
+    f.render_widget(Clear, popup);
+
+    let border_color = if state.modified { Color::Yellow } else { Color::Cyan };
+    let title = if state.modified {
+        format!(" {} [modified] ", state.file_name)
+    } else {
+        format!(" {} ", state.file_name)
+    };
+
+    let block = Block::default()
+        .title(title)
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    f.render_widget(block, popup);
+
+    // Inner area (inside border)
+    let inner_x = popup.x + 1;
+    let inner_y = popup.y + 1;
+    let inner_w = popup.width.saturating_sub(2);
+    let inner_h = popup.height.saturating_sub(3); // -2 border -1 status bar
+
+    let gutter_width: u16 = 5; // "1234 " format
+    let text_width = inner_w.saturating_sub(gutter_width) as usize;
+    let text_height = inner_h as usize;
+
+    // Draw lines with line numbers
+    let mut lines_to_render: Vec<Line> = Vec::new();
+    for vis_row in 0..text_height {
+        let line_idx = state.scroll_row + vis_row;
+        if line_idx >= state.lines.len() {
+            // Empty line below content
+            let gutter = Span::styled(
+                format!("{:>4} ", "~"),
+                Style::default().fg(Color::DarkGray),
+            );
+            lines_to_render.push(Line::from(vec![gutter]));
+            continue;
+        }
+
+        let is_cursor_line = line_idx == state.cursor_row;
+        let gutter_style = if is_cursor_line {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let gutter = Span::styled(
+            format!("{:>4} ", line_idx + 1),
+            gutter_style,
+        );
+
+        let line_content = &state.lines[line_idx];
+        // Apply horizontal scroll
+        let visible: String = if state.scroll_col < line_content.len() {
+            line_content[state.scroll_col..].chars().take(text_width).collect()
+        } else {
+            String::new()
+        };
+
+        let text_style = if is_cursor_line {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
+        lines_to_render.push(Line::from(vec![
+            gutter,
+            Span::styled(visible, text_style),
+        ]));
+    }
+
+    let text_area = Rect::new(inner_x, inner_y, inner_w, inner_h);
+    let para = Paragraph::new(lines_to_render);
+    f.render_widget(para, text_area);
+
+    // Status bar
+    let status_y = popup.y + popup.height.saturating_sub(2);
+    let status_area = Rect::new(inner_x, status_y, inner_w, 1);
+
+    let status_line = if state.confirm_discard {
+        Line::from(vec![
+            Span::styled(" UNSAVED CHANGES ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(" Discard? ", Style::default().fg(Color::White)),
+            Span::styled("y", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled("/", Style::default().fg(Color::DarkGray)),
+            Span::styled("n", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ])
+    } else {
+        let mod_indicator = if state.modified {
+            Span::styled(" MODIFIED ", Style::default().fg(Color::Black).bg(Color::Yellow))
+        } else {
+            Span::styled(" SAVED ", Style::default().fg(Color::Black).bg(Color::Green))
+        };
+        let pos = Span::styled(
+            format!("  Ln {}, Col {}  ", state.cursor_row + 1, state.cursor_col + 1),
+            Style::default().fg(Color::DarkGray),
+        );
+        let hints = Span::styled(
+            "Ctrl+S Save  Esc Close",
+            Style::default().fg(Color::DarkGray),
+        );
+        Line::from(vec![mod_indicator, pos, hints])
+    };
+
+    f.render_widget(Paragraph::new(vec![status_line]), status_area);
+
+    // Set cursor position
+    let cursor_screen_row = (state.cursor_row - state.scroll_row) as u16;
+    let cursor_screen_col = state.cursor_col.saturating_sub(state.scroll_col) as u16;
+    let cursor_x = inner_x + gutter_width + cursor_screen_col;
+    let cursor_y = inner_y + cursor_screen_row;
+    if cursor_x < popup.x + popup.width - 1 && cursor_y < status_y {
+        f.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
 #[cfg(test)]
