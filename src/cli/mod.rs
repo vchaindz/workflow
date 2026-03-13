@@ -10,6 +10,7 @@ pub mod schedule;
 pub mod status;
 pub mod sync;
 pub mod templates;
+pub mod serve;
 pub mod validate;
 
 use crate::core::config::Config;
@@ -74,6 +75,8 @@ pub fn dispatch(config: &mut Config, command: Commands) -> Result<i32> {
         Commands::Sync { action } => {
             sync::cmd_sync(config, action)
         }
+
+        Commands::Serve { port, bind } => serve::cmd_serve(config, port, &bind),
 
         Commands::Logs { task, json, limit } => {
             logs::cmd_logs(config, task.as_deref(), json, limit)?;

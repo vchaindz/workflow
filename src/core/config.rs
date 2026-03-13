@@ -26,6 +26,8 @@ pub struct Config {
     pub bookmarks: Vec<String>,
     #[serde(default)]
     pub sync: SyncConfig,
+    #[serde(default)]
+    pub server: ServerConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -74,6 +76,39 @@ impl Default for SyncConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default = "default_bind")]
+    pub bind: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent_runs: usize,
+}
+
+fn default_port() -> u16 {
+    8080
+}
+fn default_bind() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_max_concurrent() -> usize {
+    4
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            port: 8080,
+            bind: "127.0.0.1".to_string(),
+            api_key: None,
+            max_concurrent_runs: 4,
+        }
+    }
+}
+
 fn default_workflows_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("~/.config"))
@@ -101,6 +136,7 @@ impl Default for Config {
             notify: NotifyConfig::default(),
             bookmarks: Vec::new(),
             sync: SyncConfig::default(),
+            server: ServerConfig::default(),
         }
     }
 }

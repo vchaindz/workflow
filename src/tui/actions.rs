@@ -477,8 +477,10 @@ fn launch_workflow(
     let wf_notify = workflow.notify.clone();
     let cfg_notify = app.config.notify.clone();
     let task_ref_for_notify = task_ref.clone();
+    let workflows_dir_for_thread = app.config.workflows_dir.clone();
 
     thread::spawn(move || {
+        let workflows_dir = workflows_dir_for_thread;
         let opts = ExecuteOpts {
             dry_run,
             force: false,
@@ -487,6 +489,9 @@ fn launch_workflow(
             secrets,
             interactive_tx: None,
             streaming_tx: Some(streaming_tx),
+            workflows_dir: Some(workflows_dir),
+            call_depth: 0,
+            max_call_depth: 10,
         };
 
         match execute_workflow(&workflow, &task_ref, &opts, Some(&tx)) {

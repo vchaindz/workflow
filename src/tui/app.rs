@@ -843,6 +843,33 @@ impl App {
         loop {
             match rx.try_recv() {
                 Ok(event) => match event {
+                    ExecutionEvent::LevelStarted { level, step_count } => {
+                        self.footer_log.push(format!(
+                            "[{}] ═ Level {} ({} steps in parallel)",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            level,
+                            step_count,
+                        ));
+                    }
+                    ExecutionEvent::SubWorkflowStarted { parent_step_id, sub_task_ref } => {
+                        self.footer_log.push(format!(
+                            "[{}] ⤷ {} calling {}",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            parent_step_id,
+                            sub_task_ref,
+                        ));
+                    }
+                    ExecutionEvent::SubWorkflowFinished { parent_step_id, sub_task_ref, exit_code } => {
+                        let icon = if exit_code == 0 { "✓" } else { "✗" };
+                        self.footer_log.push(format!(
+                            "[{}] {} {}/{} (exit {})",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            icon,
+                            parent_step_id,
+                            sub_task_ref,
+                            exit_code,
+                        ));
+                    }
                     ExecutionEvent::StepStarted { step_id, cmd_preview } => {
                         self.step_states.push(StepState {
                             id: step_id.clone(),
@@ -1082,6 +1109,28 @@ impl App {
             loop {
                 match bg.event_rx.try_recv() {
                     Ok(event) => match event {
+                        ExecutionEvent::LevelStarted { level, step_count } => {
+                            bg.footer_log.push(format!(
+                                "[{}] ═ Level {} ({} steps in parallel)",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                level, step_count,
+                            ));
+                        }
+                        ExecutionEvent::SubWorkflowStarted { parent_step_id, sub_task_ref } => {
+                            bg.footer_log.push(format!(
+                                "[{}] ⤷ {} calling {}",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                parent_step_id, sub_task_ref,
+                            ));
+                        }
+                        ExecutionEvent::SubWorkflowFinished { parent_step_id, sub_task_ref, exit_code } => {
+                            let icon = if exit_code == 0 { "✓" } else { "✗" };
+                            bg.footer_log.push(format!(
+                                "[{}] {} {}/{} (exit {})",
+                                chrono::Local::now().format("%H:%M:%S"),
+                                icon, parent_step_id, sub_task_ref, exit_code,
+                            ));
+                        }
                         ExecutionEvent::StepStarted { step_id, cmd_preview } => {
                             bg.step_states.push(StepState {
                                 id: step_id.clone(),

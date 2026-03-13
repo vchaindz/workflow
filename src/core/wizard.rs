@@ -176,7 +176,7 @@ pub fn workflow_from_commands(name: &str, commands: &[String]) -> Workflow {
             run_if: None,
             retry: None,
             retry_delay: None,
-            interactive: None, outputs: Vec::new(),
+            interactive: None, outputs: Vec::new(), call: None,
         });
     }
 
@@ -311,7 +311,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
                 Step {
                     id: "step-2".to_string(),
@@ -322,7 +322,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
                 Step {
                     id: "step-3".to_string(),
@@ -333,7 +333,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
                 Step {
                     id: "deploy".to_string(),
@@ -344,7 +344,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
             ],
         }
@@ -454,7 +454,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
                 Step {
                     id: "step-2".to_string(),
@@ -465,7 +465,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
             ],
         };
@@ -499,7 +499,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
                 Step {
                     id: "test".to_string(),
@@ -510,7 +510,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
             ],
         };
@@ -584,7 +584,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             },
             Step {
                 id: "step-5".to_string(),
@@ -595,7 +595,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             },
         ];
         renumber_steps(&mut steps);

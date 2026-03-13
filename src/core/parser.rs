@@ -49,17 +49,17 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, retry: None, retry_delay: None, interactive: None, outputs: Vec::new() }
+                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, retry: None, retry_delay: None, interactive: None, outputs: Vec::new(), call: None }
             }
-            RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, retry, retry_delay, interactive, outputs } => {
+            RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call } => {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs }
+                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call }
             }
-            RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs } => {
+            RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call } => {
                 // Explicit id: no implicit chaining, but don't break the chain for others
-                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs }
+                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call }
             }
         };
 
@@ -67,6 +67,16 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
             return Err(DzError::Parse(format!("duplicate step id '{}'", step.id)));
         }
         steps.push(step);
+    }
+
+    // Validate mutual exclusion of cmd and call
+    for step in &steps {
+        if step.call.is_some() && !step.cmd.is_empty() {
+            return Err(DzError::Parse(format!(
+                "step '{}' has both 'cmd' and 'call' — these are mutually exclusive",
+                step.id
+            )));
+        }
     }
 
     Ok(steps)
@@ -135,7 +145,7 @@ pub fn parse_shell_task(path: &Path) -> Result<Workflow> {
             run_if: None,
             retry: None,
             retry_delay: None,
-            interactive: None, outputs: Vec::new(),
+            interactive: None, outputs: Vec::new(), call: None,
         }],
         env: HashMap::new(),
         secrets: Vec::new(),
@@ -222,6 +232,61 @@ fn detect_cycles(steps: &[Step]) -> Result<Vec<String>> {
     Ok(sorted)
 }
 
+/// Compute execution levels for parallel execution.
+/// Returns Vec<Vec<String>> where each inner Vec contains step IDs that can run concurrently.
+/// Steps in level N+1 depend only on steps in levels 0..=N.
+pub fn compute_execution_levels(steps: &[Step]) -> Result<Vec<Vec<String>>> {
+    // First validate no cycles
+    detect_cycles(steps)?;
+
+    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+
+    for step in steps {
+        in_degree.entry(step.id.as_str()).or_insert(0);
+        for dep in &step.needs {
+            dependents
+                .entry(dep.as_str())
+                .or_default()
+                .push(step.id.as_str());
+            *in_degree.entry(step.id.as_str()).or_insert(0) += 1;
+        }
+    }
+
+    let mut levels: Vec<Vec<String>> = Vec::new();
+    let mut remaining: HashMap<&str, usize> = in_degree;
+
+    loop {
+        let level: Vec<String> = remaining
+            .iter()
+            .filter(|(_, &deg)| deg == 0)
+            .map(|(&id, _)| id.to_string())
+            .collect();
+
+        if level.is_empty() {
+            break;
+        }
+
+        for id in &level {
+            if let Some(deps) = dependents.get(id.as_str()) {
+                for &dep in deps {
+                    if let Some(deg) = remaining.get_mut(dep) {
+                        *deg -= 1;
+                    }
+                }
+            }
+        }
+
+        for id in &level {
+            remaining.remove(id.as_str());
+        }
+
+        levels.push(level);
+    }
+
+    Ok(levels)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,7 +347,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             },
             Step {
                 id: "b".into(),
@@ -293,7 +358,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             },
             Step {
                 id: "c".into(),
@@ -304,7 +369,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             },
         ];
 
@@ -330,7 +395,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             },
             Step {
                 id: "b".into(),
@@ -341,7 +406,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             },
             Step {
                 id: "c".into(),
@@ -352,7 +417,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             },
             Step {
                 id: "d".into(),
@@ -363,7 +428,7 @@ env:
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             },
         ];
 
@@ -720,5 +785,94 @@ steps:
         assert!(wf.notify.on_success.is_none());
         assert_eq!(wf.steps[0].run_if, None);
         assert_eq!(wf.steps[0].retry, None);
+    }
+
+    #[test]
+    fn test_parse_call_field() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("call.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Call Workflow
+steps:
+  - id: preflight
+    call: checks/preflight
+    outputs:
+      - name: status
+        pattern: "RESULT:(\\S+)"
+  - id: deploy
+    cmd: echo deploying
+    needs: [preflight]
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.steps.len(), 2);
+        assert_eq!(wf.steps[0].call, Some("checks/preflight".to_string()));
+        assert!(wf.steps[0].cmd.is_empty());
+        assert_eq!(wf.steps[1].call, None);
+        assert_eq!(wf.steps[1].cmd, "echo deploying");
+    }
+
+    #[test]
+    fn test_call_cmd_mutual_exclusion() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bad_call.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Bad Call
+steps:
+  - id: both
+    cmd: echo hello
+    call: other/task
+"#,
+        )
+        .unwrap();
+
+        let result = parse_workflow(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("mutually exclusive"), "error was: {err}");
+    }
+
+    #[test]
+    fn test_compute_execution_levels() {
+        let steps = vec![
+            Step {
+                id: "a".into(), cmd: "echo a".into(), needs: vec![],
+                parallel: false, timeout: None, run_if: None, retry: None,
+                retry_delay: None, interactive: None, outputs: Vec::new(),
+                call: None,
+            },
+            Step {
+                id: "b".into(), cmd: "echo b".into(), needs: vec!["a".into()],
+                parallel: false, timeout: None, run_if: None, retry: None,
+                retry_delay: None, interactive: None, outputs: Vec::new(),
+                call: None,
+            },
+            Step {
+                id: "c".into(), cmd: "echo c".into(), needs: vec!["a".into()],
+                parallel: false, timeout: None, run_if: None, retry: None,
+                retry_delay: None, interactive: None, outputs: Vec::new(),
+                call: None,
+            },
+            Step {
+                id: "d".into(), cmd: "echo d".into(), needs: vec!["b".into(), "c".into()],
+                parallel: false, timeout: None, run_if: None, retry: None,
+                retry_delay: None, interactive: None, outputs: Vec::new(),
+                call: None,
+            },
+        ];
+
+        let levels = compute_execution_levels(&steps).unwrap();
+        assert_eq!(levels.len(), 3);
+        assert_eq!(levels[0], vec!["a"]);
+        assert!(levels[1].contains(&"b".to_string()));
+        assert!(levels[1].contains(&"c".to_string()));
+        assert_eq!(levels[1].len(), 2);
+        assert_eq!(levels[2], vec!["d"]);
     }
 }

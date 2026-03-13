@@ -10,7 +10,7 @@ use wait_timeout::ChildExt;
 
 use crate::core::detect;
 use crate::core::models::{ExecutionEvent, RunLog, Step, StepResult, StepStatus, Workflow};
-use crate::core::parser::{resolve_env, topological_sort};
+use crate::core::parser::{resolve_env, compute_execution_levels};
 use crate::core::template::expand_template;
 use crate::error::Result;
 
@@ -154,7 +154,6 @@ pub struct StreamingRequest {
     pub kill_tx: mpsc::Sender<()>,
 }
 
-#[derive(Default)]
 pub struct ExecuteOpts {
     pub dry_run: bool,
     pub force: bool,
@@ -163,6 +162,26 @@ pub struct ExecuteOpts {
     pub secrets: Vec<String>,
     pub interactive_tx: Option<mpsc::Sender<InteractiveRequest>>,
     pub streaming_tx: Option<mpsc::Sender<StreamingRequest>>,
+    pub workflows_dir: Option<std::path::PathBuf>,
+    pub call_depth: u16,
+    pub max_call_depth: u16,
+}
+
+impl Default for ExecuteOpts {
+    fn default() -> Self {
+        Self {
+            dry_run: false,
+            force: false,
+            env_overrides: HashMap::new(),
+            default_timeout: None,
+            secrets: Vec::new(),
+            interactive_tx: None,
+            streaming_tx: None,
+            workflows_dir: None,
+            call_depth: 0,
+            max_call_depth: 10,
+        }
+    }
 }
 
 
@@ -190,6 +209,514 @@ pub fn run_notify(cmd: &str, vars: &HashMap<String, String>) {
         .spawn();
 }
 
+/// Outcome of executing a single step
+struct StepOutcome {
+    result: StepResult,
+    captured_vars: HashMap<String, String>,
+    failed: bool,
+}
+
+/// Execute a single non-interactive step. Used by both sequential and parallel paths.
+#[allow(clippy::too_many_arguments)]
+fn execute_single_step(
+    step: &Step,
+    workdir: Option<&std::path::PathBuf>,
+    template_vars: &HashMap<String, String>,
+    env: &HashMap<String, String>,
+    secret_values: &[String],
+    dry_run: bool,
+    force: bool,
+    default_timeout: Option<u64>,
+    event_tx: Option<&mpsc::Sender<ExecutionEvent>>,
+    failed_steps: &std::collections::HashSet<String>,
+    workflows_dir: Option<&std::path::PathBuf>,
+    call_depth: u16,
+    max_call_depth: u16,
+) -> StepOutcome {
+    let send = |evt: ExecutionEvent| {
+        if let Some(tx) = event_tx {
+            let _ = tx.send(evt);
+        }
+    };
+
+    let mut captured_vars = HashMap::new();
+
+    // Check if any dependency failed
+    let dep_failed = step
+        .needs
+        .iter()
+        .any(|dep| failed_steps.contains(dep.as_str()));
+
+    if dep_failed {
+        send(ExecutionEvent::StepSkipped { step_id: step.id.clone() });
+        return StepOutcome {
+            result: StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Skipped,
+                output: "skipped: dependency failed".to_string(),
+                duration_ms: 0,
+            },
+            captured_vars,
+            failed: true,
+        };
+    }
+
+    // Conditional step: evaluate run_if condition
+    if let Some(ref condition) = step.run_if {
+        if dry_run {
+            println!("[dry-run] step '{}' run_if: {}", step.id, condition);
+        } else {
+            let cond_result = Command::new("bash")
+                .arg("-c")
+                .arg(condition)
+                .envs(env)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            match cond_result {
+                Ok(status) if !status.success() => {
+                    send(ExecutionEvent::StepSkipped { step_id: step.id.clone() });
+                    return StepOutcome {
+                        result: StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Skipped,
+                            output: format!("condition not met: {condition}"),
+                            duration_ms: 0,
+                        },
+                        captured_vars,
+                        failed: false,
+                    };
+                }
+                Err(e) => {
+                    send(ExecutionEvent::StepSkipped { step_id: step.id.clone() });
+                    return StepOutcome {
+                        result: StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Skipped,
+                            output: format!("condition error: {e}"),
+                            duration_ms: 0,
+                        },
+                        captured_vars,
+                        failed: false,
+                    };
+                }
+                _ => {} // condition met, proceed
+            }
+        }
+    }
+
+    // Sub-workflow call
+    if let Some(ref call_ref) = step.call {
+        if call_depth >= max_call_depth {
+            send(ExecutionEvent::StepCompleted {
+                step_id: step.id.clone(),
+                status: StepStatus::Failed,
+                duration_ms: 0,
+            });
+            return StepOutcome {
+                result: StepResult {
+                    id: step.id.clone(),
+                    status: StepStatus::Failed,
+                    output: format!("sub-workflow call depth exceeded (max {})", max_call_depth),
+                    duration_ms: 0,
+                },
+                captured_vars: HashMap::new(),
+                failed: true,
+            };
+        }
+
+        let Some(wf_dir) = workflows_dir else {
+            send(ExecutionEvent::StepCompleted {
+                step_id: step.id.clone(),
+                status: StepStatus::Failed,
+                duration_ms: 0,
+            });
+            return StepOutcome {
+                result: StepResult {
+                    id: step.id.clone(),
+                    status: StepStatus::Failed,
+                    output: "sub-workflow call requires workflows_dir".to_string(),
+                    duration_ms: 0,
+                },
+                captured_vars: HashMap::new(),
+                failed: true,
+            };
+        };
+
+        if dry_run {
+            send(ExecutionEvent::StepStarted {
+                step_id: step.id.clone(),
+                cmd_preview: format!("[dry-run] call: {call_ref}"),
+            });
+            println!("[dry-run] step '{}': call {}", step.id, call_ref);
+            send(ExecutionEvent::StepCompleted {
+                step_id: step.id.clone(),
+                status: StepStatus::Success,
+                duration_ms: 0,
+            });
+            return StepOutcome {
+                result: StepResult {
+                    id: step.id.clone(),
+                    status: StepStatus::Success,
+                    output: format!("[dry-run] call: {call_ref}"),
+                    duration_ms: 0,
+                },
+                captured_vars: HashMap::new(),
+                failed: false,
+            };
+        }
+
+        send(ExecutionEvent::SubWorkflowStarted {
+            parent_step_id: step.id.clone(),
+            sub_task_ref: call_ref.clone(),
+        });
+
+        let timer = Instant::now();
+
+        use crate::core::discovery::{scan_workflows, resolve_task_ref};
+        use crate::core::parser::{parse_workflow, parse_shell_task};
+        use crate::core::models::TaskKind;
+
+        let sub_result = (|| -> crate::error::Result<RunLog> {
+            let categories = scan_workflows(wf_dir)?;
+            let task = resolve_task_ref(&categories, call_ref)?;
+            let sub_wf = match task.kind {
+                TaskKind::ShellScript => parse_shell_task(&task.path)?,
+                TaskKind::YamlWorkflow => parse_workflow(&task.path)?,
+            };
+
+            // Build sub-workflow opts: inherit parent template_vars as env overrides
+            let mut sub_env = template_vars.clone();
+            for (k, v) in env.iter() {
+                sub_env.insert(k.clone(), v.clone());
+            }
+
+            let sub_opts = ExecuteOpts {
+                dry_run,
+                force,
+                env_overrides: sub_env,
+                default_timeout,
+                secrets: secret_values.to_vec(),
+                interactive_tx: None,
+                streaming_tx: None,
+                workflows_dir: Some(wf_dir.to_path_buf()),
+                call_depth: call_depth + 1,
+                max_call_depth,
+            };
+
+            execute_workflow(&sub_wf, call_ref, &sub_opts, event_tx)
+        })();
+
+        let duration_ms = timer.elapsed().as_millis() as u64;
+
+        return match sub_result {
+            Ok(run_log) => {
+                let exit_code = run_log.exit_code;
+                send(ExecutionEvent::SubWorkflowFinished {
+                    parent_step_id: step.id.clone(),
+                    sub_task_ref: call_ref.clone(),
+                    exit_code,
+                });
+
+                let combined_output: String = run_log.steps.iter()
+                    .map(|s| s.output.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                let mut captured = HashMap::new();
+                for out_def in &step.outputs {
+                    if let Ok(re) = regex::Regex::new(&out_def.pattern) {
+                        if let Some(caps) = re.captures(&combined_output) {
+                            if let Some(val) = caps.get(1) {
+                                let key = format!("{}.{}", step.id, out_def.name);
+                                captured.insert(key, val.as_str().to_string());
+                            }
+                        }
+                    }
+                }
+
+                let failed = exit_code != 0;
+                let status = if failed { StepStatus::Failed } else { StepStatus::Success };
+
+                StepOutcome {
+                    result: StepResult {
+                        id: step.id.clone(),
+                        status,
+                        output: combined_output,
+                        duration_ms,
+                    },
+                    captured_vars: captured,
+                    failed,
+                }
+            }
+            Err(e) => {
+                send(ExecutionEvent::SubWorkflowFinished {
+                    parent_step_id: step.id.clone(),
+                    sub_task_ref: call_ref.clone(),
+                    exit_code: 1,
+                });
+                StepOutcome {
+                    result: StepResult {
+                        id: step.id.clone(),
+                        status: StepStatus::Failed,
+                        output: format!("sub-workflow error: {e}"),
+                        duration_ms,
+                    },
+                    captured_vars: HashMap::new(),
+                    failed: true,
+                }
+            }
+        };
+    }
+
+    // Sudo access warning
+    if !dry_run {
+        let expanded_for_check = expand_template(&step.cmd, template_vars);
+        if let Some(sudo_warning) = check_sudo_access(&expanded_for_check) {
+            send(ExecutionEvent::Warning {
+                step_id: step.id.clone(),
+                message: sudo_warning,
+            });
+        }
+    }
+
+    let expanded_cmd = expand_template(&step.cmd, template_vars);
+    let masked_cmd = mask_secrets(&expanded_cmd, secret_values);
+
+    // Dangerous command detection
+    if !force && !dry_run {
+        if let Some(warning) = check_dangerous(&expanded_cmd) {
+            send(ExecutionEvent::DangerousCommand {
+                step_id: step.id.clone(),
+                warning: warning.to_string(),
+            });
+            if event_tx.is_none() {
+                eprintln!("WARNING: {warning}");
+                eprintln!("Blocked: dangerous command detected in step '{}'. Use --force to override.", step.id);
+            }
+            send(ExecutionEvent::StepCompleted {
+                step_id: step.id.clone(),
+                status: StepStatus::Failed,
+                duration_ms: 0,
+            });
+            return StepOutcome {
+                result: StepResult {
+                    id: step.id.clone(),
+                    status: StepStatus::Failed,
+                    output: format!("Blocked: {warning}. Use --force to override."),
+                    duration_ms: 0,
+                },
+                captured_vars,
+                failed: true,
+            };
+        }
+    }
+
+    if dry_run {
+        send(ExecutionEvent::StepStarted {
+            step_id: step.id.clone(),
+            cmd_preview: format!("[dry-run] {masked_cmd}"),
+        });
+        if let Some(dir) = workdir {
+            println!("[dry-run] step '{}' (in {}): {}", step.id, dir.display(), masked_cmd);
+        } else {
+            println!("[dry-run] step '{}': {}", step.id, masked_cmd);
+        }
+        send(ExecutionEvent::StepCompleted {
+            step_id: step.id.clone(),
+            status: StepStatus::Success,
+            duration_ms: 0,
+        });
+        return StepOutcome {
+            result: StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Success,
+                output: format!("[dry-run] {masked_cmd}"),
+                duration_ms: 0,
+            },
+            captured_vars,
+            failed: false,
+        };
+    }
+
+    send(ExecutionEvent::StepStarted {
+        step_id: step.id.clone(),
+        cmd_preview: mask_secrets(&truncate_cmd(&expanded_cmd, 60), secret_values),
+    });
+
+    let max_attempts = step.retry.unwrap_or(0) + 1;
+    let retry_delay_secs = step.retry_delay.unwrap_or(0);
+    let mut last_output = String::new();
+    let mut _last_exit_code = 0i32;
+    let mut step_succeeded = false;
+    let mut step_timed_out = false;
+    let timer = Instant::now();
+
+    for attempt in 1..=max_attempts {
+        if attempt > 1 {
+            send(ExecutionEvent::StepRetrying {
+                step_id: step.id.clone(),
+                attempt,
+                max: max_attempts,
+                delay_secs: retry_delay_secs,
+            });
+            if retry_delay_secs > 0 {
+                std::thread::sleep(Duration::from_secs(retry_delay_secs));
+            }
+        }
+
+        let timeout_secs = step.timeout.or(default_timeout);
+
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&expanded_cmd).envs(env);
+        if let Some(dir) = workdir {
+            cmd.current_dir(dir);
+        }
+
+        if timeout_secs.is_some() {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
+
+        let result = if let Some(secs) = timeout_secs {
+            match cmd.spawn() {
+                Ok(mut child) => {
+                    match child.wait_timeout(Duration::from_secs(secs)) {
+                        Ok(Some(status)) => {
+                            let mut stdout_buf = String::new();
+                            let mut stderr_buf = String::new();
+                            if let Some(mut out) = child.stdout.take() {
+                                let _ = out.read_to_string(&mut stdout_buf);
+                            }
+                            if let Some(mut err) = child.stderr.take() {
+                                let _ = err.read_to_string(&mut stderr_buf);
+                            }
+                            last_output = format!("{stdout_buf}{stderr_buf}");
+                            if status.success() {
+                                step_succeeded = true;
+                            } else {
+                                _last_exit_code = status.code().unwrap_or(1);
+                            }
+                            Ok(())
+                        }
+                        Ok(None) => {
+                            graceful_kill(&mut child, 5);
+                            last_output = format!("step timed out after {secs}s");
+                            step_timed_out = true;
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            match cmd.output() {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    last_output = format!("{stdout}{stderr}");
+                    if output.status.success() {
+                        step_succeeded = true;
+                    } else {
+                        _last_exit_code = output.status.code().unwrap_or(1);
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        };
+
+        if let Err(e) = result {
+            last_output = format!("failed to execute: {e}");
+            _last_exit_code = 1;
+        }
+
+        if step_timed_out || step_succeeded {
+            break;
+        }
+    }
+
+    let duration_ms = timer.elapsed().as_millis() as u64;
+    let masked_output = mask_secrets(&last_output, secret_values);
+
+    if step_succeeded {
+        // Capture step outputs as template variables
+        if !step.outputs.is_empty() {
+            for out_def in &step.outputs {
+                if let Ok(re) = regex::Regex::new(&out_def.pattern) {
+                    if let Some(caps) = re.captures(&last_output) {
+                        if let Some(val) = caps.get(1) {
+                            let key = format!("{}.{}", step.id, out_def.name);
+                            captured_vars.insert(key, val.as_str().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        send(ExecutionEvent::StepCompleted {
+            step_id: step.id.clone(),
+            status: StepStatus::Success,
+            duration_ms,
+        });
+        StepOutcome {
+            result: StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Success,
+                output: masked_output,
+                duration_ms,
+            },
+            captured_vars,
+            failed: false,
+        }
+    } else if step_timed_out {
+        let secs = step.timeout.or(default_timeout).unwrap_or(0);
+        send(ExecutionEvent::StepTimedOut {
+            step_id: step.id.clone(),
+            timeout_secs: secs,
+            duration_ms,
+        });
+        StepOutcome {
+            result: StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Timedout,
+                output: masked_output,
+                duration_ms,
+            },
+            captured_vars,
+            failed: true,
+        }
+    } else {
+        let error_hint = classify_error(&masked_output);
+        let output = if max_attempts > 1 {
+            format!("{masked_output} (after {max_attempts} attempts)")
+        } else {
+            masked_output
+        };
+        send(ExecutionEvent::StepCompleted {
+            step_id: step.id.clone(),
+            status: StepStatus::Failed,
+            duration_ms,
+        });
+        if let Some(hint) = error_hint {
+            send(ExecutionEvent::Warning {
+                step_id: step.id.clone(),
+                message: hint,
+            });
+        }
+        StepOutcome {
+            result: StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Failed,
+                output,
+                duration_ms,
+            },
+            captured_vars,
+            failed: true,
+        }
+    }
+}
+
 pub fn execute_workflow(
     workflow: &Workflow,
     task_ref: &str,
@@ -202,7 +729,7 @@ pub fn execute_workflow(
         }
     };
 
-    let order = topological_sort(&workflow.steps)?;
+    let levels = compute_execution_levels(&workflow.steps)?;
     let started = Utc::now();
     let mut step_results: Vec<StepResult> = Vec::new();
     let mut failed_steps: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -239,147 +766,101 @@ pub fn execute_workflow(
         .map(|s| (s.id.as_str(), s))
         .collect();
 
-    for step_id in &order {
-        let step = step_map[step_id.as_str()];
-
-        // Check if any dependency failed
-        let dep_failed = step
-            .needs
-            .iter()
-            .any(|dep| failed_steps.contains(dep.as_str()));
-
-        if dep_failed {
-            send(ExecutionEvent::StepSkipped { step_id: step.id.clone() });
-            step_results.push(StepResult {
-                id: step.id.clone(),
-                status: StepStatus::Skipped,
-                output: "skipped: dependency failed".to_string(),
-                duration_ms: 0,
+    for (level_idx, level) in levels.iter().enumerate() {
+        if level.len() > 1 {
+            send(ExecutionEvent::LevelStarted {
+                level: level_idx,
+                step_count: level.len(),
             });
-            failed_steps.insert(step.id.clone());
-            continue;
         }
 
-        // Conditional step: evaluate run_if condition
-        if let Some(ref condition) = step.run_if {
-            if opts.dry_run {
-                println!("[dry-run] step '{}' run_if: {}", step.id, condition);
+        // Partition: interactive steps run sequentially after normal steps
+        let mut normal_ids: Vec<&str> = Vec::new();
+        let mut interactive_ids: Vec<&str> = Vec::new();
+
+        for step_id in level {
+            let step = step_map[step_id.as_str()];
+            let expanded_cmd = expand_template(&step.cmd, &template_vars);
+            let is_interactive = match step.interactive {
+                Some(v) => v,
+                None => detect::is_interactive_command(&expanded_cmd),
+            };
+            if is_interactive {
+                interactive_ids.push(step_id.as_str());
             } else {
-                let cond_result = Command::new("bash")
-                    .arg("-c")
-                    .arg(condition)
-                    .envs(&env)
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                match cond_result {
-                    Ok(status) if !status.success() => {
-                        send(ExecutionEvent::StepSkipped { step_id: step.id.clone() });
-                        step_results.push(StepResult {
-                            id: step.id.clone(),
-                            status: StepStatus::Skipped,
-                            output: format!("condition not met: {condition}"),
-                            duration_ms: 0,
-                        });
-                        // Do NOT add to failed_steps — dependents still run
-                        continue;
+                normal_ids.push(step_id.as_str());
+            }
+        }
+
+        if normal_ids.len() <= 1 {
+            // Single step or empty: run directly without thread overhead
+            for &sid in &normal_ids {
+                let step = step_map[sid];
+                let outcome = execute_single_step(
+                    step, workflow.workdir.as_ref(), &template_vars, &env, &secret_values,
+                    opts.dry_run, opts.force, opts.default_timeout,
+                    event_tx, &failed_steps,
+                    opts.workflows_dir.as_ref(), opts.call_depth, opts.max_call_depth,
+                );
+                if outcome.failed {
+                    failed_steps.insert(step.id.clone());
+                    if overall_exit == 0 {
+                        overall_exit = if outcome.result.status == StepStatus::Timedout { 124 } else { 1 };
                     }
-                    Err(e) => {
-                        send(ExecutionEvent::StepSkipped { step_id: step.id.clone() });
-                        step_results.push(StepResult {
-                            id: step.id.clone(),
-                            status: StepStatus::Skipped,
-                            output: format!("condition error: {e}"),
-                            duration_ms: 0,
-                        });
-                        continue;
+                }
+                template_vars.extend(outcome.captured_vars);
+                step_results.push(outcome.result);
+            }
+        } else {
+            // Multiple steps: run in parallel threads
+            let vars_snapshot = template_vars.clone();
+            let failed_snapshot = failed_steps.clone();
+
+            let mut handles = Vec::new();
+            for &sid in &normal_ids {
+                let step = step_map[sid].clone();
+                let vars = vars_snapshot.clone();
+                let env_clone = env.clone();
+                let secrets_clone = secret_values.clone();
+                let failed_clone = failed_snapshot.clone();
+                let tx_clone = event_tx.cloned();
+                let dry_run = opts.dry_run;
+                let force = opts.force;
+                let default_timeout = opts.default_timeout;
+                let workdir = workflow.workdir.clone();
+                let wf_dir_clone = opts.workflows_dir.clone();
+                let call_depth = opts.call_depth;
+                let max_call_depth = opts.max_call_depth;
+
+                handles.push(std::thread::spawn(move || {
+                    execute_single_step(
+                        &step, workdir.as_ref(), &vars, &env_clone, &secrets_clone,
+                        dry_run, force, default_timeout,
+                        tx_clone.as_ref(), &failed_clone,
+                        wf_dir_clone.as_ref(), call_depth, max_call_depth,
+                    )
+                }));
+            }
+
+            for handle in handles {
+                let outcome = handle.join().unwrap();
+                if outcome.failed {
+                    failed_steps.insert(outcome.result.id.clone());
+                    if overall_exit == 0 {
+                        overall_exit = if outcome.result.status == StepStatus::Timedout { 124 } else { 1 };
                     }
-                    _ => {} // condition met, proceed
                 }
+                template_vars.extend(outcome.captured_vars);
+                step_results.push(outcome.result);
             }
         }
 
-        if step.parallel {
-            eprintln!(
-                "warning: parallel execution not supported in MVP, running '{}' sequentially",
-                step.id
-            );
-        }
+        // Interactive steps always run sequentially
+        for &sid in &interactive_ids {
+            let step = step_map[sid];
+            let expanded_cmd = expand_template(&step.cmd, &template_vars);
+            let _masked_cmd = mask_secrets(&expanded_cmd, &secret_values);
 
-        // Sudo access warning
-        if !opts.dry_run {
-            let expanded_for_check = expand_template(&step.cmd, &template_vars);
-            if let Some(sudo_warning) = check_sudo_access(&expanded_for_check) {
-                send(ExecutionEvent::Warning {
-                    step_id: step.id.clone(),
-                    message: sudo_warning,
-                });
-            }
-        }
-
-        let expanded_cmd = expand_template(&step.cmd, &template_vars);
-        let masked_cmd = mask_secrets(&expanded_cmd, &secret_values);
-
-        // Dangerous command detection
-        if !opts.force && !opts.dry_run {
-            if let Some(warning) = check_dangerous(&expanded_cmd) {
-                send(ExecutionEvent::DangerousCommand {
-                    step_id: step.id.clone(),
-                    warning: warning.to_string(),
-                });
-                // In CLI mode (no event sender), block the step
-                if event_tx.is_none() {
-                    eprintln!("WARNING: {warning}");
-                    eprintln!("Blocked: dangerous command detected in step '{}'. Use --force to override.", step.id);
-                }
-                step_results.push(StepResult {
-                    id: step.id.clone(),
-                    status: StepStatus::Failed,
-                    output: format!("Blocked: {warning}. Use --force to override."),
-                    duration_ms: 0,
-                });
-                overall_exit = 1;
-                failed_steps.insert(step.id.clone());
-                send(ExecutionEvent::StepCompleted {
-                    step_id: step.id.clone(),
-                    status: StepStatus::Failed,
-                    duration_ms: 0,
-                });
-                continue;
-            }
-        }
-
-        if opts.dry_run {
-            send(ExecutionEvent::StepStarted {
-                step_id: step.id.clone(),
-                cmd_preview: format!("[dry-run] {masked_cmd}"),
-            });
-            if let Some(ref dir) = workflow.workdir {
-                println!("[dry-run] step '{}' (in {}): {}", step.id, dir.display(), masked_cmd);
-            } else {
-                println!("[dry-run] step '{}': {}", step.id, masked_cmd);
-            }
-            step_results.push(StepResult {
-                id: step.id.clone(),
-                status: StepStatus::Success,
-                output: format!("[dry-run] {masked_cmd}"),
-                duration_ms: 0,
-            });
-            send(ExecutionEvent::StepCompleted {
-                step_id: step.id.clone(),
-                status: StepStatus::Success,
-                duration_ms: 0,
-            });
-            continue;
-        }
-
-        // Check if this step should run interactively
-        let is_interactive = match step.interactive {
-            Some(v) => v,
-            None => detect::is_interactive_command(&expanded_cmd),
-        };
-
-        if is_interactive {
             let cmd_label = format!("(streaming) {}", mask_secrets(&truncate_cmd(&expanded_cmd, 50), &secret_values));
             send(ExecutionEvent::StepStarted {
                 step_id: step.id.clone(),
@@ -388,7 +869,6 @@ pub fn execute_workflow(
 
             let timer = Instant::now();
 
-            // Prefer streaming modal (TUI stays in alternate screen)
             if let Some(ref stx) = opts.streaming_tx {
                 let (kill_tx, kill_rx) = mpsc::channel::<()>();
                 let _ = stx.send(StreamingRequest {
@@ -397,7 +877,6 @@ pub fn execute_workflow(
                     kill_tx,
                 });
 
-                // Spawn child with piped stdout/stderr
                 let mut cmd = Command::new("bash");
                 cmd.arg("-c").arg(&expanded_cmd).envs(&env)
                     .stdout(Stdio::piped())
@@ -413,7 +892,6 @@ pub fn execute_workflow(
                         let step_id_clone = step.id.clone();
                         let tx_clone = event_tx.cloned();
 
-                        // Stream stdout in a thread (with secret masking)
                         let stdout_handle = stdout.map(|out| {
                             let sid = step_id_clone.clone();
                             let txc = tx_clone.clone();
@@ -437,7 +915,6 @@ pub fn execute_workflow(
                             })
                         });
 
-                        // Stream stderr in a thread (with secret masking)
                         let stderr_handle = stderr.map(|err| {
                             let sid = step.id.clone();
                             let txc = event_tx.cloned();
@@ -461,7 +938,6 @@ pub fn execute_workflow(
                             })
                         });
 
-                        // Wait for either process to exit or kill signal
                         loop {
                             if let Ok(()) = kill_rx.try_recv() {
                                 graceful_kill(&mut child, 5);
@@ -476,7 +952,6 @@ pub fn execute_workflow(
                             }
                         }
 
-                        // Wait for reader threads to finish
                         if let Some(h) = stdout_handle { let _ = h.join(); }
                         if let Some(h) = stderr_handle { let _ = h.join(); }
 
@@ -485,7 +960,7 @@ pub fn execute_workflow(
                         let (step_status, exit_code) = match status {
                             Some(s) if s.success() => (StepStatus::Success, 0),
                             Some(s) => (StepStatus::Failed, s.code().unwrap_or(1)),
-                            None => (StepStatus::Success, 0), // killed by user
+                            None => (StepStatus::Success, 0),
                         };
 
                         if step_status == StepStatus::Failed {
@@ -523,7 +998,6 @@ pub fn execute_workflow(
                     }
                 }
             } else if let Some(ref itx) = opts.interactive_tx {
-                // Fallback: suspend TUI for interactive step (CLI mode)
                 let (ack_tx, ack_rx) = mpsc::channel();
                 let _ = itx.send(InteractiveRequest {
                     step_id: step.id.clone(),
@@ -578,7 +1052,6 @@ pub fn execute_workflow(
                     duration_ms,
                 });
             } else {
-                // No TUI: run with inherited stdio directly
                 let mut cmd = Command::new("bash");
                 cmd.arg("-c").arg(&expanded_cmd).envs(&env);
                 if let Some(ref dir) = workflow.workdir {
@@ -603,179 +1076,6 @@ pub fn execute_workflow(
                     step_id: step.id.clone(),
                     status: step_status,
                     duration_ms,
-                });
-            }
-            continue;
-        }
-
-        send(ExecutionEvent::StepStarted {
-            step_id: step.id.clone(),
-            cmd_preview: mask_secrets(&truncate_cmd(&expanded_cmd, 60), &secret_values),
-        });
-
-        let max_attempts = step.retry.unwrap_or(0) + 1;
-        let retry_delay_secs = step.retry_delay.unwrap_or(0);
-        let mut last_output = String::new();
-        let mut last_exit_code = 0i32;
-        let mut step_succeeded = false;
-        let mut step_timed_out = false;
-        let timer = Instant::now();
-
-        for attempt in 1..=max_attempts {
-            if attempt > 1 {
-                send(ExecutionEvent::StepRetrying {
-                    step_id: step.id.clone(),
-                    attempt,
-                    max: max_attempts,
-                    delay_secs: retry_delay_secs,
-                });
-                if retry_delay_secs > 0 {
-                    std::thread::sleep(Duration::from_secs(retry_delay_secs));
-                }
-            }
-
-            let timeout_secs = step.timeout.or(opts.default_timeout);
-
-            let mut cmd = Command::new("bash");
-            cmd.arg("-c").arg(&expanded_cmd).envs(&env);
-            if let Some(ref dir) = workflow.workdir {
-                cmd.current_dir(dir);
-            }
-
-            if timeout_secs.is_some() {
-                cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-            }
-
-            let result = if let Some(secs) = timeout_secs {
-                match cmd.spawn() {
-                    Ok(mut child) => {
-                        match child.wait_timeout(Duration::from_secs(secs)) {
-                            Ok(Some(status)) => {
-                                let mut stdout_buf = String::new();
-                                let mut stderr_buf = String::new();
-                                if let Some(mut out) = child.stdout.take() {
-                                    let _ = out.read_to_string(&mut stdout_buf);
-                                }
-                                if let Some(mut err) = child.stderr.take() {
-                                    let _ = err.read_to_string(&mut stderr_buf);
-                                }
-                                last_output = format!("{stdout_buf}{stderr_buf}");
-                                if status.success() {
-                                    step_succeeded = true;
-                                } else {
-                                    last_exit_code = status.code().unwrap_or(1);
-                                }
-                                Ok(())
-                            }
-                            Ok(None) => {
-                                graceful_kill(&mut child, 5);
-                                last_output = format!("step timed out after {secs}s");
-                                step_timed_out = true;
-                                Ok(())
-                            }
-                            Err(e) => Err(e),
-                        }
-                    }
-                    Err(e) => Err(e),
-                }
-            } else {
-                match cmd.output() {
-                    Ok(output) => {
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        last_output = format!("{stdout}{stderr}");
-                        if output.status.success() {
-                            step_succeeded = true;
-                        } else {
-                            last_exit_code = output.status.code().unwrap_or(1);
-                        }
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
-                }
-            };
-
-            if let Err(e) = result {
-                last_output = format!("failed to execute: {e}");
-                last_exit_code = 1;
-            }
-
-            // Timeout: don't retry
-            if step_timed_out || step_succeeded {
-                break;
-            }
-        }
-
-        let duration_ms = timer.elapsed().as_millis() as u64;
-        let masked_output = mask_secrets(&last_output, &secret_values);
-
-        if step_succeeded {
-            // Capture step outputs as template variables
-            if !step.outputs.is_empty() {
-                for out_def in &step.outputs {
-                    if let Ok(re) = regex::Regex::new(&out_def.pattern) {
-                        if let Some(caps) = re.captures(&last_output) {
-                            if let Some(val) = caps.get(1) {
-                                let key = format!("{}.{}", step.id, out_def.name);
-                                template_vars.insert(key, val.as_str().to_string());
-                            }
-                        }
-                    }
-                }
-            }
-
-            step_results.push(StepResult {
-                id: step.id.clone(),
-                status: StepStatus::Success,
-                output: masked_output,
-                duration_ms,
-            });
-            send(ExecutionEvent::StepCompleted {
-                step_id: step.id.clone(),
-                status: StepStatus::Success,
-                duration_ms,
-            });
-        } else if step_timed_out {
-            let secs = step.timeout.or(opts.default_timeout).unwrap_or(0);
-            overall_exit = 124;
-            failed_steps.insert(step.id.clone());
-            step_results.push(StepResult {
-                id: step.id.clone(),
-                status: StepStatus::Timedout,
-                output: masked_output,
-                duration_ms,
-            });
-            send(ExecutionEvent::StepTimedOut {
-                step_id: step.id.clone(),
-                timeout_secs: secs,
-                duration_ms,
-            });
-        } else {
-            overall_exit = last_exit_code;
-            failed_steps.insert(step.id.clone());
-            // Compute error hint before consuming masked_output
-            let error_hint = classify_error(&masked_output);
-            let output = if max_attempts > 1 {
-                format!("{masked_output} (after {max_attempts} attempts)")
-            } else {
-                masked_output
-            };
-            step_results.push(StepResult {
-                id: step.id.clone(),
-                status: StepStatus::Failed,
-                output,
-                duration_ms,
-            });
-            send(ExecutionEvent::StepCompleted {
-                step_id: step.id.clone(),
-                status: StepStatus::Failed,
-                duration_ms,
-            });
-            // Error classification hint
-            if let Some(hint) = error_hint {
-                send(ExecutionEvent::Warning {
-                    step_id: step.id.clone(),
-                    message: hint,
                 });
             }
         }
@@ -893,7 +1193,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
                 Step {
                     id: "s2".into(),
@@ -904,7 +1204,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
             ],
             env: HashMap::new(),
@@ -954,7 +1254,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
                 Step {
                     id: "dependent".into(),
@@ -965,7 +1265,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
                 Step {
                     id: "independent".into(),
@@ -976,7 +1276,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
             ],
             env: HashMap::new(),
@@ -1011,7 +1311,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             }],
             env: HashMap::from([("MY_VAR".to_string(), EnvValue::Static("original".to_string()))]),
             workdir: None,
@@ -1044,7 +1344,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             }],
             env: HashMap::new(),
             workdir: Some(std::path::PathBuf::from("/tmp")),
@@ -1073,7 +1373,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1103,7 +1403,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1137,7 +1437,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1171,7 +1471,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
                 Step {
                     id: "dependent".into(),
@@ -1182,7 +1482,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
             ],
             env: HashMap::new(),
@@ -1212,7 +1512,7 @@ mod tests {
                 run_if: Some("true".to_string()),
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1242,7 +1542,7 @@ mod tests {
                     run_if: Some("false".to_string()),
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
                 Step {
                     id: "after".into(),
@@ -1253,7 +1553,7 @@ mod tests {
                     run_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(),
+                    interactive: None, outputs: Vec::new(), call: None,
                 },
             ],
             env: HashMap::new(),
@@ -1296,7 +1596,7 @@ mod tests {
                 run_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1325,7 +1625,7 @@ mod tests {
                 run_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -1355,7 +1655,7 @@ mod tests {
                 run_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(),
+                interactive: None, outputs: Vec::new(), call: None,
             }],
             env: HashMap::from([("MY_PASS".to_string(), EnvValue::Static("hunter2".to_string()))]),
             workdir: None,

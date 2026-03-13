@@ -83,6 +83,9 @@ pub fn cmd_run(
         secrets,
         interactive_tx: None,
         streaming_tx: None,
+        workflows_dir: Some(config.workflows_dir.clone()),
+        call_depth: 0,
+        max_call_depth: 10,
     };
 
     let canonical_ref = format!("{}/{}", task.category, task.name);

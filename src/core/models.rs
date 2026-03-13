@@ -25,6 +25,7 @@ pub(crate) enum RawStep {
     CmdString(String),
     CmdMap {
         id: Option<String>,
+        #[serde(default)]
         cmd: String,
         #[serde(default)]
         needs: Vec<String>,
@@ -42,6 +43,8 @@ pub(crate) enum RawStep {
         interactive: Option<bool>,
         #[serde(default)]
         outputs: Vec<StepOutput>,
+        #[serde(default)]
+        call: Option<String>,
     },
 }
 
@@ -153,6 +156,8 @@ pub struct Step {
     pub interactive: Option<bool>,
     #[serde(default)]
     pub outputs: Vec<StepOutput>,
+    #[serde(default)]
+    pub call: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -199,6 +204,9 @@ pub enum ExecutionEvent {
     StepSkipped { step_id: String },
     StepRetrying { step_id: String, attempt: u32, max: u32, delay_secs: u64 },
     DangerousCommand { step_id: String, warning: String },
+    LevelStarted { level: usize, step_count: usize },
+    SubWorkflowStarted { parent_step_id: String, sub_task_ref: String },
+    SubWorkflowFinished { parent_step_id: String, sub_task_ref: String, exit_code: i32 },
     Warning { step_id: String, message: String },
     StepOutput { step_id: String, line: String },
     WorkflowFinished { run_log: RunLog },

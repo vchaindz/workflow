@@ -174,6 +174,17 @@ pub enum Commands {
         action: SyncAction,
     },
 
+    /// Start HTTP server for webhook-triggered workflow execution
+    Serve {
+        /// Port to listen on
+        #[arg(long, default_value = "8080")]
+        port: u16,
+
+        /// Address to bind to
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+    },
+
     /// View run logs
     Logs {
         /// Task reference (omit for all recent)
