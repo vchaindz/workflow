@@ -85,7 +85,7 @@ fn default_log_retention() -> u32 {
 }
 
 fn default_editor() -> String {
-    std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string())
+    std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string())
 }
 
 impl Default for Config {

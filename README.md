@@ -1,116 +1,51 @@
+[![CI](https://github.com/vchaindz/workflow/actions/workflows/ci.yml/badge.svg)](https://github.com/vchaindz/workflow/actions/workflows/ci.yml)
+
 # workflow
 
-A lightweight, file-based workflow orchestrator for Linux. Drop bash scripts and YAML workflows into `~/.config/workflow/`, browse them in an interactive TUI, or run them from the command line for cron and automation.
+**Stop losing one-liners to shell history. Stop rewriting the same maintenance scripts on every box.**
 
-Turn your shell history into reusable workflows — or describe what you need in plain English and let AI generate the task for you.
+`workflow` is a file-based workflow orchestrator for Linux built for the AI age. Turn your scattered shell commands into organized, runnable, version-controlled tasks — with a full TUI for browsing, a headless CLI for cron, and first-class integration with Claude Code, OpenAI Codex CLI, and Google Gemini CLI to generate, fix, and refine workflows using natural language.
 
-No database required for execution — state is tracked via JSON logs and an optional SQLite history. No configuration required — just add files and go.
+Drop a `.sh` or `.yaml` file into `~/.config/workflow/` and it's immediately available to run, schedule, and track. No daemon. No database to set up. No YAML-hell configuration. Or skip the file entirely — describe what you need in English and let AI write it for you.
 
-### For Sysadmins
+<!-- Replace with a real screenshot or demo GIF: -->
+<!-- ![workflow TUI](https://raw.githubusercontent.com/vchaindz/workflow/main/assets/demo.gif) -->
 
-| | |
-|---|---|
-| **36 bundled templates** | Sysadmin, Docker, and Kubernetes — ready to use out of the box |
-| **Real-world tasks** | Disk reports, systemd health checks, container security audits, k8s pod diagnostics |
-| **Overdue reminders** | Set `overdue: 7` on any task and get notified when maintenance is late |
-| **Cron-friendly CLI** | `workflow run backup/db-full` with proper exit codes for automation |
-| **Schedule from CLI** | `workflow schedule backup/db-full --cron "0 2 * * *"` installs crontab or systemd timers |
-| **Sudo warnings** | Steps using `sudo` get a pre-flight check — warns you before prompting |
-| **Error hints** | Failed steps get actionable hints: "permission denied → check sudo", "command not found → check PATH" |
-| **Audit trail** | Every run records who ran it, from where, and via which interface (TUI/CLI) |
-| **Zero config** | Drop `.sh` or `.yaml` files into `~/.config/workflow/` and go |
+```text
+ workflow v0.3.3 ── 12 workflows ── 48 runs ── 2 failed
 
-### For Developers
+ Categories  Tasks                    Details
+ > backup    ▲ db-full    ✓ 2d [sh]   #!/bin/bash
+   deploy    · mysql-daily✗ 5h [yml]  pg_dump mydb > /tmp/mydb_$DATE.sql
+   docker    ▽ s3-sync       [yml]    echo "Backup complete"
+   k8s
 
-| | |
-|---|---|
-| **AI workflow generation** | Describe a task in English — Claude, Codex, or Gemini writes the YAML, then refine iteratively |
-| **Shell history wizard** | Turn past commands into reusable, parameterized workflows |
-| **DAG execution engine** | Retries, timeouts, conditionals, cleanup steps, output capture, and dependency graphs |
-| **Interactive TUI** | Browse, run, and monitor workflows with real-time progress |
-| **Hot/cold sorting** | Tasks ranked by run frequency — hot tasks float to the top |
-| **Status filter** | Press `F` to filter tasks: All → Failed → Overdue → Never-run |
-| **Last-run indicators** | Task list shows `✓ 2d` or `✗ 5h` inline so you know what ran and when |
-| **Rename tasks & categories** | Press `m` (or `F2`) to rename inline — works on tasks and sidebar categories |
-| **Soft delete** | Deleted tasks move to `.trash/` — recoverable, not permanent |
-| **First-run onboarding** | Empty TUI shows helpful keybindings instead of a blank screen |
-| **Secret masking** | Environment variable values are redacted from live output and logs |
-| **Graceful shutdown** | SIGTERM before SIGKILL with 5s grace period for clean process termination |
-| **Export/import** | Share workflows across machines with `workflow export` / `workflow import` |
+ Log
+ [14:32:01] ▶ dump — mysqldump --all-databases > /tmp/db.sql
+ [14:32:03] ✓ dump (1850ms)
 
-## Table of Contents
+ r:run  d:dry-run  e:edit  w:new  a:ai  t:template  /:search  q:quit
+```
 
-- [Highlights](#highlights)
-- [Install](#install)
-- [Creating Tasks from Shell History](#creating-tasks-from-shell-history)
-- [AI-Generated Workflows](#ai-generated-workflows)
-- [AI-Powered Task Update](#ai-powered-task-update)
-- [Template Catalog](#template-catalog)
-- [Clone & Optimize](#clone--optimize)
-- [File Structure](#file-structure)
-- [YAML Workflow Format](#yaml-workflow-format)
-- [Overdue Reminders](#overdue-reminders)
-- [Hot/Cold Task Sorting](#hotcold-task-sorting)
-- [Recent Runs & Bookmarks](#recent-runs--bookmarks)
-- [TUI](#tui)
-- [CLI](#cli)
-- [Scheduling](#scheduling)
-- [Run Comparison](#run-comparison)
-- [Configuration](#configuration)
-- [Logging](#logging)
-- [Claude Code Skill](#claude-code-skill)
-- [Sync](#sync)
-- [Security](#security)
-- [Building from Source](#building-from-source)
-- [Releases](#releases)
-- [License](#license)
+## Why workflow?
 
-## Highlights
+If you manage servers, you already have workflows — they're just scattered across shell histories, wiki pages, and half-remembered incantations. `workflow` gives them a proper home.
 
-- **First-run onboarding** — empty TUI shows quick-start keybindings instead of a blank screen
-- **Dangerous command safety** — blocks `rm -rf /`, fork bombs, and other destructive patterns before execution (override with `--force`)
-- **Shell history wizard** — browse your recent shell commands, pick the ones you want, and save them as a workflow in seconds
-- **AI task generation** — describe a task in natural language, and Claude, Codex, or Gemini generates the workflow steps automatically
-- **AI fix on error** — when a task fails or a `choices_cmd` errors out, press `a` to have AI analyze the error and propose a fix via the existing update/preview flow
-- **AI refinement loop** — press `r` at the preview stage to iteratively refine AI-generated workflows ("add error handling", "use rsync instead") before saving
-- **Wizard dry-run preview** — press `d` at the preview stage to dry-run the generated workflow without saving, then return to preview to save or refine
-- **AI task update** — select an existing task, describe what to change, and AI rewrites the workflow for you
-- **Template catalog** — start from bundled or community templates with variable substitution
-- **Clone & optimize** — duplicate an existing task, strip failed/skipped steps, and parallelize independent branches
-- **Recent runs** — see the last 10 runs across all tasks at a glance, jump to any task from the list
-- **Overdue reminders** — optional `overdue` field on tasks warns you at startup if a task hasn't run within its expected interval
-- **Hot/cold task sorting** — tasks show heat indicators (▲/·/▽) based on run frequency; press `o` to sort hot tasks to the top
-- **Bookmarked tasks** — save frequently-used tasks for quick access with a single keypress
-- **Run comparison** — diff two runs of the same task side-by-side, with optional AI analysis
-- **Cleanup steps** — `cleanup:` section runs regardless of success/failure, like a `finally` block
-- **Step output capture** — capture step stdout via regex and use as `{{step_id.var}}` in subsequent steps
-- **Content-aware search** — TUI search (`/`) matches task names, categories, and step commands
-- **Fish shell support** — history wizard reads fish shell history alongside zsh and bash
-- **DAG execution** — multi-step YAML workflows with dependency ordering, conditional steps, retries, and timeouts
-- **Interactive TUI** — three-pane browser with real-time execution progress, search, and log viewing
-- **Scheduling** — install crontab entries or systemd user timers directly from the CLI with `workflow schedule`
-- **Task status filter** — press `F` in the TUI to cycle through All / Failed / Overdue / Never-run filters
-- **Last-run indicators** — each task in the list shows `✓ 2d` or `✗ 5h` at a glance
-- **Rename tasks & categories** — press `m` (or `F2`) in the TUI to rename the selected task or category inline
-- **Secret masking** — env var values from `env:` blocks are automatically redacted in live output and logs
-- **Soft delete** — deleted tasks move to `.trash/` instead of permanent removal
-- **Audit trail** — every run records username, hostname, and source (tui/cli) in the SQLite database
-- **Sudo pre-flight warning** — steps using `sudo` are tested for passwordless access before execution
-- **Error classification** — step failures get actionable hints (permission denied, command not found, connection refused, disk full)
-- **Graceful signal handling** — SIGTERM with 5s grace period before SIGKILL for clean process shutdown
-- **Context-sensitive help** — help screen shows different keybindings for normal mode vs wizard mode
-- **AI tool caching** — AI availability detected once at startup and shown in the header bar
-- **CLI for automation** — every operation works headless for cron, CI, and scripting
+**For the solo sysadmin** managing a handful of boxes: stop re-typing `docker system prune && docker compose pull && docker compose up -d` every Tuesday. Save it once, run it from anywhere, get notified when you forget.
 
-## Install
+**For the DevOps team** maintaining production infrastructure: standardize runbooks as version-controlled YAML with dependency ordering, retries, timeouts, and cleanup steps. Sync them across machines via Git. Review run history when something breaks.
 
-Download the latest Linux binary from the [releases page](https://github.com/vchaindz/workflow/releases), or build from source:
+**For the on-call engineer** at 2am: browse 42 bundled templates covering sysadmin, Docker, and Kubernetes diagnostics. Don't remember the `kubectl` incantation for checking PV storage? It's already there.
+
+**For the AI-assisted operator**: `workflow` is designed to work *with* AI coding tools, not around them. Claude Code, Codex CLI, and Gemini CLI can generate new workflows from a plain-English description, rewrite existing tasks ("add retries and error handling"), and auto-diagnose failures with one keypress. A bundled Claude Code skill lets you manage workflows entirely from AI conversations. The file-based, YAML-native design means AI tools can read and write workflows without any special adapters.
+
+## Quick start
 
 ```bash
-# From source
+# Install (download binary or build from source)
 cargo install --path .
 
-# Create your first workflow
+# Create your first task — it's just a shell script in a folder
 mkdir -p ~/.config/workflow/backup
 cat > ~/.config/workflow/backup/db-full.sh << 'EOF'
 #!/bin/bash
@@ -121,13 +56,17 @@ EOF
 # Run it
 workflow run backup/db-full
 
-# Or browse everything in the TUI
+# Or browse everything interactively
 workflow
 ```
 
-## Creating Tasks from Shell History
+That's it. No init command, no project file, no configuration. Every `.sh` and `.yaml` file in `~/.config/workflow/` is automatically discovered and organized by folder.
 
-Press `w` in the TUI to open the history wizard. It reads your shell history (zsh, bash, or fish), deduplicates and filters noise, and presents a searchable list:
+## What makes it useful
+
+### Turn shell history into reusable tasks
+
+Press `w` in the TUI to browse your recent shell history (zsh, bash, or fish). Select the commands you want, give it a name, and you have a workflow. The wizard auto-suggests a category based on the commands — docker commands go under `docker/`, kubectl commands under `k8s/`.
 
 ```
 ┌─ New Task from History ──────────────────────────────────┐
@@ -136,33 +75,22 @@ Press `w` in the TUI to open the history wizard. It reads your shell history (zs
 │   [x] docker compose up -d                    2h ago     │
 │   [ ] docker ps --format "table {{.Names}}"   3h ago     │
 │   [x] docker logs -f webapp                   5h ago     │
-│   [ ] docker exec -it db psql                 1d ago     │
 │                                                          │
 │ Space: toggle  Enter: continue  /: filter  Esc: cancel   │
 └──────────────────────────────────────────────────────────┘
 ```
 
-Select commands with `Space`, press `Enter`, then choose a category and task name. The wizard auto-suggests both based on the commands you picked (e.g., docker commands → category `docker`). Preview the generated YAML before saving. Press `d` at the preview stage to dry-run the workflow without saving it to disk.
+### AI-native workflow management
 
-## AI-Generated Workflows
+`workflow` treats AI CLI tools as first-class citizens. If `claude` (Claude Code), `codex` (OpenAI Codex CLI), or `gemini` (Google Gemini CLI) is on your PATH, you unlock four capabilities directly from the TUI:
 
-Press `a` in the TUI to describe a task in plain English. If `claude`, `codex`, or `gemini` is on your PATH, the AI generates executable shell commands, a task name, and a category:
+**Generate** (`a`) — describe a task in plain English. "Set up daily postgres backup with S3 upload and Slack notification on failure." The AI generates executable YAML with proper step dependencies, error handling, and cleanup. Review the preview before saving.
 
-```
-┌─ AI Task Generator ─────────────────────────────────────┐
-│                                                          │
-│ Describe what you need:                                  │
-│ > check nginx status and restart if not running          │
-│                                                          │
-│ Enter: generate  Esc: cancel                             │
-└──────────────────────────────────────────────────────────┘
-```
+**Update** (`A`) — select any existing task and describe what to change. "Add retry logic to the upload step", "parallelize the independent checks", "switch from rsync to rclone". The AI rewrites the full YAML while preserving your structure.
 
-The AI returns clean shell commands — no prose, no markdown — which are assembled into a YAML workflow. You review the preview, adjust the category/name if needed, and save.
+**Fix** (`a` after failure) — when a workflow fails, press `a` and AI analyzes the error output, diagnoses the root cause, and proposes a corrected YAML. No more staring at cryptic stderr at 2am.
 
-### Iterative Refinement
-
-At the preview stage of both AI generation (`a`) and AI update (`A`), press `r` to refine the result. Describe what to change — "add error handling", "use rsync instead of cp", "also add logging" — and the AI rewrites the YAML. Repeat as many times as needed before saving:
+**Refine** (`r` at preview) — iteratively improve any AI-generated result before saving. Each round sends the current YAML plus your instructions back to the AI. Repeat as many times as needed:
 
 ```
 Preview → r → "add error handling" → Enter → (AI refines) → Preview
@@ -170,166 +98,50 @@ Preview → r → "add error handling" → Enter → (AI refines) → Preview
                                                     r → "also add logging" → Enter → ...
 ```
 
-Press `Shift+Tab` from the refine prompt to return to the preview without submitting.
+Press `d` at any preview stage to dry-run the workflow without saving — verify it works, then save or keep refining.
 
-### Dry-Run Preview
-
-At the preview stage of any wizard mode (history, AI, template, or clone), press `d` to dry-run the workflow without saving. The TUI shows `[dry-run]` output for each step, then returns to the preview so you can save, refine, or dry-run again.
-
-Requires `claude` (Claude Code CLI), `codex` (OpenAI Codex CLI), or `gemini` (Google Gemini CLI) installed and authenticated.
-
-## AI-Powered Task Update
-
-Press `A` (Shift-a) on a selected task to update it with AI assistance. Describe what you want to change — add error handling, parallelize steps, add timeouts — and the AI rewrites the entire workflow YAML:
-
-```
-┌─ AI Task Update ────────────────────────────────────────┐
-│                                                          │
-│ Describe how to update this task:                        │
-│ Task: backup/db-full                                     │
-│ > add error handling and retry logic to each step        │
-│                                                          │
-│ Enter: send  Esc: cancel                                 │
-└──────────────────────────────────────────────────────────┘
-```
-
-The updated YAML is previewed before saving. Press `r` to refine further with additional instructions, `Enter` to overwrite the original, or `Esc` to cancel.
-
-## AI Fix on Error
-
-When a workflow run fails, the status bar shows `a:ai-fix`. Press `a` to have AI analyze the failed steps and their error output, then propose a corrected YAML. The fix flows through the same AI update preview — review, refine with `r`, and save when satisfied.
-
-This also works for `choices_cmd` failures. If a variable's `choices_cmd` errors out, the error modal shows `a ai-fix` — press `a` to have AI fix the command to be more robust and portable.
-
-### CLI: `ai-update` subcommand
+All of this works from the CLI too:
 
 ```bash
-# Update a task with AI
-workflow ai-update backup/db-full --prompt "parallelize independent steps"
-
-# Preview without saving
-workflow ai-update backup/db-full --prompt "add timeouts" --dry-run
-
-# Save as a new task instead of overwriting
-workflow ai-update backup/db-full --prompt "add cleanup step" --save-as db-full-v2
+workflow ai-update backup/db-full --prompt "add error handling and retries"
+workflow ai-update backup/db-full --prompt "parallelize steps" --dry-run
+workflow ai-update backup/db-full --prompt "add cleanup" --save-as db-full-v2
 ```
 
-## Template Catalog
+The AI integration is intentionally tool-agnostic — `workflow` auto-detects whichever AI CLI you have installed and uses it transparently. The file-based YAML format means AI tools can also read and write workflows directly from outside the TUI, making `workflow` a natural fit for agentic coding sessions.
 
-Press `t` in the TUI to browse bundled and cached templates. Templates support variables like `{{url}}` or `{{db_name}}` that you fill in before saving:
+### 42 bundled templates ready to go
 
-```bash
-# CLI: list available templates
-workflow templates
+Don't start from scratch. Press `t` to browse templates covering real operational tasks:
 
-# Fetch community templates from GitHub
-workflow templates --fetch
-```
+**Sysadmin** — disk usage reports, SSL certificate expiry checks, SMART disk health, NTP sync verification, cron audit, SSH key audit, firewall review, failed services check, log cleanup, system updates, memory monitoring, port scanning, user audit, backup verification, CPU load checks, service status
 
-Bundled templates include security scanning (Trivy CVE checks), monitoring (website content checks), tool management (Claude/Codex updates), and sysadmin tasks (SSL cert expiry, SMART disk health, NTP sync, cron audit, SSH key audit, firewall review).
+**Docker** — container cleanup, compose status, image updates, log tailing, network inspection, resource limits, restart unhealthy containers, security scanning, volume backup
 
-## Clone & Optimize
+**Kubernetes** — cluster health, deployment status, failed pod diagnostics, namespace audit, PV storage, RBAC review, resource usage, secret/configmap audit, service endpoints
 
-Press `W` (shift-w) on any task to clone it. The clone wizard lets you:
+Templates support variables — fill in `{{db_name}}` or `{{backup_path}}` when you save. Fetch community templates from GitHub with `workflow templates --fetch`.
 
-- **Remove failed steps** — strip steps that failed in the last run
-- **Remove skipped steps** — strip steps that were skipped due to dependency failures
-- **Parallelize** — remove unnecessary sequential dependencies between independent steps
+### Never forget maintenance again
 
-This is useful for iterating on a workflow after a partial failure — clone it, remove what broke, and save a clean version.
-
-## Overdue Reminders
-
-Add an `overdue` field (in days) to any YAML task to get a startup reminder when the task hasn't been run recently:
-
-```yaml
-name: Database Full Backup
-overdue: 7          # warn if not run within 7 days
-steps:
-  - id: backup
-    cmd: pg_dump mydb > /backups/full.sql
-```
-
-When you launch the TUI, any overdue tasks appear in a popup:
+Add `overdue: 7` to any task. When you launch the TUI, overdue tasks pop up immediately:
 
 ```
-┌──────────────── ⚠ Overdue Tasks ────────────────┐
-│  ! backup/db-full                 3 day(s) overdue │
-│  ! monitoring/disk-check          7 day(s) overdue │
-│                                                     │
-│  ↑↓ navigate · Enter jump to task · Esc dismiss     │
-└─────────────────────────────────────────────────────┘
+┌──────────── ⚠ Overdue Tasks ──────────────────┐
+│  ! backup/db-full           3 day(s) overdue   │
+│  ! monitoring/disk-check    7 day(s) overdue   │
+│                                                 │
+│  Enter: jump to task  Esc: dismiss              │
+└─────────────────────────────────────────────────┘
 ```
 
-Press `Enter` to jump directly to an overdue task, or `Esc` to dismiss.
+### Multi-step workflows with real dependency management
 
-Tasks that have never been run are also flagged, with the overdue threshold shown as the number of days overdue.
-
-## Hot/Cold Task Sorting
-
-Tasks are automatically classified by how often you run them in the last 30 days:
-
-| Tier | Runs (30d) | Indicator | Color |
-|------|-----------|-----------|-------|
-| Hot  | ≥5        | `▲`       | Green |
-| Warm | 1–4       | `·`       | Default |
-| Cold | 0         | `▽`       | Blue  |
-
-Heat indicators appear next to every task in the TUI task list. Press `o` to toggle between alphabetical and heat-based sorting — hot tasks float to the top for quick access. Press `o` again to revert to alphabetical order. The status bar shows the current sort mode.
-
-Heat data is loaded from the SQLite history database at startup and refreshed on each automatic rescan.
-
-## Recent Runs & Bookmarks
-
-### Recent Runs (`R`)
-
-Press `R` in the TUI to see the last 10 runs across all tasks, newest first:
-
-```
-┌─────────────── Recent Runs (last 10) ───────────────┐
-│  ✓ backup/db-full                2026-03-11 14:32     1.2s │
-│  ✗ deploy/staging                2026-03-11 14:30     3.5s │
-│  ✓ docker/cleanup                2026-03-11 13:15     0.8s │
-│                                                            │
-│  Up/Down: navigate  Enter: go to task  Esc: close          │
-└────────────────────────────────────────────────────────────┘
-```
-
-Press `Enter` on any run to jump directly to that task in the main view.
-
-### Bookmarked Tasks (`S` / `s`)
-
-Press `S` on any task to bookmark it. Bookmarked tasks show a ★ indicator in the task list and are persisted in `config.toml`:
-
-```toml
-bookmarks = ["backup/db-full", "deploy/staging"]
-```
-
-Press `s` to open the saved tasks modal and quickly jump to any bookmarked task. Press `S` again to remove the bookmark.
-
-## File Structure
-
-```
-~/.config/workflow/
-├── backup/                  # Category (folder)
-│   ├── db-full.sh           # Bash script task
-│   └── mysql-daily.yaml     # Multi-step YAML workflow
-├── deploy/
-│   └── staging.yaml
-├── logs/                    # Auto-generated run logs (JSON)
-├── history.db               # SQLite run history (auto-created)
-└── config.toml              # Optional configuration
-```
-
-- **Folders** become categories for navigation
-- **`.sh` files** are executed directly with `bash`
-- **`.yaml` files** define multi-step workflows with dependencies
-
-## YAML Workflow Format
+YAML workflows support DAG execution with topological ordering. If step B depends on step A, it waits. If step C is independent, it doesn't:
 
 ```yaml
 name: MySQL Daily Backup
-overdue: 1                    # warn if not run within 1 day
+overdue: 1
 steps:
   - id: dump
     cmd: mysqldump --all-databases > /tmp/db.sql
@@ -343,200 +155,182 @@ steps:
     retry: 3
     retry_delay: 5
     run_if: "test -f /tmp/db.sql.gz"
+cleanup:
+  - id: remove-tmpfiles
+    cmd: rm -f /tmp/db.sql /tmp/db.sql.gz
 env:
   AWS_PROFILE: prod
 ```
 
-Steps run in dependency order (topological sort). If a step fails, its dependents are skipped while independent branches continue. Template variables like `{{date}}`, `{{datetime}}`, and `{{hostname}}` are expanded in commands.
+If a step fails, its dependents are skipped — but independent branches keep running. Steps can capture output via regex and pass values downstream with `{{step_id.var}}`. Cleanup steps run regardless of success or failure, like a `finally` block. Interactive commands (REPLs, `journalctl -f`, TUI tools) are auto-detected and run with the terminal restored — or mark steps `interactive: true` explicitly.
 
-### Cleanup Steps
+### Built-in safety nets
 
-Add a `cleanup` section to run steps regardless of workflow success or failure (similar to a `finally` block):
+Accidentally pasting `rm -rf /` into a workflow won't ruin your day. `workflow` blocks known destructive patterns — fork bombs, `dd` to block devices, `chmod -R 777 /` — before execution. Override with `--force` when you actually mean it.
 
-```yaml
-name: Deploy with Cleanup
-steps:
-  - id: deploy
-    cmd: ./deploy.sh
-cleanup:
-  - id: remove-tmpfiles
-    cmd: rm -rf /tmp/deploy-*
-  - id: unlock
-    cmd: rm -f /tmp/deploy.lock
-```
+Environment variable values from `env:` blocks are automatically redacted in live output and logs. `sudo` steps get a pre-flight check before prompting. Failed steps produce actionable hints: "permission denied → check sudo", "command not found → check PATH".
 
-Cleanup step failures are logged but do not affect the workflow's exit code.
+### Track everything
 
-### Step Output Capture
-
-Capture step output as variables for use in subsequent steps:
-
-```yaml
-steps:
-  - id: get-version
-    cmd: cat VERSION
-    outputs:
-      - name: version
-        pattern: "^(\\S+)"
-  - id: tag
-    cmd: git tag v{{get-version.version}}
-    needs: [get-version]
-```
-
-Each output defines a `name` and a regex `pattern` with a capture group. The captured value is available as `{{step_id.output_name}}` in subsequent steps.
-
-### Dangerous Command Safety
-
-Commands matching known destructive patterns (e.g., `rm -rf /`, `dd` to block devices, fork bombs) are automatically blocked. Override with `--force`:
+Every run is recorded in SQLite with who ran it, from which machine, via which interface (TUI or CLI), and how long it took. JSON logs capture full step output. Compare consecutive runs to spot regressions:
 
 ```bash
-workflow run dangerous-task --force
+workflow compare backup/db-full        # side-by-side diff
+workflow compare backup/db-full --ai   # AI-powered analysis
 ```
 
-## TUI
+Tasks show heat indicators based on 30-day run frequency: `▲` (hot, ≥5 runs), `·` (warm), `▽` (cold). Press `f` to sort hot tasks to the top. Press `F` to filter by status: All → Failed → Overdue → Never-run.
 
-Launch with `workflow` (no arguments):
+## File structure
 
 ```
-┌─ workflow v0.3.4 ── 12 workflows ── 48 runs ── 2 failed ─────┐
-│                                                                │
-│ Categories │ Tasks ──────────────┬─ Details ──────────────────│
-│ > backup   │ > db-full    [sh]  │ #!/bin/bash                │
-│   deploy   │   mysql-daily[yaml]│ pg_dump mydb > /tmp/...    │
-│   docker   │                    │                            │
-│                                                               │
-├─ Log ─────────────────────────────────────────────────────────┤
-│ [14:32:01] ▶ dump — mysqldump --all-databases > /tmp/db.sql  │
-│ [14:32:03] ✓ dump (1850ms)                                   │
-└───────────────────────────────────────────────────────────────┘
- arrows:nav  r:run  d:dry-run  e:edit  m:rename  c:compare  o:heat-sort  w:new  W:clone  t:template  a:ai  R:recent  s:saved  Del:delete  L:logs  /:search  h:help  q:quit
+~/.config/workflow/
+├── backup/                  # Category (folder name)
+│   ├── db-full.sh           # Bash script — runs directly
+│   └── mysql-daily.yaml     # Multi-step YAML workflow
+├── deploy/
+│   └── staging.yaml
+├── docker/
+│   └── cleanup.yaml
+├── logs/                    # Auto-generated (JSON per run)
+├── history.db               # Auto-generated (SQLite)
+└── config.toml              # Optional
 ```
 
-| Key | Action |
-|-----|--------|
-| `j`/`k` or arrows | Navigate up/down |
-| `Tab` / `h`/`l` | Switch panes |
-| `r` | Run selected task |
-| `d` | Dry-run (preview commands) |
-| `e` | Open in `$EDITOR` |
-| `L` | View run logs |
-| `R` | Recent runs (last 10) |
-| `s` | Saved/bookmarked tasks |
-| `S` | Toggle bookmark on task |
-| `o` | Toggle heat sort (hot tasks first) |
-| `F` | Cycle status filter (All/Failed/Overdue/Never-run) |
-| `/` | Search tasks |
-| `w` | New task from shell history |
-| `a` | New task from AI prompt (or AI fix when error visible) |
-| `A` | AI update selected task |
-| `t` | New task from template |
-| `W` | Clone & optimize selected task |
-| `m` / `F2` | Rename selected task or category |
-| `D` | Delete selected task |
-| `?` | Help screen |
-| `q` / `Ctrl-C` | Quit |
+Folders are categories. `.sh` files are bash tasks. `.yaml` files are multi-step workflows. That's the entire data model.
 
-## CLI
+## CLI reference
 
 ```bash
-# Run a task (slash or dot notation)
+# Run tasks
 workflow run backup/db-full
-workflow run backup.db-full
-
-# Dry-run to preview commands
 workflow run deploy/staging --dry-run
+workflow run deploy/staging --env ENV=production --timeout 60
+workflow run risky-task --force          # bypass dangerous command check
 
-# Force-run (bypass dangerous command safety checks)
-workflow run risky-task --force
+# List and inspect
+workflow list                            # all tasks
+workflow list --json                     # machine-readable
+workflow status backup/db-full           # run history
+workflow validate                        # check all YAML syntax
 
-# Run with a step timeout (seconds)
-workflow run deploy/staging --timeout 60
-
-# Pass environment variables
-workflow run deploy/staging --env ENV=production --env DEBUG=0
-
-# List all tasks
-workflow list
-workflow list --json
-
-# Check run history for a task
-workflow status backup/db-full
-workflow status backup/db-full --json
-
-# AI-update an existing task
+# AI-powered updates
 workflow ai-update backup/db-full --prompt "add error handling"
 workflow ai-update backup/db-full --prompt "parallelize steps" --dry-run
 workflow ai-update backup/db-full --prompt "add cleanup" --save-as db-full-v2
 
-# Compare two runs
-workflow compare backup/db-full
-workflow compare backup/db-full --ai   # AI-powered analysis
-
-# Validate workflows
-workflow validate                      # Validate all
-workflow validate backup/db-full       # Validate one
-
-# Export/import workflows
-workflow export -o my-workflows.tar.gz --include-history
-workflow import my-workflows.tar.gz --overwrite
-
-# Browse templates
-workflow templates
-workflow templates --fetch
-
-# Schedule tasks
+# Scheduling
 workflow schedule backup/db-full --cron "0 2 * * *"
 workflow schedule backup/db-full --systemd
 workflow schedule backup/db-full --remove
 
-# View logs
+# Compare runs
+workflow compare backup/db-full
+workflow compare backup/db-full --ai
+
+# Templates
+workflow templates
+workflow templates --fetch
+
+# Export / import
+workflow export -o my-workflows.tar.gz --include-history
+workflow import my-workflows.tar.gz --overwrite
+
+# Logs
 workflow logs backup/db-full
 workflow logs --limit 20 --json
 
-# Use a custom workflows directory
-workflow --dir /path/to/workflows list
+# Sync across machines
+workflow sync setup                      # one-time: init + private GitHub repo
+workflow sync push                       # auto-commit and push
+workflow sync pull                       # pull latest
+workflow sync status
 ```
 
-Exit code is 0 on success, non-zero on failure — suitable for cron:
+Exit code is 0 on success, non-zero on failure — works directly in cron jobs and CI pipelines.
 
-```cron
-0 2 * * * workflow run backup/db-full
+## TUI keybindings
+
+| Key | Action |
+|-----|--------|
+| `j`/`k` or arrows | Navigate |
+| `Tab` / `h`/`l` | Switch panes |
+| `r` | Run selected task |
+| `d` | Dry-run (preview without executing) |
+| `e` | Open in `$EDITOR` |
+| `/` | Search tasks and step commands |
+| `f` | Toggle heat sort (hot tasks first) |
+| `F` | Cycle status filter (All/Failed/Overdue/Never-run) |
+| `w` | New task from shell history |
+| `a` | New task via AI (or AI fix when error visible) |
+| `A` | AI-update selected task |
+| `t` | New task from template catalog |
+| `W` | Clone and optimize selected task |
+| `n` | Rename task or category |
+| `D` | Delete (soft — moves to `.trash/`) |
+| `R` | Recent runs (last 10 across all tasks) |
+| `S` | Toggle bookmark |
+| `s` | View bookmarked tasks |
+| `L` | View run logs |
+| `G` | Git sync controls |
+| `c` | Compare last two runs |
+| `?` | Help (context-sensitive) |
+| `q` | Quit |
+
+## YAML workflow format
+
+```yaml
+name: Deploy with Rollback
+overdue: 1                          # remind if not run within N days
+steps:
+  - id: check-health
+    cmd: curl -sf http://localhost/health
+    timeout: 10                     # seconds
+  - id: deploy
+    cmd: ./deploy.sh {{version}}
+    needs: [check-health]           # dependency
+    retry: 2                        # retry on failure
+    retry_delay: 5                  # seconds between retries
+    run_if: "test -f deploy.sh"     # conditional execution
+  - id: get-version
+    cmd: cat VERSION
+    outputs:                        # capture output as variable
+      - name: ver
+        pattern: "^(\\S+)"
+  - id: tag
+    cmd: git tag v{{get-version.ver}}
+    needs: [get-version]
+cleanup:                            # runs regardless of success/failure
+  - id: unlock
+    cmd: rm -f /tmp/deploy.lock
+env:
+  DEPLOY_ENV: production            # values auto-redacted in logs
 ```
 
-## Scheduling
+Template variables available in all commands: `{{date}}`, `{{datetime}}`, `{{hostname}}`, plus any captured step outputs.
 
-Register tasks as cron jobs or systemd user timers directly from the CLI:
+## Sync across machines
+
+Sync workflow definitions via a private GitHub repo:
 
 ```bash
-# Install a crontab entry
-workflow schedule backup/db-full --cron "0 2 * * *"
-
-# Install a systemd user timer (defaults to daily at 2am)
-workflow schedule backup/db-full --systemd
-
-# With a custom systemd calendar expression
-workflow schedule backup/db-full --systemd --cron "*-*-* 06:00:00"
-
-# Remove a schedule
-workflow schedule backup/db-full --cron "0 2 * * *" --remove
-workflow schedule backup/db-full --systemd --remove
+workflow sync setup    # creates private repo, enables auto-sync
 ```
 
-Crontab mode adds a commented, identifiable entry to the user's crontab. Systemd mode generates a `.service` and `.timer` pair in `~/.config/systemd/user/` and enables it immediately.
+After setup, changes auto-commit and push. The TUI pulls on startup. Press `G` in the TUI for manual sync controls. Logs, history, and local config stay local.
 
-## Run Comparison
-
-Compare two consecutive runs of the same task to spot regressions:
-
-```bash
-workflow compare backup/db-full
+```toml
+# ~/.config/workflow/config.toml
+[sync]
+enabled = true
+auto_commit = true
+auto_push = true
+auto_pull_on_start = true
 ```
-
-Shows step-by-step diffs: timing changes, status changes (pass→fail), and output differences. Add `--ai` to get a natural-language analysis of what changed and why.
 
 ## Configuration
 
-Optional `~/.config/workflow/config.toml`:
+Optional `~/.config/workflow/config.toml` — everything has sensible defaults:
 
 ```toml
 workflows_dir = "/home/user/.config/workflow"
@@ -550,145 +344,58 @@ post_run = "echo 'done'"
 bookmarks = ["backup/db-full", "deploy/staging"]
 ```
 
-All fields are optional and have sensible defaults.
+## AI tool integration
 
-## Logging
+### Supported AI CLIs
 
-Each run produces a JSON log in `~/.config/workflow/logs/` and a record in `history.db` (SQLite). The JSON logs contain full step output:
+`workflow` auto-detects these tools at startup and shows which is available in the TUI header:
 
-```json
-{
-  "id": "a1b2c3d4-...",
-  "task_ref": "backup/db-full",
-  "started": "2026-03-10T07:54:18Z",
-  "ended": "2026-03-10T07:54:19Z",
-  "steps": [
-    { "id": "run", "status": "Success", "output": "Backup complete\n", "duration_ms": 850 }
-  ],
-  "exit_code": 0
-}
-```
+| Tool | Detection | Used for |
+|------|-----------|----------|
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) | `claude -p` | Generate, update, fix, and refine workflows |
+| [Codex CLI](https://github.com/openai/codex) (`codex`) | `codex exec` | Generate, update, fix, and refine workflows |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`) | `gemini -p` | Generate, update, fix, and refine workflows |
 
-Logs older than `log_retention_days` (default 30) are automatically cleaned up on startup.
+Install any one of these and authenticate it — `workflow` handles the rest. No API keys to configure inside `workflow` itself.
 
-## Claude Code Skill
+### Claude Code skill
 
-A [Claude Code](https://claude.ai/code) skill is included for managing workflows directly from Claude Code conversations. The skill teaches Claude how to create, edit, run, and inspect workflow tasks using the CLI.
-
-### Installing the Skill
-
-Copy the skill into your Claude Code skills directory:
-
-```bash
-mkdir -p ~/.claude/skills/workflow-manager
-cp -r skills/workflow-manager/* ~/.claude/skills/workflow-manager/
-```
-
-Or symlink it from the repo:
+A bundled Claude Code skill lets you manage workflows entirely from within Claude Code or Claude Code-powered agents. Install it:
 
 ```bash
 mkdir -p ~/.claude/skills
 ln -s "$(pwd)/skills/workflow-manager" ~/.claude/skills/workflow-manager
 ```
 
-### What the Skill Provides
+Then ask Claude naturally — "create a workflow for daily database backups", "list my overdue tasks", "dry-run the staging deploy" — or use `/workflow-manager run backup/db-full --dry-run`.
 
-Once installed, Claude Code can:
-
-- **Create workflows** — generate YAML or shell script tasks in the correct directory structure
-- **List and inspect** — browse categories, tasks, and their configurations
-- **Run and dry-run** — execute tasks or preview commands without running them
-- **Validate** — check workflow syntax and DAG dependencies
-- **View logs** — inspect run history and compare consecutive runs
-- **Browse templates** — list bundled templates or fetch community ones from GitHub
-- **Export/import** — archive and restore workflow collections
-
-### Usage in Claude Code
-
-Invoke the skill with `/workflow-manager` followed by a command:
-
-```
-/workflow-manager list                          # List all workflows
-/workflow-manager create backup/db-snapshot     # Create a new task
-/workflow-manager run deploy/staging --dry-run  # Dry-run a task
-/workflow-manager validate                      # Validate all workflows
-/workflow-manager templates --fetch             # Fetch community templates
-/workflow-manager logs backup/db-full           # View run logs
-```
-
-Or just ask Claude naturally — the skill triggers on mentions of workflows, tasks, categories, and the workflow CLI.
-
-### Skill Files
-
-```
-skills/workflow-manager/
-├── SKILL.md              # Skill definition and instructions
-└── references/
-    └── api_reference.md  # Complete YAML schema and CLI reference
-```
-
-## Sync
-
-Sync your workflow definitions across machines via a private GitHub repo. Requires `git` on PATH; `gh` (GitHub CLI) is optional but enables automatic repo creation.
-
-```bash
-# One-time setup: init git repo + create private GitHub repo + enable auto-sync
-workflow sync setup
-
-# Or step by step:
-workflow sync init                        # Initialize git repo in workflows dir
-workflow sync clone <url>                 # Clone an existing sync repo (new machine)
-
-# Day-to-day:
-workflow sync push                        # Auto-commit and push changes
-workflow sync push -m "added backup task" # Push with a custom commit message
-workflow sync pull                        # Pull latest from remote
-workflow sync status                      # Show sync status
-```
-
-`workflow sync setup` creates a private GitHub repo named `workflow-app-sync-repo` (via `gh`), enables auto-commit and auto-push in `config.toml`, and pulls on TUI startup. The `.gitignore` excludes `logs/`, `history.db`, and local config.
-
-In the TUI, press `G` to access sync controls — push, pull, and view status without leaving the interface.
-
-### Config
-
-Sync settings in `~/.config/workflow/config.toml`:
-
-```toml
-[sync]
-enabled = true
-auto_commit = true
-auto_push = true
-auto_pull_on_start = true
-branch = "main"
-remote_url = "https://github.com/you/workflow-app-sync-repo"
-```
+This makes `workflow` a natural building block for agentic automation: AI agents can create, validate, and execute operational tasks through a well-defined file-based interface without any special APIs.
 
 ## Security
 
-Workflow includes multiple layers of protection:
+Multiple layers of protection are built in:
 
-- **Dangerous command blocking** — `rm -rf /`, fork bombs, `dd` to devices, and other destructive patterns are blocked before execution (override with `--force`)
-- **Secret masking** — values from `env:` blocks are automatically redacted in live TUI output and JSON logs
-- **Path traversal protection** — task references are validated to prevent escaping the workflows directory
-- **Command injection prevention** — template variables and task names are sanitized before shell expansion
-- **Import validation** — archive imports reject paths that would write outside the target directory
+- **Dangerous command blocking** — `rm -rf /`, fork bombs, `dd` to devices, `mkfs` on real devices, and similar destructive patterns are caught before execution. Override with `--force`.
+- **Secret masking** — `env:` values are redacted in live output and log files.
+- **Path traversal protection** — task references can't escape the workflows directory.
+- **Command injection prevention** — template variables and task names are sanitized.
+- **Import validation** — archive imports reject paths that would write outside the target directory.
 
-## Building from Source
+## Install
+
+**Pre-built binary** — download from [GitHub Releases](https://github.com/vchaindz/workflow/releases).
+
+**From source:**
 
 ```bash
 git clone https://github.com/vchaindz/workflow.git
 cd workflow
 cargo build --release
-# Binary at target/release/workflow
+# Binary: target/release/workflow
 ```
 
-Requires Rust 2021 edition (1.56+).
-
-## Releases
-
-Pre-built binaries are available on the [GitHub releases page](https://github.com/vchaindz/workflow/releases).
+Requires Rust 1.56+ (2021 edition). Single binary, no runtime dependencies.
 
 ## License
 
-MIT
+MIT — Copyright 2026 Dennis Zimmer
