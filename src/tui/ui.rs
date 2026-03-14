@@ -523,7 +523,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
             // Global hints always at end
             hints.extend_from_slice(&[
-                sort_label, &filter_label, "g:sync",
+                sort_label, &filter_label, "K:secrets", "g:sync",
                 "R:recent", "s:saved", "/:search", "h:help", "q:quit",
             ]);
 
