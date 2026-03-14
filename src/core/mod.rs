@@ -8,6 +8,7 @@ pub mod discovery;
 pub mod executor;
 pub mod history;
 pub mod models;
+pub mod notify;
 pub mod parser;
 pub mod template;
 pub mod sync;

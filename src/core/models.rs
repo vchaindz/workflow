@@ -44,6 +44,8 @@ pub(crate) enum RawStep {
         #[serde(default)]
         run_if: Option<String>,
         #[serde(default)]
+        skip_if: Option<String>,
+        #[serde(default)]
         retry: Option<u32>,
         #[serde(default)]
         retry_delay: Option<u64>,
@@ -165,6 +167,8 @@ pub struct Step {
     #[serde(default)]
     pub run_if: Option<String>,
     #[serde(default)]
+    pub skip_if: Option<String>,
+    #[serde(default)]
     pub retry: Option<u32>,
     #[serde(default)]
     pub retry_delay: Option<u64>,
@@ -219,6 +223,8 @@ pub struct NotifyConfig {
     pub on_failure: Option<String>,
     #[serde(default)]
     pub on_success: Option<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]

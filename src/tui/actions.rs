@@ -8,7 +8,7 @@ use crate::core::ai;
 use crate::core::catalog;
 use crate::core::compare;
 use crate::core::db;
-use crate::core::executor::{execute_workflow, run_notify, ExecuteOpts, StreamingRequest};
+use crate::core::executor::{execute_workflow, run_notify, build_notify_vars, ExecuteOpts, StreamingRequest};
 use crate::core::history;
 use crate::core::models::{ExecutionEvent, RuntimeVariable, Task, TaskHeat, TaskKind, Workflow};
 use crate::core::parser::{parse_shell_task, parse_workflow, parse_workflow_from_str};
@@ -478,6 +478,7 @@ fn launch_workflow(
 
     // Clone notify config for background thread
     let wf_notify = workflow.notify.clone();
+    let wf_name = workflow.name.clone();
     let cfg_notify = app.config.notify.clone();
     let task_ref_for_notify = task_ref.clone();
     let workflows_dir_for_thread = app.config.workflows_dir.clone();
@@ -512,9 +513,7 @@ fn launch_workflow(
                     let notify_on_success = wf_notify.on_success.as_ref()
                         .or(cfg_notify.on_success.as_ref());
 
-                    let mut notify_vars: HashMap<String, String> = HashMap::new();
-                    notify_vars.insert("task_ref".to_string(), task_ref_for_notify);
-                    notify_vars.insert("exit_code".to_string(), run_log.exit_code.to_string());
+                    let notify_vars = build_notify_vars(&task_ref_for_notify, &run_log, &wf_name, &wf_notify.env);
 
                     if run_log.exit_code == 0 {
                         if let Some(cmd) = notify_on_success {

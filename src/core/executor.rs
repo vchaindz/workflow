@@ -200,9 +200,11 @@ pub fn mask_secrets(text: &str, secret_values: &[String]) -> String {
 }
 
 /// Run a notification command after workflow completion.
-/// Expands template variables in the command string, then runs via bash fire-and-forget.
+/// Resolves URL-scheme shorthands (slack://, webhook://, email://), expands template
+/// variables in the command string, then runs via bash fire-and-forget.
 pub fn run_notify(cmd: &str, vars: &HashMap<String, String>) {
-    let expanded = expand_template(cmd, vars);
+    let resolved = crate::core::notify::resolve_notify_command(cmd, vars);
+    let expanded = expand_template(&resolved, vars);
     let _ = Command::new("bash")
         .arg("-c")
         .arg(&expanded)
@@ -210,6 +212,40 @@ pub fn run_notify(cmd: &str, vars: &HashMap<String, String>) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
+}
+
+/// Build a rich set of template variables for notification commands.
+pub fn build_notify_vars(
+    task_ref: &str,
+    run_log: &RunLog,
+    workflow_name: &str,
+    notify_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    vars.insert("task_ref".to_string(), task_ref.to_string());
+    vars.insert("exit_code".to_string(), run_log.exit_code.to_string());
+    vars.insert("workflow_name".to_string(), workflow_name.to_string());
+    vars.insert("hostname".to_string(), crate::core::db::current_hostname());
+
+    let failed: Vec<&str> = run_log.steps.iter()
+        .filter(|s| s.status == StepStatus::Failed)
+        .map(|s| s.id.as_str())
+        .collect();
+    vars.insert("failed_steps".to_string(), failed.join(","));
+
+    let total_ms: u64 = run_log.steps.iter().map(|s| s.duration_ms).sum();
+    vars.insert("duration_ms".to_string(), total_ms.to_string());
+    vars.insert("timestamp".to_string(), run_log.started.to_rfc3339());
+
+    let status = if run_log.exit_code == 0 { "success" } else { "failure" };
+    vars.insert("status".to_string(), status.to_string());
+
+    // Include user-defined notify.env entries
+    for (k, v) in notify_env {
+        vars.insert(k.clone(), v.clone());
+    }
+
+    vars
 }
 
 /// Outcome of executing a single step
@@ -235,6 +271,8 @@ fn execute_single_step(
     workflows_dir: Option<&std::path::PathBuf>,
     call_depth: u16,
     max_call_depth: u16,
+    secret_names: &[String],
+    secrets_ssh_key: Option<&std::path::PathBuf>,
 ) -> StepOutcome {
     let send = |evt: ExecutionEvent| {
         if let Some(tx) = event_tx {
@@ -264,14 +302,15 @@ fn execute_single_step(
         };
     }
 
-    // Conditional step: evaluate run_if condition
+    // Conditional step: evaluate run_if condition (template-expanded)
     if let Some(ref condition) = step.run_if {
+        let expanded_condition = expand_template(condition, template_vars);
         if dry_run {
-            println!("[dry-run] step '{}' run_if: {}", step.id, condition);
+            println!("[dry-run] step '{}' run_if: {}", step.id, expanded_condition);
         } else {
             let cond_result = Command::new("bash")
                 .arg("-c")
-                .arg(condition)
+                .arg(&expanded_condition)
                 .envs(env)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -283,7 +322,7 @@ fn execute_single_step(
                         result: StepResult {
                             id: step.id.clone(),
                             status: StepStatus::Skipped,
-                            output: format!("condition not met: {condition}"),
+                            output: format!("condition not met: {expanded_condition}"),
                             duration_ms: 0,
                         },
                         captured_vars,
@@ -304,6 +343,51 @@ fn execute_single_step(
                     };
                 }
                 _ => {} // condition met, proceed
+            }
+        }
+    }
+
+    // Conditional step: evaluate skip_if condition (inverse of run_if — skip when true)
+    if let Some(ref condition) = step.skip_if {
+        let expanded_condition = expand_template(condition, template_vars);
+        if dry_run {
+            println!("[dry-run] step '{}' skip_if: {}", step.id, expanded_condition);
+        } else {
+            let cond_result = Command::new("bash")
+                .arg("-c")
+                .arg(&expanded_condition)
+                .envs(env)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            match cond_result {
+                Ok(status) if status.success() => {
+                    send(ExecutionEvent::StepSkipped { step_id: step.id.clone() });
+                    return StepOutcome {
+                        result: StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Skipped,
+                            output: format!("skip condition met: {expanded_condition}"),
+                            duration_ms: 0,
+                        },
+                        captured_vars,
+                        failed: false,
+                    };
+                }
+                Err(e) => {
+                    send(ExecutionEvent::StepSkipped { step_id: step.id.clone() });
+                    return StepOutcome {
+                        result: StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Skipped,
+                            output: format!("skip_if condition error: {e}"),
+                            duration_ms: 0,
+                        },
+                        captured_vars,
+                        failed: false,
+                    };
+                }
+                _ => {} // skip condition not met, proceed
             }
         }
     }
@@ -399,13 +483,13 @@ fn execute_single_step(
                 force,
                 env_overrides: sub_env,
                 default_timeout,
-                secrets: secret_values.to_vec(),
+                secrets: secret_names.to_vec(),
                 interactive_tx: None,
                 streaming_tx: None,
                 workflows_dir: Some(wf_dir.to_path_buf()),
                 call_depth: call_depth + 1,
                 max_call_depth,
-                secrets_ssh_key: None,
+                secrets_ssh_key: secrets_ssh_key.map(|p| p.to_path_buf()),
             };
 
             execute_workflow(&sub_wf, call_ref, &sub_opts, event_tx)
@@ -796,6 +880,8 @@ fn execute_for_each_step(
     workflows_dir: Option<&std::path::PathBuf>,
     call_depth: u16,
     max_call_depth: u16,
+    secret_names: &[String],
+    secrets_ssh_key: Option<&std::path::PathBuf>,
 ) -> Vec<StepOutcome> {
     let send = |evt: ExecutionEvent| {
         if let Some(tx) = event_tx {
@@ -834,6 +920,8 @@ fn execute_for_each_step(
             let wf_dir_clone = workflows_dir.cloned();
             let item_clone = item.clone();
             let step_id = step.id.clone();
+            let snames_clone = secret_names.to_vec();
+            let sshkey_clone = secrets_ssh_key.map(|p| p.to_path_buf());
 
             handles.push(std::thread::spawn(move || {
                 let outcome = execute_single_step(
@@ -850,6 +938,8 @@ fn execute_for_each_step(
                     wf_dir_clone.as_ref(),
                     call_depth,
                     max_call_depth,
+                    &snames_clone,
+                    sshkey_clone.as_ref(),
                 );
                 if let Some(ref tx) = tx_clone {
                     let _ = tx.send(ExecutionEvent::ForEachIterationCompleted {
@@ -893,6 +983,8 @@ fn execute_for_each_step(
                 workflows_dir,
                 call_depth,
                 max_call_depth,
+                secret_names,
+                secrets_ssh_key,
             );
 
             send(ExecutionEvent::ForEachIterationCompleted {
@@ -1021,6 +1113,7 @@ pub fn execute_workflow(
                             &secret_values, opts.dry_run, opts.force, opts.default_timeout,
                             event_tx, &failed_steps,
                             opts.workflows_dir.as_ref(), opts.call_depth, opts.max_call_depth,
+                            &opts.secrets, opts.secrets_ssh_key.as_ref(),
                         );
                         let mut any_failed = false;
                         for outcome in outcomes {
@@ -1030,6 +1123,15 @@ pub fn execute_workflow(
                                     overall_exit = if outcome.result.status == StepStatus::Timedout { 124 } else { 1 };
                                 }
                             }
+                            // Inject step status variable
+                            let status_str = match outcome.result.status {
+                                StepStatus::Success => "success",
+                                StepStatus::Failed => "failed",
+                                StepStatus::Skipped => "skipped",
+                                StepStatus::Timedout => "timedout",
+                                _ => "unknown",
+                            };
+                            template_vars.insert(format!("{}.status", outcome.result.id), status_str.to_string());
                             template_vars.extend(outcome.captured_vars);
                             step_results.push(outcome.result);
                         }
@@ -1043,6 +1145,7 @@ pub fn execute_workflow(
                             opts.dry_run, opts.force, opts.default_timeout,
                             event_tx, &failed_steps,
                             opts.workflows_dir.as_ref(), opts.call_depth, opts.max_call_depth,
+                            &opts.secrets, opts.secrets_ssh_key.as_ref(),
                         );
                         if outcome.failed {
                             failed_steps.insert(step.id.clone());
@@ -1050,6 +1153,15 @@ pub fn execute_workflow(
                                 overall_exit = if outcome.result.status == StepStatus::Timedout { 124 } else { 1 };
                             }
                         }
+                        // Inject step status variable
+                        let status_str = match outcome.result.status {
+                            StepStatus::Success => "success",
+                            StepStatus::Failed => "failed",
+                            StepStatus::Skipped => "skipped",
+                            StepStatus::Timedout => "timedout",
+                            _ => "unknown",
+                        };
+                        template_vars.insert(format!("{}.status", outcome.result.id), status_str.to_string());
                         template_vars.extend(outcome.captured_vars);
                         step_results.push(outcome.result);
                     }
@@ -1060,6 +1172,7 @@ pub fn execute_workflow(
                         });
                         failed_steps.insert(step.id.clone());
                         if overall_exit == 0 { overall_exit = 1; }
+                        template_vars.insert(format!("{}.status", step.id), "failed".to_string());
                         step_results.push(StepResult {
                             id: step.id.clone(),
                             status: StepStatus::Failed,
@@ -1094,6 +1207,8 @@ pub fn execute_workflow(
                 let wf_dir_clone = opts.workflows_dir.clone();
                 let call_depth = opts.call_depth;
                 let max_call_depth = opts.max_call_depth;
+                let snames_clone = opts.secrets.clone();
+                let sshkey_clone = opts.secrets_ssh_key.clone();
 
                 handles.push(std::thread::spawn(move || {
                     // Check for for_each iteration
@@ -1104,6 +1219,7 @@ pub fn execute_workflow(
                                 &secrets_clone, dry_run, force, default_timeout,
                                 tx_clone.as_ref(), &failed_clone,
                                 wf_dir_clone.as_ref(), call_depth, max_call_depth,
+                                &snames_clone, sshkey_clone.as_ref(),
                             )
                         }
                         Ok(None) => {
@@ -1112,6 +1228,7 @@ pub fn execute_workflow(
                                 dry_run, force, default_timeout,
                                 tx_clone.as_ref(), &failed_clone,
                                 wf_dir_clone.as_ref(), call_depth, max_call_depth,
+                                &snames_clone, sshkey_clone.as_ref(),
                             )]
                         }
                         Err(e) => {
@@ -1146,6 +1263,15 @@ pub fn execute_workflow(
                             overall_exit = if outcome.result.status == StepStatus::Timedout { 124 } else { 1 };
                         }
                     }
+                    // Inject step status variable
+                    let status_str = match outcome.result.status {
+                        StepStatus::Success => "success",
+                        StepStatus::Failed => "failed",
+                        StepStatus::Skipped => "skipped",
+                        StepStatus::Timedout => "timedout",
+                        _ => "unknown",
+                    };
+                    template_vars.insert(format!("{}.status", outcome.result.id), status_str.to_string());
                     template_vars.extend(outcome.captured_vars);
                     step_results.push(outcome.result);
                 }
@@ -1488,6 +1614,7 @@ mod tests {
                     parallel: false,
                     timeout: None,
                     run_if: None,
+                    skip_if: None,
                     retry: None,
                     retry_delay: None,
                     interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1499,6 +1626,7 @@ mod tests {
                     parallel: false,
                     timeout: None,
                     run_if: None,
+                    skip_if: None,
                     retry: None,
                     retry_delay: None,
                     interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1549,6 +1677,7 @@ mod tests {
                     parallel: false,
                     timeout: None,
                     run_if: None,
+                    skip_if: None,
                     retry: None,
                     retry_delay: None,
                     interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1560,6 +1689,7 @@ mod tests {
                     parallel: false,
                     timeout: None,
                     run_if: None,
+                    skip_if: None,
                     retry: None,
                     retry_delay: None,
                     interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1571,6 +1701,7 @@ mod tests {
                     parallel: false,
                     timeout: None,
                     run_if: None,
+                    skip_if: None,
                     retry: None,
                     retry_delay: None,
                     interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1606,6 +1737,7 @@ mod tests {
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1639,6 +1771,7 @@ mod tests {
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1668,6 +1801,7 @@ mod tests {
                 parallel: false,
                 timeout: Some(1),
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1698,6 +1832,7 @@ mod tests {
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1732,6 +1867,7 @@ mod tests {
                 parallel: false,
                 timeout: Some(1),
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1766,6 +1902,7 @@ mod tests {
                     parallel: false,
                     timeout: Some(1),
                     run_if: None,
+                    skip_if: None,
                     retry: None,
                     retry_delay: None,
                     interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1777,6 +1914,7 @@ mod tests {
                     parallel: false,
                     timeout: None,
                     run_if: None,
+                    skip_if: None,
                     retry: None,
                     retry_delay: None,
                     interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1807,6 +1945,7 @@ mod tests {
                 parallel: false,
                 timeout: None,
                 run_if: Some("true".to_string()),
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1837,6 +1976,7 @@ mod tests {
                     parallel: false,
                     timeout: None,
                     run_if: Some("false".to_string()),
+                    skip_if: None,
                     retry: None,
                     retry_delay: None,
                     interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1848,6 +1988,7 @@ mod tests {
                     parallel: false,
                     timeout: None,
                     run_if: None,
+                    skip_if: None,
                     retry: None,
                     retry_delay: None,
                     interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1891,6 +2032,7 @@ mod tests {
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1920,6 +2062,7 @@ mod tests {
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1950,6 +2093,7 @@ mod tests {
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -1979,5 +2123,277 @@ mod tests {
         let text = "connecting with s3cret and p@ssword";
         let masked = mask_secrets(text, &secrets);
         assert_eq!(masked, "connecting with [REDACTED] and [REDACTED]");
+    }
+
+    #[test]
+    fn test_run_if_template_expansion() {
+        // run_if with a template variable should be expanded before evaluation
+        let wf = Workflow {
+            name: "run_if_tpl".into(),
+            steps: vec![Step {
+                id: "s1".into(),
+                cmd: "echo hello".into(),
+                needs: vec![],
+                parallel: false,
+                timeout: None,
+                run_if: Some("test '{{myvar}}' = 'go'".to_string()),
+                skip_if: None,
+                retry: None,
+                retry_delay: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+            }],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+            overdue: None,
+            variables: Vec::new(),
+            cleanup: Vec::new(),
+        };
+        // With myvar=go, step should run
+        let opts = ExecuteOpts {
+            env_overrides: HashMap::from([("myvar".to_string(), "go".to_string())]),
+            ..Default::default()
+        };
+        let log = execute_workflow(&wf, "test/run_if_tpl", &opts, None).unwrap();
+        assert_eq!(log.steps[0].status, StepStatus::Success);
+
+        // With myvar=stop, step should be skipped
+        let opts2 = ExecuteOpts {
+            env_overrides: HashMap::from([("myvar".to_string(), "stop".to_string())]),
+            ..Default::default()
+        };
+        let log2 = execute_workflow(&wf, "test/run_if_tpl", &opts2, None).unwrap();
+        assert_eq!(log2.steps[0].status, StepStatus::Skipped);
+    }
+
+    #[test]
+    fn test_step_status_var_success() {
+        let wf = Workflow {
+            name: "status_var".into(),
+            steps: vec![
+                Step {
+                    id: "first".into(),
+                    cmd: "echo ok".into(),
+                    needs: vec![],
+                    parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    skip_if: None,
+                    retry: None,
+                    retry_delay: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                },
+                Step {
+                    id: "check".into(),
+                    cmd: "echo status={{first.status}}".into(),
+                    needs: vec!["first".into()],
+                    parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    skip_if: None,
+                    retry: None,
+                    retry_delay: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                },
+            ],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+            overdue: None,
+            variables: Vec::new(),
+            cleanup: Vec::new(),
+        };
+        let log = execute_workflow(&wf, "test/status", &ExecuteOpts::default(), None).unwrap();
+        assert_eq!(log.steps[1].status, StepStatus::Success);
+        assert!(log.steps[1].output.contains("status=success"));
+    }
+
+    #[test]
+    fn test_step_status_var_failure() {
+        // Step 1 fails, step 2 is independent (same level), step 3 depends on step 2
+        // and checks step 1's status via run_if template expansion.
+        let wf = Workflow {
+            name: "status_fail".into(),
+            steps: vec![
+                Step {
+                    id: "failing".into(),
+                    cmd: "exit 1".into(),
+                    needs: vec![],
+                    parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    skip_if: None,
+                    retry: None,
+                    retry_delay: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                },
+                Step {
+                    id: "independent".into(),
+                    cmd: "echo ok".into(),
+                    needs: vec![],
+                    parallel: false,
+                    timeout: None,
+                    run_if: None,
+                    skip_if: None,
+                    retry: None,
+                    retry_delay: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                },
+                Step {
+                    id: "rollback".into(),
+                    cmd: "echo rolling-back".into(),
+                    needs: vec!["independent".into()],
+                    parallel: false,
+                    timeout: None,
+                    run_if: Some("test '{{failing.status}}' = 'failed'".to_string()),
+                    skip_if: None,
+                    retry: None,
+                    retry_delay: None,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                },
+            ],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+            overdue: None,
+            variables: Vec::new(),
+            cleanup: Vec::new(),
+        };
+        let log = execute_workflow(&wf, "test/status_fail", &ExecuteOpts::default(), None).unwrap();
+        // Find steps by id since parallel level ordering may vary
+        let failing = log.steps.iter().find(|s| s.id == "failing").unwrap();
+        let rollback = log.steps.iter().find(|s| s.id == "rollback").unwrap();
+        assert_eq!(failing.status, StepStatus::Failed);
+        // rollback step should run because failing.status == "failed"
+        assert_eq!(rollback.status, StepStatus::Success);
+        assert!(rollback.output.contains("rolling-back"));
+    }
+
+    #[test]
+    fn test_skip_if_true_skips() {
+        let wf = Workflow {
+            name: "skip_if_test".into(),
+            steps: vec![Step {
+                id: "s1".into(),
+                cmd: "echo should-not-run".into(),
+                needs: vec![],
+                parallel: false,
+                timeout: None,
+                run_if: None,
+                skip_if: Some("true".to_string()),
+                retry: None,
+                retry_delay: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+            }],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+            overdue: None,
+            variables: Vec::new(),
+            cleanup: Vec::new(),
+        };
+        let log = execute_workflow(&wf, "test/skip_if", &ExecuteOpts::default(), None).unwrap();
+        assert_eq!(log.steps[0].status, StepStatus::Skipped);
+    }
+
+    #[test]
+    fn test_skip_if_false_runs() {
+        let wf = Workflow {
+            name: "skip_if_false".into(),
+            steps: vec![Step {
+                id: "s1".into(),
+                cmd: "echo runs-fine".into(),
+                needs: vec![],
+                parallel: false,
+                timeout: None,
+                run_if: None,
+                skip_if: Some("false".to_string()),
+                retry: None,
+                retry_delay: None,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+            }],
+            env: HashMap::new(),
+            workdir: None,
+            secrets: Vec::new(),
+            notify: Default::default(),
+            overdue: None,
+            variables: Vec::new(),
+            cleanup: Vec::new(),
+        };
+        let log = execute_workflow(&wf, "test/skip_if_false", &ExecuteOpts::default(), None).unwrap();
+        assert_eq!(log.steps[0].status, StepStatus::Success);
+        assert!(log.steps[0].output.contains("runs-fine"));
+    }
+
+    #[test]
+    fn test_build_notify_vars_all_fields() {
+        let run_log = RunLog {
+            id: "test-123".into(),
+            task_ref: "infra/deploy".into(),
+            started: Utc::now(),
+            ended: None,
+            steps: vec![
+                StepResult { id: "build".into(), status: StepStatus::Success, output: String::new(), duration_ms: 100 },
+                StepResult { id: "deploy".into(), status: StepStatus::Failed, output: String::new(), duration_ms: 200 },
+            ],
+            exit_code: 1,
+        };
+        let notify_env = HashMap::from([("environment".to_string(), "production".to_string())]);
+        let vars = build_notify_vars("infra/deploy", &run_log, "Deploy Prod", &notify_env);
+
+        assert_eq!(vars.get("task_ref").unwrap(), "infra/deploy");
+        assert_eq!(vars.get("exit_code").unwrap(), "1");
+        assert_eq!(vars.get("workflow_name").unwrap(), "Deploy Prod");
+        assert!(vars.contains_key("hostname"));
+        assert_eq!(vars.get("failed_steps").unwrap(), "deploy");
+        assert_eq!(vars.get("duration_ms").unwrap(), "300");
+        assert!(vars.contains_key("timestamp"));
+        assert_eq!(vars.get("status").unwrap(), "failure");
+        assert_eq!(vars.get("environment").unwrap(), "production");
+    }
+
+    #[test]
+    fn test_build_notify_vars_failed_steps() {
+        let run_log = RunLog {
+            id: "test-456".into(),
+            task_ref: "ci/build".into(),
+            started: Utc::now(),
+            ended: None,
+            steps: vec![
+                StepResult { id: "lint".into(), status: StepStatus::Failed, output: String::new(), duration_ms: 50 },
+                StepResult { id: "test".into(), status: StepStatus::Failed, output: String::new(), duration_ms: 75 },
+                StepResult { id: "build".into(), status: StepStatus::Success, output: String::new(), duration_ms: 100 },
+            ],
+            exit_code: 1,
+        };
+        let vars = build_notify_vars("ci/build", &run_log, "CI Build", &HashMap::new());
+        let failed = vars.get("failed_steps").unwrap();
+        assert!(failed.contains("lint"));
+        assert!(failed.contains("test"));
+        assert!(!failed.contains("build"));
+    }
+
+    #[test]
+    fn test_notify_env_passthrough() {
+        let run_log = RunLog {
+            id: "test-789".into(),
+            task_ref: "ops/restart".into(),
+            started: Utc::now(),
+            ended: None,
+            steps: vec![],
+            exit_code: 0,
+        };
+        let notify_env = HashMap::from([
+            ("team".to_string(), "platform".to_string()),
+            ("region".to_string(), "us-east-1".to_string()),
+        ]);
+        let vars = build_notify_vars("ops/restart", &run_log, "Restart", &notify_env);
+        assert_eq!(vars.get("team").unwrap(), "platform");
+        assert_eq!(vars.get("region").unwrap(), "us-east-1");
+        assert_eq!(vars.get("status").unwrap(), "success");
     }
 }

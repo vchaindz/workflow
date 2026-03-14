@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::core::config::Config;
 use crate::core::db;
 use crate::core::discovery::{resolve_task_ref, scan_workflows};
-use crate::core::executor::{execute_workflow, run_notify, ExecuteOpts};
+use crate::core::executor::{execute_workflow, run_notify, build_notify_vars, ExecuteOpts};
 use crate::core::models::{StepStatus, TaskKind};
 use crate::core::parser::{parse_shell_task, parse_workflow};
 use crate::error::Result;
@@ -120,9 +120,7 @@ pub fn cmd_run(
         let notify_on_success = workflow.notify.on_success.as_ref()
             .or(config.notify.on_success.as_ref());
 
-        let mut notify_vars: HashMap<String, String> = HashMap::new();
-        notify_vars.insert("task_ref".to_string(), canonical_ref.clone());
-        notify_vars.insert("exit_code".to_string(), exit_code.to_string());
+        let notify_vars = build_notify_vars(&canonical_ref, &run_log, &workflow.name, &workflow.notify.env);
 
         if exit_code == 0 {
             if let Some(cmd) = notify_on_success {

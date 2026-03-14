@@ -49,17 +49,17 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, retry: None, retry_delay: None, interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false }
+                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, skip_if: None, retry: None, retry_delay: None, interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false }
             }
-            RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error } => {
+            RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error } => {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error }
+                Step { id, cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error }
             }
-            RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error } => {
+            RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error } => {
                 // Explicit id: no implicit chaining, but don't break the chain for others
-                Step { id, cmd, needs, parallel, timeout, run_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error }
+                Step { id, cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error }
             }
         };
 
@@ -149,6 +149,7 @@ pub fn parse_shell_task(path: &Path) -> Result<Workflow> {
             parallel: false,
             timeout: None,
             run_if: None,
+            skip_if: None,
             retry: None,
             retry_delay: None,
             interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -351,6 +352,7 @@ env:
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -362,6 +364,7 @@ env:
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -373,6 +376,7 @@ env:
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -399,6 +403,7 @@ env:
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -410,6 +415,7 @@ env:
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -421,6 +427,7 @@ env:
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -432,6 +439,7 @@ env:
                 parallel: false,
                 timeout: None,
                 run_if: None,
+                skip_if: None,
                 retry: None,
                 retry_delay: None,
                 interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
@@ -849,25 +857,25 @@ steps:
         let steps = vec![
             Step {
                 id: "a".into(), cmd: "echo a".into(), needs: vec![],
-                parallel: false, timeout: None, run_if: None, retry: None,
+                parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
                 call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             },
             Step {
                 id: "b".into(), cmd: "echo b".into(), needs: vec!["a".into()],
-                parallel: false, timeout: None, run_if: None, retry: None,
+                parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
                 call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             },
             Step {
                 id: "c".into(), cmd: "echo c".into(), needs: vec!["a".into()],
-                parallel: false, timeout: None, run_if: None, retry: None,
+                parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
                 call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             },
             Step {
                 id: "d".into(), cmd: "echo d".into(), needs: vec!["b".into(), "c".into()],
-                parallel: false, timeout: None, run_if: None, retry: None,
+                parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
                 call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
             },
@@ -880,5 +888,55 @@ steps:
         assert!(levels[1].contains(&"c".to_string()));
         assert_eq!(levels[1].len(), 2);
         assert_eq!(levels[2], vec!["d"]);
+    }
+
+    #[test]
+    fn test_parse_skip_if() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("skipif.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Skip If Test
+steps:
+  - id: deploy
+    cmd: echo deploying
+  - id: smoke
+    cmd: echo testing
+    skip_if: "test '1' = '1'"
+    needs: [deploy]
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.steps[0].skip_if, None);
+        assert_eq!(wf.steps[1].skip_if, Some("test '1' = '1'".to_string()));
+    }
+
+    #[test]
+    fn test_parse_notify_with_env() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("notify_env.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Notify Env Test
+notify:
+  on_failure: "echo failed"
+  env:
+    environment: production
+    team: platform
+steps:
+  - id: s1
+    cmd: echo hello
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.notify.on_failure, Some("echo failed".to_string()));
+        assert_eq!(wf.notify.env.get("environment").unwrap(), "production");
+        assert_eq!(wf.notify.env.get("team").unwrap(), "platform");
     }
 }

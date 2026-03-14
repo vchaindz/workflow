@@ -15,7 +15,7 @@ Drop a `.sh` or `.yaml` file into `~/.config/workflow/` and it's immediately ava
 <!-- ![workflow TUI](https://raw.githubusercontent.com/vchaindz/workflow/main/assets/demo.gif) -->
 
 ```text
- workflow v0.3.3 ── 12 workflows ── 48 runs ── 2 failed
+ workflow v0.3.4 ── 12 workflows ── 48 runs ── 2 failed
 
  Categories  Tasks                    Details
  > backup    ▲ db-full    ✓ 2d [sh]   #!/bin/bash
@@ -38,7 +38,7 @@ If you manage servers, you already have workflows — they're just scattered acr
 
 **For the DevOps team** maintaining production infrastructure: standardize runbooks as version-controlled YAML with dependency ordering, retries, timeouts, and cleanup steps. Sync them across machines via Git. Review run history when something breaks.
 
-**For the on-call engineer** at 2am: browse 42 bundled templates covering sysadmin, Docker, and Kubernetes diagnostics. Don't remember the `kubectl` incantation for checking PV storage? It's already there.
+**For the on-call engineer** at 2am: browse 52 bundled templates covering sysadmin, Docker, Kubernetes, and Linux patching workflows. Don't remember the `kubectl` incantation for checking PV storage? It's already there.
 
 **For the AI-assisted operator**: `workflow` is designed to work *with* AI coding tools, not around them. Claude Code, Codex CLI, and Gemini CLI can generate new workflows from a plain-English description, rewrite existing tasks ("add retries and error handling"), and auto-diagnose failures with one keypress. A bundled Claude Code skill lets you manage workflows entirely from AI conversations. The file-based, YAML-native design means AI tools can read and write workflows without any special adapters.
 
@@ -113,7 +113,7 @@ workflow ai-update backup/db-full --prompt "add cleanup" --save-as db-full-v2
 
 The AI integration is intentionally tool-agnostic — `workflow` auto-detects whichever AI CLI you have installed and uses it transparently. The file-based YAML format means AI tools can also read and write workflows directly from outside the TUI, making `workflow` a natural fit for agentic coding sessions.
 
-### 42 bundled templates ready to go
+### 52 bundled templates ready to go
 
 Don't start from scratch. Press `t` to browse templates covering real operational tasks:
 
@@ -122,6 +122,8 @@ Don't start from scratch. Press `t` to browse templates covering real operationa
 **Docker** — container cleanup, compose status, image updates, log tailing, network inspection, resource limits, restart unhealthy containers, security scanning, volume backup
 
 **Kubernetes** — cluster health, deployment status, failed pod diagnostics, namespace audit, PV storage, RBAC review, resource usage, secret/configmap audit, service endpoints
+
+**Patching** — security-only patches, patch audit, kernel updates, rollback, compliance reports, unattended updates setup, package holds, reboot checks, changelog review, post-patch verification (Debian/Ubuntu, RHEL/Fedora, SUSE, Arch)
 
 Templates support variables — fill in `{{db_name}}` or `{{backup_path}}` when you save. Fetch community templates from GitHub with `workflow templates --fetch`.
 
@@ -166,6 +168,46 @@ env:
 ```
 
 If a step fails, its dependents are skipped — but independent branches keep running. Steps can capture output via regex and pass values downstream with `{{step_id.var}}`. Cleanup steps run regardless of success or failure, like a `finally` block. Interactive commands (REPLs, `journalctl -f`, TUI tools) are auto-detected and run with the terminal restored — or mark steps `interactive: true` explicitly.
+
+### Step-level branching with `run_if` / `skip_if`
+
+After each step completes, `{{step_id.status}}` is automatically set to `success`, `failed`, `skipped`, or `timedout`. Use this in `run_if` or `skip_if` to branch on outcomes:
+
+```yaml
+steps:
+  - id: deploy
+    cmd: ./deploy.sh
+  - id: rollback
+    run_if: "test '{{deploy.status}}' = 'failed'"
+    cmd: ./rollback.sh
+  - id: smoke-test
+    skip_if: "test '{{deploy.status}}' = 'failed'"
+    cmd: ./smoke-test.sh
+```
+
+`run_if` runs the step only when the condition succeeds (exit 0). `skip_if` is the inverse — it skips when the condition succeeds. Both support full template expansion, so `{{var}}` references work in conditions.
+
+### Native notification types
+
+Notify commands support URL-scheme shorthands that expand to `curl`/`mail` commands internally. No extra dependencies needed:
+
+```yaml
+notify:
+  on_failure: "slack://https://hooks.slack.com/services/T00/B00/xxx"
+  on_success: "webhook://https://status.example.com/api/deploy"
+  env:
+    environment: production
+    team: platform
+```
+
+| Scheme | Expands to |
+|--------|-----------|
+| `slack://WEBHOOK_URL` | `curl` POST with Slack JSON text payload |
+| `webhook://URL` | `curl` POST with all variables as JSON object |
+| `email://ADDRESS` | `printf` + `mail` with summary |
+| *(no prefix)* | Runs as-is (bash command) |
+
+Notification commands have access to rich template variables: `{{task_ref}}`, `{{exit_code}}`, `{{workflow_name}}`, `{{hostname}}`, `{{failed_steps}}`, `{{duration_ms}}`, `{{timestamp}}`, `{{status}}`, plus any keys from `notify.env`.
 
 ### Built-in safety nets
 
@@ -306,6 +348,12 @@ steps:
     retry: 2                        # retry on failure
     retry_delay: 5                  # seconds between retries
     run_if: "test -f deploy.sh"     # conditional execution
+  - id: rollback
+    cmd: ./rollback.sh
+    run_if: "test '{{deploy.status}}' = 'failed'"   # branch on step outcome
+  - id: smoke-test
+    cmd: ./smoke-test.sh
+    skip_if: "test '{{deploy.status}}' = 'failed'"  # skip when condition is true
   - id: get-version
     cmd: cat VERSION
     outputs:                        # capture output as variable
@@ -319,9 +367,15 @@ cleanup:                            # runs regardless of success/failure
     cmd: rm -f /tmp/deploy.lock
 env:
   DEPLOY_ENV: production            # values auto-redacted in logs
+notify:
+  on_failure: "slack://https://hooks.slack.com/services/T00/B00/xxx"
+  on_success: "webhook://https://status.example.com/api/deploy"
+  env:                              # extra vars available in notify commands
+    environment: production
+    team: platform
 ```
 
-Template variables available in all commands: `{{date}}`, `{{datetime}}`, `{{hostname}}`, plus any captured step outputs.
+Template variables available in all commands: `{{date}}`, `{{datetime}}`, `{{hostname}}`, `{{step_id.status}}` (after each step: success/failed/skipped/timedout), plus any captured step outputs.
 
 ## Sync across machines
 
