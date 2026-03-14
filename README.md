@@ -285,6 +285,7 @@ Exit code is 0 on success, non-zero on failure — works directly in cron jobs a
 | `S` | Toggle bookmark |
 | `s` | View bookmarked tasks |
 | `L` | View run logs |
+| `K` | Secrets manager (add/view/edit/delete) |
 | `G` | Git sync controls |
 | `c` | Compare last two runs |
 | `?` | Help (context-sensitive) |
@@ -416,6 +417,18 @@ workflow secrets rm DB_PASSWORD
 ```
 
 Secrets are encrypted at rest in `~/.config/workflow/secrets.age` using your SSH public key and decrypted to memory only at runtime. Values are zeroized after use.
+
+### TUI secrets manager
+
+Press `K` in the TUI to manage secrets without leaving the interface:
+
+- **Browse** — see all stored secret names at a glance
+- **Add** (`a`) — enter a new secret name and value (value input is masked)
+- **View** (`v`/`Enter`) — decrypt and reveal a secret's value (any key dismisses)
+- **Edit** (`e`) — update an existing secret's value
+- **Delete** (`d`) — remove a secret with confirmation
+
+If the secrets store hasn't been initialized yet, the modal offers to set it up automatically using your SSH key.
 
 ### Auto-injection into workflows
 

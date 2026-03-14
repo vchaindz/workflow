@@ -15,7 +15,7 @@ use crate::core::compare;
 
 use crate::core::catalog;
 
-use super::app::{App, AppMode, Focus, WizardMode, WizardStage};
+use super::app::{App, AppMode, Focus, SecretsMode, WizardMode, WizardStage};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let has_footer = !app.footer_log.is_empty();
@@ -105,6 +105,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.mode == AppMode::EditTask {
         draw_edit_task(f, app);
+    }
+
+    if app.mode == AppMode::Secrets {
+        draw_secrets(f, app);
     }
 }
 
@@ -1790,7 +1794,7 @@ fn format_run_log_styled(log: &crate::core::models::RunLog) -> Vec<Line<'static>
 fn draw_help(f: &mut Frame, app: &App) {
     let area = f.area();
     let w = 50.min(area.width.saturating_sub(4));
-    let h = 30.min(area.height.saturating_sub(4));
+    let h = 36.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
@@ -1857,6 +1861,7 @@ fn draw_help(f: &mut Frame, app: &App) {
             Line::from("  R           Recent runs (last 10)"),
             Line::from("  s           Saved/bookmarked tasks"),
             Line::from("  S           Toggle bookmark on task"),
+            Line::from("  K           Secrets manager"),
             Line::from("  g           Git sync"),
             Line::from("  f           Toggle heat/alpha sort"),
             Line::from("  /           Search tasks"),
@@ -2593,6 +2598,296 @@ fn draw_edit_task(f: &mut Frame, app: &App) {
     let cursor_y = inner_y + cursor_screen_row;
     if cursor_x < popup.x + popup.width - 1 && cursor_y < status_y {
         f.set_cursor_position((cursor_x, cursor_y));
+    }
+}
+
+fn draw_secrets(f: &mut Frame, app: &App) {
+    let state = match app.secrets_state.as_ref() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let area = f.area();
+    let w = 60.min(area.width.saturating_sub(4));
+    let h = 18.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    f.render_widget(Clear, popup);
+
+    match state.mode {
+        SecretsMode::NotInitialized => {
+            let block = Block::default()
+                .title(" Secrets (K) ")
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan));
+
+            let mut lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Secrets store not initialized",
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+            ];
+
+            if let Some(ref err) = state.error {
+                lines.push(Line::from(Span::styled(
+                    format!("  {err}"),
+                    Style::default().fg(Color::Red),
+                )));
+                lines.push(Line::from(""));
+            }
+
+            lines.push(Line::from("  Press Enter to initialize with auto-detected SSH key"));
+            lines.push(Line::from(Span::styled(
+                "  Or run `workflow secrets init` from CLI",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::styled(" Initialize  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" Esc ", Style::default().fg(Color::Black).bg(Color::White)),
+                Span::styled(" Close", Style::default().fg(Color::DarkGray)),
+            ]));
+
+            let para = Paragraph::new(lines).block(block);
+            f.render_widget(para, popup);
+        }
+
+        SecretsMode::ViewValue => {
+            let block = Block::default()
+                .title(" Secret Value ")
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow));
+
+            let val = state.revealed_value.as_deref().unwrap_or("(not found)");
+            let lines = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Name:  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(&state.pending_name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Value: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(val, Style::default().fg(Color::Green)),
+                ]),
+                Line::from(""),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Press any key to dismiss",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ];
+
+            let para = Paragraph::new(lines).block(block);
+            f.render_widget(para, popup);
+        }
+
+        SecretsMode::ConfirmDelete => {
+            let block = Block::default()
+                .title(" Delete Secret ")
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red));
+
+            let name = state.names.get(state.cursor).map(|s| s.as_str()).unwrap_or("?");
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Delete this secret?",
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Secret: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(name, Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(" y/Enter ", Style::default().fg(Color::Black).bg(Color::Red)),
+                    Span::styled(" Delete  ", Style::default().fg(Color::DarkGray)),
+                    Span::raw("   "),
+                    Span::styled(" Any key ", Style::default().fg(Color::Black).bg(Color::White)),
+                    Span::styled(" Cancel", Style::default().fg(Color::DarkGray)),
+                ]),
+            ];
+
+            let para = Paragraph::new(lines).block(block);
+            f.render_widget(para, popup);
+        }
+
+        SecretsMode::AddName => {
+            let block = Block::default()
+                .title(" Add Secret - Name ")
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan));
+
+            let mut lines = vec![
+                Line::from(""),
+                Line::from("  Enter secret name:"),
+                Line::from(""),
+                Line::from(format!("  > {}_", state.input)),
+            ];
+
+            if let Some(ref err) = state.error {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("  {err}"),
+                    Style::default().fg(Color::Red),
+                )));
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::styled(" Confirm  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" Esc ", Style::default().fg(Color::Black).bg(Color::White)),
+                Span::styled(" Cancel", Style::default().fg(Color::DarkGray)),
+            ]));
+
+            let para = Paragraph::new(lines).block(block);
+            f.render_widget(para, popup);
+        }
+
+        SecretsMode::AddValue | SecretsMode::EditValue => {
+            let title = if state.mode == SecretsMode::AddValue {
+                " Add Secret - Value "
+            } else {
+                " Edit Secret Value "
+            };
+            let block = Block::default()
+                .title(title)
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan));
+
+            let masked: String = "*".repeat(state.input.len());
+            let mut lines = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Secret: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(&state.pending_name, Style::default().fg(Color::Cyan)),
+                ]),
+                Line::from(""),
+                Line::from("  Enter value (masked):"),
+                Line::from(format!("  > {}|", masked)),
+            ];
+
+            if let Some(ref err) = state.error {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("  {err}"),
+                    Style::default().fg(Color::Red),
+                )));
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::styled(" Save  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" Esc ", Style::default().fg(Color::Black).bg(Color::White)),
+                Span::styled(" Cancel", Style::default().fg(Color::DarkGray)),
+            ]));
+
+            let para = Paragraph::new(lines).block(block);
+            f.render_widget(para, popup);
+        }
+
+        SecretsMode::List => {
+            let block = Block::default()
+                .title(" Secrets (K) ")
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan));
+
+            if let Some(ref err) = state.error {
+                let lines = vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        format!("  {err}"),
+                        Style::default().fg(Color::Red),
+                    )),
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        "  Press q to close",
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                ];
+                let para = Paragraph::new(lines).block(block);
+                f.render_widget(para, popup);
+                return;
+            }
+
+            if state.names.is_empty() {
+                let lines = vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        "  No secrets stored",
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(" a ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                        Span::styled(" add  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(" q ", Style::default().fg(Color::Black).bg(Color::White)),
+                        Span::styled(" close", Style::default().fg(Color::DarkGray)),
+                    ]),
+                ];
+                let para = Paragraph::new(lines).block(block);
+                f.render_widget(para, popup);
+                return;
+            }
+
+            // Split popup into list area and footer
+            let inner = Rect::new(popup.x + 1, popup.y + 1, popup.width.saturating_sub(2), popup.height.saturating_sub(2));
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(2)])
+                .split(inner);
+
+            let items: Vec<ListItem> = state
+                .names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    let style = if i == state.cursor {
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    let marker = if i == state.cursor { ">" } else { " " };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!(" {marker} "), Style::default().fg(Color::Cyan)),
+                        Span::styled(name, style),
+                    ]))
+                })
+                .collect();
+
+            let list = List::new(items).block(block);
+            f.render_widget(list, popup);
+
+            // Footer hints
+            let footer = Paragraph::new(Line::from(vec![
+                Span::styled(" a", Style::default().fg(Color::Cyan)),
+                Span::styled(":add ", Style::default().fg(Color::DarkGray)),
+                Span::styled("v", Style::default().fg(Color::Cyan)),
+                Span::styled(":view ", Style::default().fg(Color::DarkGray)),
+                Span::styled("e", Style::default().fg(Color::Cyan)),
+                Span::styled(":edit ", Style::default().fg(Color::DarkGray)),
+                Span::styled("d", Style::default().fg(Color::Cyan)),
+                Span::styled(":delete ", Style::default().fg(Color::DarkGray)),
+                Span::styled("q", Style::default().fg(Color::Cyan)),
+                Span::styled(":close", Style::default().fg(Color::DarkGray)),
+            ]));
+            f.render_widget(footer, layout[1]);
+        }
     }
 }
 

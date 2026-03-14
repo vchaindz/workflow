@@ -37,6 +37,7 @@ pub enum AppMode {
     VariablePrompt,
     GitSync,
     EditTask,
+    Secrets,
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +130,29 @@ pub struct RenameState {
     pub task_path: PathBuf,
     pub category: String,
     pub extension: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SecretsMode {
+    List,
+    ViewValue,
+    AddName,
+    AddValue,
+    EditValue,
+    ConfirmDelete,
+    NotInitialized,
+}
+
+#[derive(Debug)]
+pub struct SecretsState {
+    pub mode: SecretsMode,
+    pub names: Vec<String>,
+    pub cursor: usize,
+    pub input: String,
+    pub pending_name: String,
+    pub revealed_value: Option<String>,
+    pub error: Option<String>,
+    pub store_initialized: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -371,6 +395,9 @@ pub struct App {
     // Branch switching
     pub branch_list: Vec<crate::core::sync::BranchInfo>,
     pub branch_list_cursor: usize,
+
+    // Secrets modal state
+    pub secrets_state: Option<SecretsState>,
 }
 
 pub struct BackgroundTask {
@@ -468,6 +495,7 @@ impl App {
             sync_first_run_hint: false,
             branch_list: Vec::new(),
             branch_list_cursor: 0,
+            secrets_state: None,
         }
     }
 
