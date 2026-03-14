@@ -1,0 +1,101 @@
+name: Kernel Update
+description: Kernel-specific update with old kernel cleanup and optional reboot scheduling
+variables:
+  - name: keep_kernels
+    description: Number of old kernels to keep
+    default: "2"
+  - name: reboot_delay
+    description: Reboot delay in minutes (0 to skip reboot)
+    default: "0"
+steps:
+  - id: current-kernel
+    cmd: |
+      echo '=== Current Kernel ==='
+      uname -r
+      echo "Architecture: $(uname -m)"
+      echo "Booted: $(uptime -s 2>/dev/null || who -b | awk '{print $3, $4}')"
+  - id: list-installed-kernels
+    cmd: |
+      echo '=== Installed Kernels ==='
+      if command -v dpkg >/dev/null 2>&1; then
+        dpkg -l 'linux-image-*' 2>/dev/null | grep '^ii' | awk '{print $2, $3}'
+      elif command -v rpm >/dev/null 2>&1; then
+        rpm -qa kernel-core 2>/dev/null || rpm -qa kernel
+      elif command -v pacman >/dev/null 2>&1; then
+        pacman -Q linux linux-lts linux-zen linux-hardened 2>/dev/null || true
+      fi
+  - id: update-kernel
+    cmd: |
+      echo '=== Updating Kernel ==='
+      if command -v apt-get >/dev/null 2>&1; then
+        echo 'Package manager: apt'
+        sudo apt-get update
+        sudo apt-get install -y linux-image-generic linux-headers-generic 2>/dev/null || \
+        sudo apt-get install -y linux-image-amd64 linux-headers-amd64 2>/dev/null || \
+        echo 'Install the appropriate kernel metapackage for your distro'
+      elif command -v dnf >/dev/null 2>&1; then
+        echo 'Package manager: dnf'
+        sudo dnf upgrade -y kernel kernel-core kernel-modules
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'Package manager: zypper'
+        sudo zypper refresh
+        sudo zypper update -y kernel-default
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Package manager: pacman'
+        sudo pacman -Syu --noconfirm linux linux-headers
+      else
+        echo 'ERROR: No supported package manager found'
+        exit 1
+      fi
+  - id: cleanup-old-kernels
+    cmd: |
+      KEEP=$DZ_KEEP_KERNELS
+      echo "=== Cleaning Old Kernels (keeping $KEEP) ==="
+      if command -v dpkg >/dev/null 2>&1; then
+        CURRENT=$(uname -r)
+        OLD_KERNELS=$(dpkg -l 'linux-image-*' | grep '^ii' | awk '{print $2}' | grep -v "$CURRENT" | grep -v 'generic$' | head -n -"$KEEP" 2>/dev/null)
+        if [ -n "$OLD_KERNELS" ]; then
+          echo "Removing: $OLD_KERNELS"
+          sudo apt-get purge -y $OLD_KERNELS
+          sudo apt-get autoremove -y
+        else
+          echo 'No old kernels to remove'
+        fi
+      elif command -v dnf >/dev/null 2>&1; then
+        echo "Keeping last $KEEP kernels"
+        sudo dnf remove -y $(dnf repoquery --installonly --latest-limit=-"$KEEP" -q) 2>/dev/null || echo 'No old kernels to remove'
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'zypper: use purge-kernels for automatic cleanup'
+        sudo zypper purge-kernels --keep "$KEEP" 2>/dev/null || echo 'Manual kernel cleanup may be needed'
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Arch typically only keeps the current kernel'
+        sudo pacman -Sc --noconfirm 2>/dev/null || true
+      fi
+  - id: reboot-schedule
+    cmd: |
+      DELAY=$DZ_REBOOT_DELAY
+      echo '=== Reboot Status ==='
+      RUNNING=$(uname -r)
+      if command -v dpkg >/dev/null 2>&1; then
+        LATEST=$(dpkg -l 'linux-image-*' | grep '^ii' | awk '{print $2}' | sort -V | tail -1 | sed 's/linux-image-//')
+      elif command -v rpm >/dev/null 2>&1; then
+        LATEST=$(rpm -qa kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}\n' | sort -V | tail -1)
+      else
+        LATEST="$RUNNING"
+      fi
+      if [ "$RUNNING" != "$LATEST" ] 2>/dev/null; then
+        echo "Running kernel: $RUNNING"
+        echo "Latest installed: $LATEST"
+        echo "Reboot recommended to activate new kernel"
+        if [ "$DELAY" -gt 0 ] 2>/dev/null; then
+          echo "Scheduling reboot in $DELAY minutes..."
+          sudo shutdown -r +"$DELAY" "Kernel update reboot scheduled"
+        else
+          echo "No reboot scheduled (set reboot_delay > 0 to schedule)"
+        fi
+      else
+        echo "Already running latest installed kernel: $RUNNING"
+      fi
+env:
+  DZ_KEEP_KERNELS: "{{keep_kernels}}"
+  DZ_REBOOT_DELAY: "{{reboot_delay}}"

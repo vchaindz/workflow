@@ -1,0 +1,85 @@
+name: Reboot Check
+description: Check if reboot is needed post-patch and list services needing restart (needrestart, needs-restarting, zypper ps)
+steps:
+  - id: reboot-required
+    cmd: |
+      echo '=== Reboot Required Check ==='
+      REBOOT_NEEDED=false
+
+      if [ -f /var/run/reboot-required ]; then
+        echo 'REBOOT REQUIRED (Debian/Ubuntu indicator file found)'
+        echo '--- Packages requiring reboot ---'
+        cat /var/run/reboot-required.pkgs 2>/dev/null || echo '  (package list not available)'
+        REBOOT_NEEDED=true
+      fi
+
+      if command -v needs-restarting >/dev/null 2>&1; then
+        echo '--- needs-restarting check (RHEL/Fedora) ---'
+        if ! needs-restarting -r 2>/dev/null; then
+          echo 'REBOOT REQUIRED (kernel or core libraries updated)'
+          REBOOT_NEEDED=true
+        else
+          echo 'No reboot needed per needs-restarting'
+        fi
+      fi
+
+      if command -v zypper >/dev/null 2>&1; then
+        echo '--- zypper reboot check (SUSE) ---'
+        ZYPPER_REBOOT=$(zypper needs-rebooting 2>/dev/null; echo $?)
+        if [ "$ZYPPER_REBOOT" = "102" ]; then
+          echo 'REBOOT REQUIRED (zypper indicates reboot needed)'
+          REBOOT_NEEDED=true
+        else
+          echo 'No reboot needed per zypper'
+        fi
+      fi
+
+      # Generic kernel check
+      if [ "$REBOOT_NEEDED" = "false" ]; then
+        RUNNING=$(uname -r)
+        if command -v rpm >/dev/null 2>&1; then
+          LATEST=$(rpm -qa kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}\n' 2>/dev/null | sort -V | tail -1)
+        elif command -v dpkg >/dev/null 2>&1; then
+          LATEST=$(dpkg -l 'linux-image-*' 2>/dev/null | grep '^ii' | awk '{print $2}' | sed 's/linux-image-//' | sort -V | tail -1)
+        else
+          LATEST="$RUNNING"
+        fi
+        if [ "$RUNNING" != "$LATEST" ] 2>/dev/null; then
+          echo "Running kernel ($RUNNING) differs from installed ($LATEST)"
+          echo 'REBOOT RECOMMENDED'
+          REBOOT_NEEDED=true
+        fi
+      fi
+
+      if [ "$REBOOT_NEEDED" = "false" ]; then
+        echo 'No reboot required'
+      fi
+
+  - id: services-needing-restart
+    cmd: |
+      echo '=== Services Needing Restart ==='
+      if command -v needrestart >/dev/null 2>&1; then
+        echo '--- needrestart report ---'
+        sudo needrestart -b 2>/dev/null || sudo needrestart -r l 2>/dev/null || echo 'needrestart check failed'
+      elif command -v needs-restarting >/dev/null 2>&1; then
+        echo '--- Services needing restart (RHEL/Fedora) ---'
+        needs-restarting -s 2>/dev/null || needs-restarting 2>/dev/null | head -30
+      elif command -v zypper >/dev/null 2>&1; then
+        echo '--- Processes using deleted files (SUSE) ---'
+        zypper ps -s 2>/dev/null || echo 'zypper ps not available'
+      elif command -v checkrestart >/dev/null 2>&1; then
+        echo '--- checkrestart report ---'
+        sudo checkrestart 2>/dev/null
+      else
+        echo 'No service restart checker found'
+        echo 'Consider installing:'
+        echo '  Debian/Ubuntu: sudo apt-get install needrestart'
+        echo '  RHEL/Fedora:   included in yum-utils'
+        echo '  SUSE:          zypper ps (built-in)'
+      fi
+
+  - id: uptime-info
+    cmd: |
+      echo '=== System Uptime ==='
+      uptime
+      echo "Last boot: $(who -b 2>/dev/null | awk '{print $3, $4}' || uptime -s 2>/dev/null)"

@@ -1,0 +1,89 @@
+name: Patch Audit
+description: List available patches without applying — shows pending security and bugfix counts per distribution
+steps:
+  - id: detect-distro
+    cmd: |
+      echo '=== Distribution Info ==='
+      if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        echo "Distribution: $NAME $VERSION_ID"
+      fi
+      echo "Kernel: $(uname -r)"
+  - id: list-pending
+    cmd: |
+      echo '=== Pending Updates ==='
+      if command -v apt-get >/dev/null 2>&1; then
+        echo 'Package manager: apt'
+        sudo apt-get update -qq
+        echo ''
+        echo '--- All pending updates ---'
+        apt list --upgradable 2>/dev/null | tail -n +2
+        TOTAL=$(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l)
+        echo ''
+        echo "Total pending: $TOTAL"
+        echo ''
+        echo '--- Security updates ---'
+        if command -v unattended-upgrade >/dev/null 2>&1; then
+          sudo unattended-upgrade --dry-run 2>&1 | grep -i 'packages that are going to be upgraded' || echo 'Run unattended-upgrades --dry-run for security count'
+        fi
+      elif command -v dnf >/dev/null 2>&1; then
+        echo 'Package manager: dnf'
+        echo ''
+        echo '--- All pending updates ---'
+        dnf check-update 2>/dev/null; true
+        echo ''
+        echo '--- Security updates only ---'
+        dnf updateinfo list --security 2>/dev/null || echo 'No security update info available'
+        echo ''
+        echo '--- Bugfix updates ---'
+        dnf updateinfo list --bugfix 2>/dev/null || echo 'No bugfix update info available'
+        echo ''
+        echo '--- Advisory summary ---'
+        dnf updateinfo summary 2>/dev/null || true
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'Package manager: zypper'
+        sudo zypper refresh -q
+        echo ''
+        echo '--- All pending patches ---'
+        zypper list-patches 2>/dev/null
+        echo ''
+        echo '--- Security patches ---'
+        zypper list-patches --category security 2>/dev/null
+        echo ''
+        echo '--- Pending package updates ---'
+        zypper list-updates 2>/dev/null
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Package manager: pacman'
+        echo ''
+        echo '--- Pending updates ---'
+        checkupdates 2>/dev/null || echo 'Install pacman-contrib for checkupdates'
+        TOTAL=$(checkupdates 2>/dev/null | wc -l)
+        echo ''
+        echo "Total pending: $TOTAL"
+        echo ''
+        echo '--- Known vulnerabilities ---'
+        if command -v arch-audit >/dev/null 2>&1; then
+          arch-audit
+        else
+          echo 'Install arch-audit for CVE info: pacman -S arch-audit'
+        fi
+      else
+        echo 'ERROR: No supported package manager found'
+        exit 1
+      fi
+  - id: last-update
+    cmd: |
+      echo '=== Last Update Timestamps ==='
+      if [ -f /var/log/apt/history.log ]; then
+        echo "Last apt operation:"
+        grep 'Start-Date' /var/log/apt/history.log | tail -1
+      elif [ -f /var/log/dnf.log ]; then
+        echo "Last dnf operation:"
+        tail -1 /var/log/dnf.log
+      elif command -v zypper >/dev/null 2>&1; then
+        echo "Last zypper operation:"
+        zypper history | head -5
+      elif [ -f /var/log/pacman.log ]; then
+        echo "Last pacman operation:"
+        grep 'upgraded\|installed' /var/log/pacman.log | tail -3
+      fi

@@ -1,0 +1,134 @@
+name: Post-Patch Verification
+description: Post-patch verification — confirm package integrity, check for broken deps, validate running kernel matches installed
+steps:
+  - id: package-integrity
+    cmd: |
+      echo '=== Package Integrity Check ==='
+      if command -v dpkg >/dev/null 2>&1; then
+        echo 'Checking dpkg integrity...'
+        BROKEN=$(sudo dpkg --audit 2>&1)
+        if [ -z "$BROKEN" ]; then
+          echo '[OK] No broken packages (dpkg --audit clean)'
+        else
+          echo '[WARN] Issues found:'
+          echo "$BROKEN"
+        fi
+      elif command -v rpm >/dev/null 2>&1; then
+        echo 'Verifying RPM package integrity (checking critical packages)...'
+        rpm -Va --nofiles --nodigest 2>/dev/null | head -20
+        ISSUES=$(rpm -Va --nofiles --nodigest 2>/dev/null | wc -l)
+        if [ "$ISSUES" -eq 0 ]; then
+          echo '[OK] All verified packages intact'
+        else
+          echo "[INFO] $ISSUES package(s) with modified files (may be expected for config files)"
+        fi
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Checking pacman package integrity...'
+        ISSUES=$(pacman -Qk 2>&1 | grep -c 'warning') || true
+        if [ "$ISSUES" -eq 0 ]; then
+          echo '[OK] All packages intact'
+        else
+          echo "[WARN] $ISSUES package(s) with missing files:"
+          pacman -Qk 2>&1 | grep 'warning' | head -10
+        fi
+      fi
+
+  - id: broken-deps
+    cmd: |
+      echo '=== Dependency Check ==='
+      if command -v apt-get >/dev/null 2>&1; then
+        echo 'Checking for broken dependencies...'
+        BROKEN=$(sudo apt-get check 2>&1)
+        if echo "$BROKEN" | grep -qi 'broken'; then
+          echo '[WARN] Broken dependencies detected:'
+          echo "$BROKEN"
+          echo ''
+          echo 'To fix: sudo apt-get install -f'
+        else
+          echo '[OK] No broken dependencies'
+        fi
+        # Check held-back packages
+        HELD=$(apt list --upgradable 2>/dev/null | grep -c 'held back') || true
+        if [ "$HELD" -gt 0 ]; then
+          echo "[INFO] $HELD package(s) held back"
+        fi
+      elif command -v dnf >/dev/null 2>&1; then
+        echo 'Checking for dependency issues...'
+        PROBLEMS=$(dnf repoquery --unsatisfied 2>/dev/null)
+        if [ -z "$PROBLEMS" ]; then
+          echo '[OK] No unsatisfied dependencies'
+        else
+          echo '[WARN] Unsatisfied dependencies:'
+          echo "$PROBLEMS" | head -10
+        fi
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'Verifying system consistency...'
+        sudo zypper verify 2>/dev/null || echo '[WARN] zypper verify reported issues'
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Checking for dependency issues...'
+        ORPHANS=$(pacman -Qdt 2>/dev/null)
+        if [ -n "$ORPHANS" ]; then
+          echo "[INFO] Orphaned packages (no longer required):"
+          echo "$ORPHANS" | head -10
+        else
+          echo '[OK] No orphaned packages'
+        fi
+      fi
+
+  - id: kernel-validation
+    cmd: |
+      echo '=== Kernel Validation ==='
+      RUNNING=$(uname -r)
+      echo "Running kernel: $RUNNING"
+
+      if command -v dpkg >/dev/null 2>&1; then
+        LATEST=$(dpkg -l 'linux-image-*' 2>/dev/null | grep '^ii' | awk '{print $2}' | sed 's/linux-image-//' | grep -v 'generic$' | sort -V | tail -1)
+      elif command -v rpm >/dev/null 2>&1; then
+        LATEST=$(rpm -qa kernel-core --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}\n' 2>/dev/null | sort -V | tail -1)
+      elif command -v pacman >/dev/null 2>&1; then
+        LATEST=$(pacman -Q linux 2>/dev/null | awk '{print $2}')
+      else
+        LATEST="$RUNNING"
+      fi
+
+      echo "Latest installed: $LATEST"
+      if [ "$RUNNING" = "$LATEST" ] 2>/dev/null; then
+        echo '[OK] Running kernel matches latest installed'
+      else
+        echo '[INFO] Running kernel differs from latest installed — reboot may be needed'
+      fi
+
+  - id: service-health
+    cmd: |
+      echo '=== Service Health Post-Patch ==='
+      echo '--- Failed systemd units ---'
+      FAILED=$(systemctl --failed --no-legend 2>/dev/null)
+      if [ -z "$FAILED" ]; then
+        echo '[OK] No failed units'
+      else
+        echo '[WARN] Failed units detected:'
+        echo "$FAILED"
+      fi
+
+  - id: summary
+    cmd: |
+      echo ''
+      echo '=== Post-Patch Verification Summary ==='
+      echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "Hostname:  $(hostname)"
+      echo "Kernel:    $(uname -r)"
+      if command -v dpkg >/dev/null 2>&1; then
+        echo "Packages:  $(dpkg -l | grep -c '^ii')"
+      elif command -v rpm >/dev/null 2>&1; then
+        echo "Packages:  $(rpm -qa | wc -l)"
+      elif command -v pacman >/dev/null 2>&1; then
+        echo "Packages:  $(pacman -Q | wc -l)"
+      fi
+      FAILED_UNITS=$(systemctl --failed --no-legend 2>/dev/null | wc -l)
+      echo "Failed units: $FAILED_UNITS"
+      echo ''
+      if [ "$FAILED_UNITS" -eq 0 ]; then
+        echo 'Overall: PASS'
+      else
+        echo 'Overall: REVIEW NEEDED (failed units detected)'
+      fi

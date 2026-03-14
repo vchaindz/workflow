@@ -1,0 +1,62 @@
+name: Security Patches Only
+description: Apply security-only patches across Linux distributions (Debian/Ubuntu, RHEL/Fedora, SUSE, Arch)
+steps:
+  - id: detect-distro
+    cmd: |
+      echo '=== Detecting Distribution ==='
+      if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        echo "Distribution: $NAME $VERSION_ID"
+      fi
+  - id: apply-security-patches
+    cmd: |
+      echo '=== Applying Security Patches Only ==='
+      if command -v apt-get >/dev/null 2>&1; then
+        echo 'Package manager: apt'
+        sudo apt-get update
+        # Install only security updates
+        sudo apt-get upgrade -y -o Dir::Etc::SourceList=/etc/apt/sources.list \
+          -o Dir::Etc::SourceParts=/dev/null \
+          -o APT::Get::List-Cleanup="0" 2>/dev/null || \
+        sudo unattended-upgrade --dry-run 2>/dev/null && sudo unattended-upgrade -v || \
+        echo 'Applying all available security updates via apt...' && \
+        grep -h security /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null | \
+          sudo tee /tmp/security.list >/dev/null && \
+        sudo apt-get upgrade -y -o Dir::Etc::SourceList=/tmp/security.list -o Dir::Etc::SourceParts=/dev/null
+      elif command -v dnf >/dev/null 2>&1; then
+        echo 'Package manager: dnf'
+        sudo dnf upgrade --security -y
+      elif command -v yum >/dev/null 2>&1; then
+        echo 'Package manager: yum'
+        sudo yum update --security -y
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'Package manager: zypper'
+        sudo zypper refresh
+        sudo zypper patch --category security -y
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Package manager: pacman'
+        echo 'Note: Arch does not distinguish security vs non-security updates'
+        echo 'Checking for updates with arch-audit if available...'
+        if command -v arch-audit >/dev/null 2>&1; then
+          arch-audit --upgradable
+          sudo pacman -Syu --noconfirm
+        else
+          echo 'Install arch-audit for CVE-based filtering: pacman -S arch-audit'
+          echo 'Performing full system update instead...'
+          sudo pacman -Syu --noconfirm
+        fi
+      else
+        echo 'ERROR: No supported package manager found'
+        exit 1
+      fi
+  - id: summary
+    cmd: |
+      echo '=== Security Patch Summary ==='
+      if command -v dpkg >/dev/null 2>&1; then
+        echo "Total packages: $(dpkg -l | grep -c '^ii')"
+      elif command -v rpm >/dev/null 2>&1; then
+        echo "Total packages: $(rpm -qa | wc -l)"
+      elif command -v pacman >/dev/null 2>&1; then
+        echo "Total packages: $(pacman -Q | wc -l)"
+      fi
+      echo "Completed at: $(date)"

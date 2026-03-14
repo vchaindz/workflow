@@ -1,0 +1,128 @@
+name: Held Packages Manager
+description: List, hold, and unhold packages — pin versions across distributions
+variables:
+  - name: action
+    description: Action to perform (list, hold, unhold)
+    default: list
+  - name: package
+    description: Package name to hold or unhold (ignored for list action)
+    default: ""
+steps:
+  - id: manage-holds
+    cmd: |
+      ACTION=$DZ_ACTION
+      PACKAGE=$DZ_PACKAGE
+      echo "=== Package Hold Manager (action: $ACTION) ==="
+
+      if command -v apt-get >/dev/null 2>&1; then
+        echo 'Package manager: apt'
+        case "$ACTION" in
+          list)
+            echo '--- Currently held packages ---'
+            apt-mark showhold 2>/dev/null
+            HELD=$(apt-mark showhold 2>/dev/null | wc -l)
+            echo ''
+            echo "Total held: $HELD"
+            ;;
+          hold)
+            if [ -z "$PACKAGE" ]; then
+              echo 'ERROR: No package specified. Set the package variable.'
+              exit 1
+            fi
+            echo "Holding package: $PACKAGE"
+            sudo apt-mark hold "$PACKAGE"
+            echo "Package $PACKAGE is now held at version:"
+            dpkg -l "$PACKAGE" 2>/dev/null | grep '^ii'
+            ;;
+          unhold)
+            if [ -z "$PACKAGE" ]; then
+              echo 'ERROR: No package specified. Set the package variable.'
+              exit 1
+            fi
+            echo "Removing hold on package: $PACKAGE"
+            sudo apt-mark unhold "$PACKAGE"
+            ;;
+          *)
+            echo "Unknown action: $ACTION (use list, hold, or unhold)"
+            exit 1
+            ;;
+        esac
+
+      elif command -v dnf >/dev/null 2>&1; then
+        echo 'Package manager: dnf'
+        case "$ACTION" in
+          list)
+            echo '--- Excluded/held packages ---'
+            grep -E '^exclude=' /etc/dnf/dnf.conf 2>/dev/null || echo 'No excludes in dnf.conf'
+            if dnf versionlock list 2>/dev/null; then
+              echo '--- Version-locked packages ---'
+              dnf versionlock list
+            fi
+            ;;
+          hold)
+            if [ -z "$PACKAGE" ]; then
+              echo 'ERROR: No package specified.'; exit 1
+            fi
+            echo "Locking package: $PACKAGE"
+            sudo dnf install -y python3-dnf-plugin-versionlock 2>/dev/null || true
+            sudo dnf versionlock add "$PACKAGE"
+            ;;
+          unhold)
+            if [ -z "$PACKAGE" ]; then
+              echo 'ERROR: No package specified.'; exit 1
+            fi
+            echo "Unlocking package: $PACKAGE"
+            sudo dnf versionlock delete "$PACKAGE"
+            ;;
+        esac
+
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'Package manager: zypper'
+        case "$ACTION" in
+          list)
+            echo '--- Locked packages ---'
+            zypper locks 2>/dev/null
+            ;;
+          hold)
+            if [ -z "$PACKAGE" ]; then echo 'ERROR: No package specified.'; exit 1; fi
+            echo "Locking package: $PACKAGE"
+            sudo zypper addlock "$PACKAGE"
+            ;;
+          unhold)
+            if [ -z "$PACKAGE" ]; then echo 'ERROR: No package specified.'; exit 1; fi
+            echo "Removing lock on package: $PACKAGE"
+            sudo zypper removelock "$PACKAGE"
+            ;;
+        esac
+
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Package manager: pacman'
+        case "$ACTION" in
+          list)
+            echo '--- Ignored packages (pacman.conf) ---'
+            grep '^IgnorePkg' /etc/pacman.conf 2>/dev/null || echo 'No ignored packages'
+            ;;
+          hold)
+            if [ -z "$PACKAGE" ]; then echo 'ERROR: No package specified.'; exit 1; fi
+            echo "Adding $PACKAGE to IgnorePkg in pacman.conf"
+            if grep -q '^IgnorePkg' /etc/pacman.conf; then
+              sudo sed -i "s/^IgnorePkg.*/& $PACKAGE/" /etc/pacman.conf
+            else
+              echo "IgnorePkg = $PACKAGE" | sudo tee -a /etc/pacman.conf
+            fi
+            echo "Package $PACKAGE will be skipped during upgrades"
+            ;;
+          unhold)
+            if [ -z "$PACKAGE" ]; then echo 'ERROR: No package specified.'; exit 1; fi
+            echo "Removing $PACKAGE from IgnorePkg"
+            sudo sed -i "s/ $PACKAGE//;s/^IgnorePkg = $PACKAGE$//" /etc/pacman.conf
+            ;;
+        esac
+
+      else
+        echo 'ERROR: No supported package manager found'
+        exit 1
+      fi
+env:
+  DZ_ACTION: "{{action}}"
+  DZ_PACKAGE: "{{package}}"

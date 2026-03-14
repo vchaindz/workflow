@@ -1,0 +1,74 @@
+name: Changelog Review
+description: Show changelogs for pending updates before applying (apt changelog, dnf changelog, zypper)
+variables:
+  - name: max_entries
+    description: Maximum number of package changelogs to show
+    default: "10"
+steps:
+  - id: pending-updates
+    cmd: |
+      echo '=== Pending Updates ==='
+      if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -qq 2>/dev/null
+        apt list --upgradable 2>/dev/null | tail -n +2 | head -30
+        TOTAL=$(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l)
+        echo ''
+        echo "Total pending: $TOTAL"
+      elif command -v dnf >/dev/null 2>&1; then
+        dnf check-update -q 2>/dev/null | head -30; true
+      elif command -v zypper >/dev/null 2>&1; then
+        sudo zypper refresh -q 2>/dev/null
+        zypper list-updates 2>/dev/null | head -30
+      elif command -v pacman >/dev/null 2>&1; then
+        checkupdates 2>/dev/null | head -30 || echo 'Install pacman-contrib for checkupdates'
+      fi
+  - id: show-changelogs
+    cmd: |
+      MAX=$DZ_MAX_ENTRIES
+      echo "=== Changelogs (showing up to $MAX packages) ==="
+
+      if command -v apt-get >/dev/null 2>&1; then
+        PACKAGES=$(apt list --upgradable 2>/dev/null | tail -n +2 | cut -d/ -f1 | head -"$MAX")
+        for PKG in $PACKAGES; do
+          echo ''
+          echo "--- $PKG ---"
+          apt changelog "$PKG" 2>/dev/null | head -30
+          echo '...'
+        done
+
+      elif command -v dnf >/dev/null 2>&1; then
+        PACKAGES=$(dnf check-update -q 2>/dev/null | awk 'NF>=3{print $1}' | head -"$MAX")
+        for PKG in $PACKAGES; do
+          echo ''
+          echo "--- $PKG ---"
+          dnf changelog --upgrades "$PKG" 2>/dev/null | head -30 || \
+          dnf updateinfo info "$PKG" 2>/dev/null | head -30
+          echo '...'
+        done
+
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'zypper changelog info:'
+        PACKAGES=$(zypper list-updates 2>/dev/null | grep '|' | tail -n +3 | awk -F'|' '{print $3}' | tr -d ' ' | head -"$MAX")
+        for PKG in $PACKAGES; do
+          echo ''
+          echo "--- $PKG ---"
+          rpm -q --changelog "$PKG" 2>/dev/null | head -20
+          echo '...'
+        done
+
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Arch Linux changelogs (from Arch wiki/repos):'
+        PACKAGES=$(checkupdates 2>/dev/null | awk '{print $1}' | head -"$MAX")
+        for PKG in $PACKAGES; do
+          echo ''
+          echo "--- $PKG ---"
+          pacman -Qc "$PKG" 2>/dev/null | head -20 || echo '  (no changelog available via pacman)'
+          echo '...'
+        done
+
+      else
+        echo 'ERROR: No supported package manager found'
+        exit 1
+      fi
+env:
+  DZ_MAX_ENTRIES: "{{max_entries}}"

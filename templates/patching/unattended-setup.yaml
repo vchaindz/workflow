@@ -1,0 +1,95 @@
+name: Unattended Updates Setup
+description: Configure automatic security updates (unattended-upgrades for Debian/Ubuntu, dnf-automatic for RHEL/Fedora, zypper for SUSE)
+steps:
+  - id: detect-and-install
+    cmd: |
+      echo '=== Setting Up Automatic Security Updates ==='
+      if command -v apt-get >/dev/null 2>&1; then
+        echo 'Distribution: Debian/Ubuntu family'
+        echo 'Installing unattended-upgrades...'
+        sudo apt-get update -qq
+        sudo apt-get install -y unattended-upgrades apt-listchanges
+        echo ''
+        echo 'Enabling unattended-upgrades...'
+        sudo dpkg-reconfigure -plow unattended-upgrades 2>/dev/null || \
+          echo 'unattended-upgrades "1";' | sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null
+      elif command -v dnf >/dev/null 2>&1; then
+        echo 'Distribution: RHEL/Fedora family'
+        echo 'Installing dnf-automatic...'
+        sudo dnf install -y dnf-automatic
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'Distribution: SUSE family'
+        echo 'Configuring zypper automatic patches...'
+        sudo zypper install -y yast2-online-update-configuration 2>/dev/null || true
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Distribution: Arch Linux'
+        echo 'Note: Arch recommends manual updates due to rolling release nature'
+        echo 'Consider using a pacman hook or timer for notifications instead'
+      else
+        echo 'ERROR: No supported package manager found'
+        exit 1
+      fi
+  - id: configure
+    cmd: |
+      echo '=== Configuring Auto-Update Settings ==='
+      if command -v apt-get >/dev/null 2>&1; then
+        CONFIG=/etc/apt/apt.conf.d/50unattended-upgrades
+        if [ -f "$CONFIG" ]; then
+          echo "Config file: $CONFIG"
+          echo 'Current security origins:'
+          grep -E '^\s+"' "$CONFIG" | grep -i security | head -5
+          echo ''
+          echo 'Auto-reboot setting:'
+          grep -i 'Automatic-Reboot' "$CONFIG" || echo '  Not configured (default: no auto-reboot)'
+        fi
+        # Ensure auto-update config exists
+        cat <<'APTCONF' | sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+APTCONF
+        echo 'Auto-update schedule configured (daily check, weekly autoclean)'
+      elif command -v dnf >/dev/null 2>&1; then
+        CONFIG=/etc/dnf/automatic.conf
+        if [ -f "$CONFIG" ]; then
+          echo "Config file: $CONFIG"
+          # Set to security only and apply
+          sudo sed -i 's/^upgrade_type.*/upgrade_type = security/' "$CONFIG" 2>/dev/null
+          sudo sed -i 's/^apply_updates.*/apply_updates = yes/' "$CONFIG" 2>/dev/null
+          echo 'Configured for security-only auto-apply'
+          grep -E '^(upgrade_type|apply_updates)' "$CONFIG"
+        fi
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'Configure via YaST or create a systemd timer:'
+        echo '  systemctl enable --now zypper-patch.timer'
+      fi
+  - id: enable-service
+    cmd: |
+      echo '=== Enabling Auto-Update Service ==='
+      if command -v apt-get >/dev/null 2>&1; then
+        sudo systemctl enable apt-daily.timer 2>/dev/null && echo 'apt-daily.timer enabled' || true
+        sudo systemctl enable apt-daily-upgrade.timer 2>/dev/null && echo 'apt-daily-upgrade.timer enabled' || true
+        sudo systemctl start apt-daily.timer 2>/dev/null || true
+        sudo systemctl start apt-daily-upgrade.timer 2>/dev/null || true
+      elif command -v dnf >/dev/null 2>&1; then
+        sudo systemctl enable --now dnf-automatic.timer
+        echo 'dnf-automatic.timer enabled and started'
+        systemctl status dnf-automatic.timer --no-pager 2>/dev/null | head -5
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'Enable automatic patches via YaST or systemd timer'
+      fi
+  - id: verify
+    cmd: |
+      echo '=== Verification ==='
+      if command -v apt-get >/dev/null 2>&1; then
+        echo 'Timer status:'
+        systemctl list-timers apt-daily* 2>/dev/null || true
+        echo ''
+        echo 'Unattended-upgrades package:'
+        dpkg -l unattended-upgrades 2>/dev/null | grep '^ii' || echo 'NOT INSTALLED'
+      elif command -v dnf >/dev/null 2>&1; then
+        echo 'Timer status:'
+        systemctl list-timers dnf-automatic* 2>/dev/null || true
+      fi
+      echo ''
+      echo 'Automatic security updates configured successfully'

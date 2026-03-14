@@ -1,0 +1,138 @@
+name: Patch Compliance Report
+description: Generate a patch compliance report with installed date, pending count, CVE exposure, and kernel age
+steps:
+  - id: system-info
+    cmd: |
+      echo '========================================='
+      echo '    PATCH COMPLIANCE REPORT'
+      echo "    Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "    Hostname:  $(hostname)"
+      echo '========================================='
+      echo ''
+      echo '=== System Info ==='
+      if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        echo "Distribution: $NAME $VERSION_ID"
+      fi
+      echo "Kernel: $(uname -r)"
+      echo "Architecture: $(uname -m)"
+      echo "Uptime: $(uptime -p 2>/dev/null || uptime)"
+  - id: kernel-age
+    cmd: |
+      echo '=== Kernel Age ==='
+      KERNEL_DATE=""
+      if [ -f /proc/version ]; then
+        KERNEL_DATE=$(date -d "$(uname -v | grep -oP '#\d+ \K.*')" '+%Y-%m-%d' 2>/dev/null || true)
+      fi
+      if [ -z "$KERNEL_DATE" ] && command -v rpm >/dev/null 2>&1; then
+        KERNEL_DATE=$(rpm -qi kernel-core-"$(uname -r)" 2>/dev/null | grep 'Install Date' | cut -d: -f2- | xargs -I{} date -d '{}' '+%Y-%m-%d' 2>/dev/null || true)
+      fi
+      if [ -z "$KERNEL_DATE" ] && command -v dpkg >/dev/null 2>&1; then
+        KERNEL_PKG=$(dpkg -S "/boot/vmlinuz-$(uname -r)" 2>/dev/null | cut -d: -f1)
+        if [ -n "$KERNEL_PKG" ]; then
+          KERNEL_DATE=$(stat -c '%y' /var/lib/dpkg/info/"${KERNEL_PKG}".list 2>/dev/null | cut -d' ' -f1)
+        fi
+      fi
+      echo "Running kernel: $(uname -r)"
+      if [ -n "$KERNEL_DATE" ]; then
+        echo "Kernel install date: $KERNEL_DATE"
+        DAYS_OLD=$(( ($(date +%s) - $(date -d "$KERNEL_DATE" +%s)) / 86400 ))
+        echo "Kernel age: $DAYS_OLD days"
+        if [ "$DAYS_OLD" -gt 90 ]; then
+          echo "WARNING: Kernel is older than 90 days"
+        fi
+      else
+        echo "Kernel install date: unknown"
+      fi
+  - id: pending-patches
+    cmd: |
+      echo '=== Pending Patches ==='
+      if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -qq 2>/dev/null
+        TOTAL=$(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l)
+        echo "Pending updates: $TOTAL"
+      elif command -v dnf >/dev/null 2>&1; then
+        dnf check-update -q 2>/dev/null; true
+        TOTAL=$(dnf check-update -q 2>/dev/null | grep -c '\.') || true
+        echo "Pending updates: $TOTAL"
+        echo ''
+        dnf updateinfo summary 2>/dev/null || true
+      elif command -v zypper >/dev/null 2>&1; then
+        sudo zypper refresh -q 2>/dev/null
+        TOTAL=$(zypper list-updates 2>/dev/null | grep '|' | tail -n +3 | wc -l)
+        echo "Pending updates: $TOTAL"
+        SECURITY=$(zypper list-patches --category security 2>/dev/null | grep '|' | tail -n +3 | wc -l)
+        echo "Security patches: $SECURITY"
+      elif command -v pacman >/dev/null 2>&1; then
+        TOTAL=$(checkupdates 2>/dev/null | wc -l) || TOTAL="unknown"
+        echo "Pending updates: $TOTAL"
+      fi
+  - id: cve-exposure
+    cmd: |
+      echo '=== CVE Exposure ==='
+      if command -v dnf >/dev/null 2>&1; then
+        echo '--- Outstanding CVEs ---'
+        dnf updateinfo list --security 2>/dev/null | grep -i cve | head -20 || echo 'No CVE data available'
+      elif command -v apt-get >/dev/null 2>&1; then
+        if command -v debsecan >/dev/null 2>&1; then
+          echo '--- debsecan report ---'
+          debsecan --suite "$(lsb_release -cs 2>/dev/null)" 2>/dev/null | head -20
+        else
+          echo 'Install debsecan for CVE tracking: sudo apt-get install debsecan'
+        fi
+      elif command -v arch-audit >/dev/null 2>&1; then
+        echo '--- arch-audit report ---'
+        arch-audit 2>/dev/null | head -20
+      else
+        echo 'No CVE scanning tool available for this distribution'
+      fi
+  - id: last-patch-date
+    cmd: |
+      echo '=== Last Patch Activity ==='
+      if [ -f /var/log/apt/history.log ]; then
+        LAST=$(grep 'Start-Date' /var/log/apt/history.log | tail -1 | cut -d: -f2- | xargs)
+        echo "Last apt operation: $LAST"
+      elif [ -f /var/log/dnf.log ]; then
+        LAST=$(tail -1 /var/log/dnf.log | awk '{print $1, $2}')
+        echo "Last dnf operation: $LAST"
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'Last zypper operations:'
+        zypper history 2>/dev/null | head -5
+      elif [ -f /var/log/pacman.log ]; then
+        LAST=$(grep -E 'upgraded|installed' /var/log/pacman.log | tail -1)
+        echo "Last pacman operation: $LAST"
+      fi
+  - id: compliance-summary
+    cmd: |
+      echo ''
+      echo '========================================='
+      echo '    COMPLIANCE SUMMARY'
+      echo '========================================='
+      ISSUES=0
+      # Check reboot needed
+      if [ -f /var/run/reboot-required ]; then
+        echo '[WARN] Reboot required'
+        ISSUES=$((ISSUES + 1))
+      fi
+      # Check if auto-updates configured
+      if command -v apt-get >/dev/null 2>&1; then
+        if dpkg -l unattended-upgrades 2>/dev/null | grep -q '^ii'; then
+          echo '[OK] Unattended upgrades installed'
+        else
+          echo '[WARN] Unattended upgrades not installed'
+          ISSUES=$((ISSUES + 1))
+        fi
+      elif command -v dnf >/dev/null 2>&1; then
+        if rpm -q dnf-automatic >/dev/null 2>&1; then
+          echo '[OK] dnf-automatic installed'
+        else
+          echo '[WARN] dnf-automatic not installed'
+          ISSUES=$((ISSUES + 1))
+        fi
+      fi
+      echo ''
+      if [ "$ISSUES" -eq 0 ]; then
+        echo 'Status: COMPLIANT'
+      else
+        echo "Status: $ISSUES issue(s) found"
+      fi

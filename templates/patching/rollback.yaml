@@ -1,0 +1,79 @@
+name: Patch Rollback
+description: Rollback last patch operation using distro-specific mechanisms (dnf history, apt-mark, zypper rollback, pacman cache)
+steps:
+  - id: show-history
+    cmd: |
+      echo '=== Recent Package Operations ==='
+      if command -v dnf >/dev/null 2>&1; then
+        echo 'Package manager: dnf'
+        dnf history list --reverse 2>/dev/null | tail -10
+      elif command -v apt-get >/dev/null 2>&1; then
+        echo 'Package manager: apt'
+        echo '--- Last 5 apt operations ---'
+        grep -A2 'Start-Date' /var/log/apt/history.log 2>/dev/null | tail -15
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'Package manager: zypper'
+        zypper history 2>/dev/null | head -15
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Package manager: pacman'
+        echo '--- Last 10 upgrades ---'
+        grep 'upgraded' /var/log/pacman.log 2>/dev/null | tail -10
+      else
+        echo 'ERROR: No supported package manager found'
+        exit 1
+      fi
+  - id: rollback
+    cmd: |
+      echo '=== Rolling Back Last Patch Operation ==='
+      if command -v dnf >/dev/null 2>&1; then
+        LAST_ID=$(dnf history list 2>/dev/null | awk 'NR==3{print $1}')
+        if [ -n "$LAST_ID" ]; then
+          echo "Rolling back dnf transaction $LAST_ID..."
+          echo "Details:"
+          dnf history info "$LAST_ID" 2>/dev/null
+          echo ''
+          echo 'To execute rollback, run: sudo dnf history undo '"$LAST_ID"' -y'
+          echo '(Not executing automatically for safety)'
+        else
+          echo 'No transaction found to rollback'
+        fi
+      elif command -v apt-get >/dev/null 2>&1; then
+        echo 'apt does not have native transaction rollback.'
+        echo 'Options:'
+        echo '  1. Check /var/log/apt/history.log for upgraded packages'
+        echo '  2. Downgrade specific packages with: apt-get install package=version'
+        echo ''
+        echo '--- Recently upgraded packages ---'
+        grep -A 100 'Start-Date' /var/log/apt/history.log 2>/dev/null | \
+          grep 'Upgrade:' | tail -1 | tr ',' '\n' | head -20
+        echo ''
+        echo 'To downgrade a package: sudo apt-get install <package>=<old-version>'
+      elif command -v zypper >/dev/null 2>&1; then
+        echo 'Checking zypper rollback capability...'
+        if command -v snapper >/dev/null 2>&1; then
+          echo '--- Snapper snapshots ---'
+          sudo snapper list
+          echo ''
+          echo 'To rollback: sudo snapper rollback <snapshot-id>'
+        else
+          echo 'Snapper not available. Manual rollback via zypper:'
+          echo '  zypper install --oldpackage <package>-<version>'
+        fi
+      elif command -v pacman >/dev/null 2>&1; then
+        echo 'Pacman cache-based rollback:'
+        echo '--- Cached package versions ---'
+        ls /var/cache/pacman/pkg/ 2>/dev/null | tail -20
+        echo ''
+        echo 'To downgrade a package: sudo pacman -U /var/cache/pacman/pkg/<package-old-version>.pkg.tar.zst'
+      fi
+  - id: verify
+    cmd: |
+      echo '=== Current State ==='
+      echo "Kernel: $(uname -r)"
+      if command -v dpkg >/dev/null 2>&1; then
+        echo "Packages: $(dpkg -l | grep -c '^ii')"
+      elif command -v rpm >/dev/null 2>&1; then
+        echo "Packages: $(rpm -qa | wc -l)"
+      elif command -v pacman >/dev/null 2>&1; then
+        echo "Packages: $(pacman -Q | wc -l)"
+      fi
