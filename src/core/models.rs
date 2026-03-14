@@ -29,6 +29,7 @@ pub enum ForEachSource {
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum RawStep {
     CmdString(String),
     CmdMap {
