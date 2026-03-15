@@ -95,12 +95,22 @@ pub fn resolve_notifier(url: &str, extra_env: &std::collections::HashMap<String,
     }
 }
 
+/// Ensure `rest` is a full URL. If it already starts with `http://` or `https://`,
+/// use it as-is (the secret/env var contained the full URL). Otherwise prepend `https://`.
+fn ensure_https(rest: &str) -> String {
+    if rest.starts_with("https://") || rest.starts_with("http://") {
+        rest.to_string()
+    } else {
+        format!("https://{rest}")
+    }
+}
+
 #[cfg(feature = "slack")]
 fn resolve_slack(rest: &str) -> Result<Box<dyn Notifier>, NotifyError> {
     if rest.is_empty() {
         return Err(NotifyError::new("slack", "empty webhook URL"));
     }
-    let webhook_url = format!("https://{rest}");
+    let webhook_url = ensure_https(rest);
     Ok(Box::new(super::slack::SlackWebhook::new(webhook_url)))
 }
 
@@ -117,7 +127,7 @@ fn resolve_discord(rest: &str) -> Result<Box<dyn Notifier>, NotifyError> {
     if rest.is_empty() {
         return Err(NotifyError::new("discord", "empty webhook URL"));
     }
-    let webhook_url = format!("https://{rest}");
+    let webhook_url = ensure_https(rest);
     Ok(Box::new(super::discord::DiscordWebhook::new(webhook_url)))
 }
 
@@ -134,7 +144,7 @@ fn resolve_webhook(rest: &str) -> Result<Box<dyn Notifier>, NotifyError> {
     if rest.is_empty() {
         return Err(NotifyError::new("webhook", "empty webhook URL"));
     }
-    let webhook_url = format!("https://{rest}");
+    let webhook_url = ensure_https(rest);
     Ok(Box::new(super::webhook::GenericWebhook::new(webhook_url)))
 }
 
@@ -152,7 +162,7 @@ fn resolve_teams(url: &str) -> Result<Box<dyn Notifier>, NotifyError> {
     if rest.is_empty() {
         return Err(NotifyError::new("msteams", "empty webhook URL"));
     }
-    let webhook_url = format!("https://{rest}");
+    let webhook_url = ensure_https(rest);
     Ok(Box::new(super::msteams::TeamsWebhook::new(webhook_url)))
 }
 
@@ -208,7 +218,7 @@ fn resolve_mattermost(rest: &str) -> Result<Box<dyn Notifier>, NotifyError> {
     if rest.is_empty() {
         return Err(NotifyError::new("mattermost", "empty webhook URL"));
     }
-    let webhook_url = format!("https://{rest}");
+    let webhook_url = ensure_https(rest);
     Ok(Box::new(super::mattermost::MattermostWebhook::new(webhook_url)))
 }
 
