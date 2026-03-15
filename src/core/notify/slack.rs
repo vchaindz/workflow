@@ -99,7 +99,7 @@ impl SlackWebhook {
     fn build_plain_payload(&self, notification: &Notification) -> serde_json::Value {
         let mut text = notification.subject.clone();
         if !notification.body.is_empty() {
-            text.push_str("\n");
+            text.push('\n');
             text.push_str(&notification.body);
         }
         if !notification.fields.is_empty() {

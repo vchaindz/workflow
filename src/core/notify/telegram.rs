@@ -98,7 +98,7 @@ impl TelegramBot {
 
     /// Build a plain-text fallback payload (no parse_mode).
     fn build_plain_payload(&self, notification: &Notification) -> serde_json::Value {
-        let mut text = format!("{}", notification.subject);
+        let mut text = notification.subject.to_string();
         if !notification.body.is_empty() {
             text.push_str(&format!("\n{}", notification.body));
         }
