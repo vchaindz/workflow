@@ -29,7 +29,7 @@ pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
     /// Path to SSH private key for secrets encryption/decryption
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub secrets_ssh_key: Option<String>,
 }
 
@@ -85,7 +85,7 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default = "default_bind")]
     pub bind: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub api_key: Option<String>,
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_runs: usize,

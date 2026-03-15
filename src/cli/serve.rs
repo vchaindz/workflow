@@ -17,6 +17,7 @@ struct RunState {
     status: RunStatus,
     run_log: Option<crate::core::models::RunLog>,
     error: Option<String>,
+    created_at: std::time::Instant,
 }
 
 #[derive(Clone, PartialEq)]
@@ -26,11 +27,31 @@ enum RunStatus {
     Failed,
 }
 
+/// Maximum number of tracked runs before eviction is forced.
+const MAX_TRACKED_RUNS: usize = 1000;
+
+/// Maximum request body size in bytes (1 MB).
+const MAX_BODY_SIZE: u64 = 1_048_576;
+
+/// How long to keep completed/failed runs before eviction.
+const RUN_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
 pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
     let addr = format!("{bind}:{port}");
     let server = tiny_http::Server::http(&addr).map_err(|e| {
         crate::error::DzError::Execution(format!("failed to start server on {addr}: {e}"))
     })?;
+
+    // Auto-generate API key if not configured
+    let api_key = match &config.server.api_key {
+        Some(key) => key.clone(),
+        None => {
+            let generated = uuid::Uuid::new_v4().to_string();
+            eprintln!("No API key configured — auto-generated key: {generated}");
+            eprintln!("Set [server] api_key in config.toml to use a persistent key.");
+            generated
+        }
+    };
 
     eprintln!("workflow server listening on http://{addr}");
     eprintln!("  POST /run/<category>/<task>  — trigger a workflow");
@@ -41,7 +62,6 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
     let runs: Arc<Mutex<HashMap<String, RunState>>> = Arc::new(Mutex::new(HashMap::new()));
     let active_count = Arc::new(AtomicUsize::new(0));
     let max_concurrent = config.server.max_concurrent_runs;
-    let api_key = config.server.api_key.clone();
     let workflows_dir = config.workflows_dir.clone();
     let db_path = config.db_path();
 
@@ -54,15 +74,15 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
             }
         };
 
-        // Auth check
-        if let Some(ref key) = api_key {
+        // Auth check — always enforced
+        {
             let auth_header = request
                 .headers()
                 .iter()
                 .find(|h| h.field.as_str().to_ascii_lowercase() == "authorization")
                 .map(|h| h.value.as_str().to_string());
 
-            let expected = format!("Bearer {key}");
+            let expected = format!("Bearer {api_key}");
             match auth_header {
                 Some(ref v) if v == &expected => {}
                 _ => {
@@ -74,6 +94,23 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
 
         let method = request.method().as_str().to_uppercase();
         let url = request.url().to_string();
+
+        // CSRF mitigation: non-GET requests must include X-Workflow-Client header.
+        // Browsers won't send custom headers on cross-origin requests without CORS preflight.
+        if method != "GET" {
+            let has_csrf_header = request
+                .headers()
+                .iter()
+                .any(|h| h.field.as_str().to_ascii_lowercase() == "x-workflow-client");
+            if !has_csrf_header {
+                let _ = request.respond(json_response(
+                    403,
+                    r#"{"error":"missing X-Workflow-Client header"}"#,
+                ));
+                continue;
+            }
+        }
+
         // Strip query string before routing
         let path = url.split('?').next().unwrap_or(&url);
         let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
@@ -153,10 +190,51 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
                     continue;
                 }
 
-                // Parse request body for env vars
-                let mut body_str = String::new();
-                let mut reader = request.as_reader();
-                let _ = std::io::Read::read_to_string(&mut reader, &mut body_str);
+                // Check Content-Length before reading body
+                let content_length = request
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.as_str().to_ascii_lowercase() == "content-length")
+                    .and_then(|h| h.value.as_str().parse::<u64>().ok());
+
+                if let Some(len) = content_length {
+                    if len > MAX_BODY_SIZE {
+                        let body = serde_json::json!({
+                            "error": "request body too large",
+                            "max_bytes": MAX_BODY_SIZE,
+                        })
+                        .to_string();
+                        let _ = request.respond(json_response(413, &body));
+                        continue;
+                    }
+                }
+
+                // Read body with size limit
+                let mut body_buf = vec![0u8; (MAX_BODY_SIZE + 1) as usize];
+                let mut total_read = 0usize;
+                let reader = request.as_reader();
+                loop {
+                    if total_read >= body_buf.len() {
+                        break;
+                    }
+                    match std::io::Read::read(reader, &mut body_buf[total_read..]) {
+                        Ok(0) => break,
+                        Ok(n) => total_read += n,
+                        Err(_) => break,
+                    }
+                }
+
+                if total_read as u64 > MAX_BODY_SIZE {
+                    let body = serde_json::json!({
+                        "error": "request body too large",
+                        "max_bytes": MAX_BODY_SIZE,
+                    })
+                    .to_string();
+                    let _ = request.respond(json_response(413, &body));
+                    continue;
+                }
+
+                let body_str = String::from_utf8_lossy(&body_buf[..total_read]).into_owned();
 
                 let env_overrides: HashMap<String, String> = if body_str.is_empty() {
                     HashMap::new()
@@ -199,15 +277,38 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
 
                 let run_id = uuid::Uuid::new_v4().to_string();
 
-                // Register the run
+                // Evict old completed/failed runs before inserting
                 {
                     let mut runs_lock = runs.lock().unwrap();
+                    let now = std::time::Instant::now();
+
+                    // Time-based eviction: remove completed/failed runs older than TTL
+                    runs_lock.retain(|_, state| {
+                        state.status == RunStatus::Running
+                            || now.duration_since(state.created_at) < RUN_TTL
+                    });
+
+                    // Hard cap: if still over limit, remove oldest completed/failed
+                    if runs_lock.len() >= MAX_TRACKED_RUNS {
+                        let mut finished: Vec<(String, std::time::Instant)> = runs_lock
+                            .iter()
+                            .filter(|(_, s)| s.status != RunStatus::Running)
+                            .map(|(k, s)| (k.clone(), s.created_at))
+                            .collect();
+                        finished.sort_by_key(|(_, t)| *t);
+                        let to_remove = finished.len().min(runs_lock.len() - MAX_TRACKED_RUNS + 1);
+                        for (key, _) in finished.into_iter().take(to_remove) {
+                            runs_lock.remove(&key);
+                        }
+                    }
+
                     runs_lock.insert(
                         run_id.clone(),
                         RunState {
                             status: RunStatus::Running,
                             run_log: None,
                             error: None,
+                            created_at: now,
                         },
                     );
                 }
@@ -268,6 +369,11 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
                     })();
 
                     let mut runs_lock = runs_clone.lock().unwrap();
+                    let created_at = runs_lock
+                        .get(&run_id_clone)
+                        .map(|s| s.created_at)
+                        .unwrap_or_else(std::time::Instant::now);
+
                     match result {
                         Ok(run_log) => {
                             let status = if run_log.exit_code == 0 {
@@ -281,6 +387,7 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
                                     status,
                                     run_log: Some(run_log),
                                     error: None,
+                                    created_at,
                                 },
                             );
                         }
@@ -291,6 +398,7 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
                                     status: RunStatus::Failed,
                                     run_log: None,
                                     error: Some(e),
+                                    created_at,
                                 },
                             );
                         }

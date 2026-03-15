@@ -65,7 +65,7 @@ pub fn init_repo(dir: &Path) -> Result<()> {
 
 /// Create a .gitignore with sensible defaults for the workflows directory.
 pub fn create_gitignore(dir: &Path) -> Result<()> {
-    let content = "logs/\nhistory.db\nhistory.db-journal\n*.log\nconfig.local.toml\n.DS_Store\n";
+    let content = "logs/\nhistory.db\nhistory.db-journal\n*.log\nconfig.toml\nconfig.local.toml\n.DS_Store\n";
     std::fs::write(dir.join(".gitignore"), content)?;
     Ok(())
 }
@@ -206,6 +206,9 @@ pub fn auto_commit(dir: &Path) -> Result<Option<String>> {
     }
 
     run_git(dir, &["add", "-A"])?;
+
+    // Safety: unstage config files that may contain secrets (ignore errors if not staged)
+    let _ = run_git(dir, &["reset", "HEAD", "--", "config.toml", "config.local.toml"]);
 
     // Check if there's anything to commit
     let status = run_git(dir, &["status", "--porcelain"])?;
@@ -534,6 +537,7 @@ mod tests {
         let content = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
         assert!(content.contains("logs/"));
         assert!(content.contains("history.db"));
+        assert!(content.contains("config.toml"));
         assert!(content.contains("config.local.toml"));
     }
 

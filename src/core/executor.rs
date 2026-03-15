@@ -203,15 +203,51 @@ pub fn mask_secrets(text: &str, secret_values: &[String]) -> String {
 /// Resolves URL-scheme shorthands (slack://, webhook://, email://), expands template
 /// variables in the command string, then runs via bash fire-and-forget.
 pub fn run_notify(cmd: &str, vars: &HashMap<String, String>) {
+    use crate::core::notify::NotifyCommand;
+
     let resolved = crate::core::notify::resolve_notify_command(cmd, vars);
-    let expanded = expand_template(&resolved, vars);
-    let _ = Command::new("bash")
-        .arg("-c")
-        .arg(&expanded)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    match resolved {
+        NotifyCommand::Structured { program, args } => {
+            let expanded_args: Vec<String> =
+                args.iter().map(|a| expand_template(a, vars)).collect();
+            let _ = Command::new(&program)
+                .args(&expanded_args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+        }
+        NotifyCommand::StructuredWithStdin {
+            program,
+            args,
+            stdin_data,
+        } => {
+            let expanded_args: Vec<String> =
+                args.iter().map(|a| expand_template(a, vars)).collect();
+            let expanded_body = expand_template(&stdin_data, vars);
+            if let Ok(mut child) = Command::new(&program)
+                .args(&expanded_args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = std::io::Write::write_all(&mut stdin, expanded_body.as_bytes());
+                }
+            }
+        }
+        NotifyCommand::Shell(raw) => {
+            let expanded = expand_template(&raw, vars);
+            let _ = Command::new("bash")
+                .arg("-c")
+                .arg(&expanded)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+        }
+    }
 }
 
 /// Build a rich set of template variables for notification commands.
