@@ -30,6 +30,7 @@ Test fixtures are in `tests/fixtures/` — integration tests use `assert_cmd` to
 5. **Execution** (`core/executor.rs`): Topological sort, sequential `bash -c` execution, captures stdout/stderr per step. Failed steps cause dependents to be skipped; independent branches continue. After main steps, `cleanup` steps run unconditionally (failures logged but don't affect exit code). Step outputs are captured via regex patterns and injected as template variables.
 6. **Logging** (`core/logger.rs`): JSON files in `{workflows_dir}/logs/`, auto-rotated by age on startup
 7. **History** (`core/db.rs`): SQLite database (`history.db`) for persistent run tracking, global stats, and overdue task detection
+8. **Notifications** (`core/notify/`): Trait-based notification dispatch via `MultiNotifier`. URL-scheme resolver constructs `Box<dyn Notifier>` from config strings. Native HTTP via `ureq` (no curl dependency). Supports multi-target routing, severity-based channel config, retry with exponential backoff, and per-service rate limiting. Failures are logged but never block execution.
 
 ### Entry point dispatch
 
@@ -109,6 +110,19 @@ Steps can declare `outputs:` with `name` and `pattern` (regex with capture group
 
 Config lives in `[sync]` section of `config.toml` via `SyncConfig` in `core/config.rs`: `enabled`, `auto_commit`, `auto_push`, `auto_pull_on_start`, `branch`, `remote_url`.
 
+### Notification system
+
+`core/notify/` is a trait-based notification framework replacing the old shell-out approach. Key components:
+
+- **Trait** (`mod.rs`): `Notifier` trait with `name()` and `send(&Notification)`. `MultiNotifier` fans out to all registered backends, collecting errors without short-circuiting.
+- **Message** (`message.rs`): `Notification` struct (subject, body, severity, fields) and `Severity` enum (Success, Failure, Warning, Info).
+- **Resolver** (`resolve.rs`): `resolve_notifier(url)` parses URL-scheme strings (`slack://`, `discord://`, `telegram://`, `teams://`, `ntfy://`, `gotify://`, `webhook://`, `email://`) into `Box<dyn Notifier>`. Environment variable references (`$VAR`) are expanded.
+- **Backends**: Each in its own file, gated behind cargo feature flags. Uses `ureq` for HTTP (synchronous, no tokio) and `lettre` for SMTP email. Default features: slack, discord, webhook, ntfy, telegram, email. Optional: msteams, gotify.
+- **Retry** (`retry.rs`): Exponential backoff wrapper with configurable max_attempts, initial_delay, and backoff_factor.
+- **Rate limiting** (`rate_limit.rs`): Per-service sliding-window rate limiter with sensible defaults (Discord 30/min, Telegram 30/sec).
+- **Rich formatting**: Each backend uses service-native formatting (Slack Block Kit, Discord Embeds, Teams Adaptive Cards, Telegram MarkdownV2).
+- **Config**: `NotifyConfig` in `models.rs` supports single string or array for `on_failure`/`on_success`, plus `channels` for severity-based routing. Per-workflow config merges with global `config.toml` by default; `notify_override: true` replaces.
+
 ### Error handling
 
 `error.rs` defines `DzError` enum with variants for each failure domain and `From` impls for automatic conversion. All fallible functions return `error::Result<T>`.
@@ -132,6 +146,19 @@ Config lives in `[sync]` section of `config.toml` via `SyncConfig` in `core/conf
 | `src/core/catalog.rs` | Template catalog (bundled + fetch) |
 | `src/core/compare.rs` | Run comparison |
 | `src/core/db.rs` | SQLite history database |
+| `src/core/notify/mod.rs` | Notifier trait, MultiNotifier |
+| `src/core/notify/resolve.rs` | URL-scheme → Notifier resolver |
+| `src/core/notify/message.rs` | Notification struct, Severity enum |
+| `src/core/notify/slack.rs` | Slack webhook backend |
+| `src/core/notify/discord.rs` | Discord webhook backend |
+| `src/core/notify/telegram.rs` | Telegram Bot API backend |
+| `src/core/notify/msteams.rs` | MS Teams Adaptive Cards backend |
+| `src/core/notify/ntfy.rs` | ntfy push notification backend |
+| `src/core/notify/gotify.rs` | Gotify push notification backend |
+| `src/core/notify/webhook.rs` | Generic webhook backend |
+| `src/core/notify/email.rs` | Email via lettre/SMTP backend |
+| `src/core/notify/retry.rs` | Retry with exponential backoff |
+| `src/core/notify/rate_limit.rs` | Per-service rate limiting |
 | `src/core/config.rs` | Config file parsing |
 | `src/tui/app.rs` | TUI state (AppMode, Focus, WizardState) |
 | `src/tui/actions.rs` | TUI keybinding handlers + wizard logic |

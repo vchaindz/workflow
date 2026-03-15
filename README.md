@@ -189,27 +189,61 @@ steps:
 
 `run_if` runs the step only when the condition succeeds (exit 0). `skip_if` is the inverse — it skips when the condition succeeds. Both support full template expansion, so `{{var}}` references work in conditions.
 
-### Native notification types
+### Native notifications — 8 services, zero external dependencies
 
-Notify commands support URL-scheme shorthands that expand to `curl`/`mail` commands internally. No extra dependencies needed:
+Send notifications to Slack, Discord, Telegram, Microsoft Teams, ntfy, Gotify, generic webhooks, and email — all via native HTTP (no `curl` or `mail` required). Each backend is gated behind a cargo feature flag so you only pull the dependencies you need.
 
 ```yaml
 notify:
-  on_failure: "slack://https://hooks.slack.com/services/T00/B00/xxx"
-  on_success: "webhook://https://status.example.com/api/deploy"
+  on_failure:
+    - "slack://https://hooks.slack.com/services/T00/B00/xxx"
+    - "telegram://$TELEGRAM_BOT_TOKEN@$TELEGRAM_CHAT_ID"
+    - "ntfy://ntfy.sh/ops-alerts"
+  on_success:
+    - "webhook://https://status.example.com/api/deploy"
   env:
     environment: production
     team: platform
 ```
 
-| Scheme | Expands to |
-|--------|-----------|
-| `slack://WEBHOOK_URL` | `curl` POST with Slack JSON text payload |
-| `webhook://URL` | `curl` POST with all variables as JSON object |
-| `email://ADDRESS` | `printf` + `mail` with summary |
-| *(no prefix)* | Runs as-is (bash command) |
+Single-string config still works for backward compatibility. Or use severity-based routing for fine-grained control:
+
+```yaml
+notify:
+  channels:
+    - target: "slack://https://hooks.slack.com/..."
+      on: [failure, warning]
+    - target: "ntfy://ntfy.sh/ops-info"
+      on: [success, failure, warning]
+```
+
+| Scheme | Service | Rich format |
+|--------|---------|-------------|
+| `slack://WEBHOOK_URL` | Slack | Block Kit with colored sidebar |
+| `discord://WEBHOOK_URL` | Discord | Embeds with severity colors and fields |
+| `telegram://BOT_TOKEN@CHAT_ID` | Telegram | MarkdownV2 with severity icons |
+| `teams://WEBHOOK_URL` | Microsoft Teams | Adaptive Cards |
+| `ntfy://SERVER/TOPIC` | ntfy | Priority-mapped push notifications |
+| `gotify://SERVER?token=TOKEN` | Gotify | Priority-mapped push notifications |
+| `webhook://URL` | Generic webhook | JSON body with all fields |
+| `email://USER@HOST?smtp=...&port=...` | Email (SMTP) | Formatted email via `lettre` |
+
+Environment variables (`$VAR`) are expanded in URLs. Notifications include retry with exponential backoff and per-service rate limiting. Failures are logged but never block workflow execution. Per-workflow `notify:` merges with global `config.toml` defaults (set `notify_override: true` to replace instead).
 
 Notification commands have access to rich template variables: `{{task_ref}}`, `{{exit_code}}`, `{{workflow_name}}`, `{{hostname}}`, `{{failed_steps}}`, `{{duration_ms}}`, `{{timestamp}}`, `{{status}}`, plus any keys from `notify.env`.
+
+**Cargo feature flags** (default: slack, discord, webhook, ntfy, telegram, email):
+
+```bash
+# Build with all defaults
+cargo build --release
+
+# Minimal build without any notification backends
+cargo build --release --no-default-features
+
+# Pick specific backends
+cargo build --release --no-default-features --features "slack,ntfy"
+```
 
 ### Built-in safety nets
 
@@ -370,7 +404,9 @@ cleanup:                            # runs regardless of success/failure
 env:
   DEPLOY_ENV: production            # values auto-redacted in logs
 notify:
-  on_failure: "slack://https://hooks.slack.com/services/T00/B00/xxx"
+  on_failure:                         # single string or array of targets
+    - "slack://https://hooks.slack.com/services/T00/B00/xxx"
+    - "ntfy://ntfy.sh/ops-alerts"
   on_success: "webhook://https://status.example.com/api/deploy"
   env:                              # extra vars available in notify commands
     environment: production
@@ -526,7 +562,7 @@ cargo build --release
 # Binary: target/release/workflow
 ```
 
-Requires Rust 1.56+ (2021 edition). Single binary, no runtime dependencies.
+Requires Rust 1.56+ (2021 edition). Single binary. Notification backends use native HTTP (`ureq`) and SMTP (`lettre`) — no `curl` or `mail` needed at runtime.
 
 ## License
 
