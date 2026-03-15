@@ -16,10 +16,16 @@
 use super::error::NotifyError;
 use super::Notifier;
 
-/// Expand `$VAR` and `${VAR}` references in a string using environment variables.
-fn expand_env_vars(input: &str) -> String {
+/// Expand `$VAR` and `${VAR}` references in a string.
+///
+/// Checks `extra_env` first, then falls back to real environment variables.
+fn expand_env_vars(input: &str, extra_env: &std::collections::HashMap<String, String>) -> String {
     let mut result = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
+
+    let lookup = |name: &str| -> Option<String> {
+        extra_env.get(name).cloned().or_else(|| std::env::var(name).ok())
+    };
 
     while let Some(ch) = chars.next() {
         if ch == '$' {
@@ -27,7 +33,7 @@ fn expand_env_vars(input: &str) -> String {
             if chars.peek() == Some(&'{') {
                 chars.next(); // consume '{'
                 let var_name: String = chars.by_ref().take_while(|&c| c != '}').collect();
-                if let Ok(val) = std::env::var(&var_name) {
+                if let Some(val) = lookup(&var_name) {
                     result.push_str(&val);
                 }
             } else {
@@ -43,7 +49,7 @@ fn expand_env_vars(input: &str) -> String {
                 }
                 if var_name.is_empty() {
                     result.push('$');
-                } else if let Ok(val) = std::env::var(&var_name) {
+                } else if let Some(val) = lookup(&var_name) {
                     result.push_str(&val);
                 }
             }
@@ -58,8 +64,9 @@ fn expand_env_vars(input: &str) -> String {
 /// Parse a notification URL string into a boxed `Notifier`.
 ///
 /// Environment variable references (`$VAR`, `${VAR}`) are expanded before parsing.
-pub fn resolve_notifier(url: &str) -> Result<Box<dyn Notifier>, NotifyError> {
-    let expanded = expand_env_vars(url);
+/// `extra_env` is checked first (e.g. secrets from the encrypted store), then real env vars.
+pub fn resolve_notifier(url: &str, extra_env: &std::collections::HashMap<String, String>) -> Result<Box<dyn Notifier>, NotifyError> {
+    let expanded = expand_env_vars(url, extra_env);
 
     if let Some(rest) = expanded.strip_prefix("slack://") {
         resolve_slack(rest)
@@ -235,7 +242,7 @@ mod tests {
     #[test]
     fn test_expand_env_vars_dollar_syntax() {
         std::env::set_var("TEST_RESOLVE_HOST", "hooks.slack.com");
-        let result = expand_env_vars("slack://$TEST_RESOLVE_HOST/services/T/B/x");
+        let result = expand_env_vars("slack://$TEST_RESOLVE_HOST/services/T/B/x", &Default::default());
         assert_eq!(result, "slack://hooks.slack.com/services/T/B/x");
         std::env::remove_var("TEST_RESOLVE_HOST");
     }
@@ -243,7 +250,7 @@ mod tests {
     #[test]
     fn test_expand_env_vars_brace_syntax() {
         std::env::set_var("TEST_RESOLVE_TOKEN", "tk_abc123");
-        let result = expand_env_vars("ntfy://ntfy.sh/topic?token=${TEST_RESOLVE_TOKEN}");
+        let result = expand_env_vars("ntfy://ntfy.sh/topic?token=${TEST_RESOLVE_TOKEN}", &Default::default());
         assert_eq!(result, "ntfy://ntfy.sh/topic?token=tk_abc123");
         std::env::remove_var("TEST_RESOLVE_TOKEN");
     }
@@ -252,19 +259,19 @@ mod tests {
     fn test_expand_env_vars_missing_var() {
         // Missing vars are silently removed (the var name is dropped, surrounding text kept)
         std::env::remove_var("TEST_RESOLVE_NONEXISTENT");
-        let result = expand_env_vars("slack://$TEST_RESOLVE_NONEXISTENT/path");
+        let result = expand_env_vars("slack://$TEST_RESOLVE_NONEXISTENT/path", &Default::default());
         assert_eq!(result, "slack:///path");
     }
 
     #[test]
     fn test_expand_env_vars_no_vars() {
-        let result = expand_env_vars("slack://hooks.slack.com/services/T/B/x");
+        let result = expand_env_vars("slack://hooks.slack.com/services/T/B/x", &Default::default());
         assert_eq!(result, "slack://hooks.slack.com/services/T/B/x");
     }
 
     #[test]
     fn test_expand_env_vars_bare_dollar() {
-        let result = expand_env_vars("price is $");
+        let result = expand_env_vars("price is $", &Default::default());
         assert_eq!(result, "price is $");
     }
 
@@ -273,7 +280,7 @@ mod tests {
     #[cfg(feature = "slack")]
     #[test]
     fn test_resolve_slack() {
-        let notifier = resolve_notifier("slack://hooks.slack.com/services/T/B/x").unwrap();
+        let notifier = resolve_notifier("slack://hooks.slack.com/services/T/B/x", &Default::default()).unwrap();
         assert_eq!(notifier.name(), "slack");
     }
 
@@ -281,14 +288,14 @@ mod tests {
     #[test]
     fn test_resolve_discord() {
         let notifier =
-            resolve_notifier("discord://discord.com/api/webhooks/123/abc").unwrap();
+            resolve_notifier("discord://discord.com/api/webhooks/123/abc", &Default::default()).unwrap();
         assert_eq!(notifier.name(), "discord");
     }
 
     #[cfg(feature = "webhook")]
     #[test]
     fn test_resolve_webhook() {
-        let notifier = resolve_notifier("webhook://example.com/hook").unwrap();
+        let notifier = resolve_notifier("webhook://example.com/hook", &Default::default()).unwrap();
         assert_eq!(notifier.name(), "webhook");
     }
 
@@ -296,28 +303,28 @@ mod tests {
     #[test]
     fn test_resolve_teams() {
         let notifier =
-            resolve_notifier("teams://example.webhook.office.com/webhook/xxx").unwrap();
+            resolve_notifier("teams://example.webhook.office.com/webhook/xxx", &Default::default()).unwrap();
         assert_eq!(notifier.name(), "msteams");
     }
 
     #[cfg(feature = "telegram")]
     #[test]
     fn test_resolve_telegram() {
-        let notifier = resolve_notifier("telegram://123:ABCdef@-100999").unwrap();
+        let notifier = resolve_notifier("telegram://123:ABCdef@-100999", &Default::default()).unwrap();
         assert_eq!(notifier.name(), "telegram");
     }
 
     #[cfg(feature = "ntfy")]
     #[test]
     fn test_resolve_ntfy() {
-        let notifier = resolve_notifier("ntfy://ntfy.sh/my-topic").unwrap();
+        let notifier = resolve_notifier("ntfy://ntfy.sh/my-topic", &Default::default()).unwrap();
         assert_eq!(notifier.name(), "ntfy");
     }
 
     #[cfg(feature = "gotify")]
     #[test]
     fn test_resolve_gotify() {
-        let notifier = resolve_notifier("gotify://gotify.local?token=abc123").unwrap();
+        let notifier = resolve_notifier("gotify://gotify.local?token=abc123", &Default::default()).unwrap();
         assert_eq!(notifier.name(), "gotify");
     }
 
@@ -325,7 +332,7 @@ mod tests {
     #[test]
     fn test_resolve_email() {
         let notifier =
-            resolve_notifier("email://user@example.com?smtp=smtp.example.com").unwrap();
+            resolve_notifier("email://user@example.com?smtp=smtp.example.com", &Default::default()).unwrap();
         assert_eq!(notifier.name(), "email");
     }
 
@@ -333,13 +340,13 @@ mod tests {
     #[test]
     fn test_resolve_mattermost() {
         let notifier =
-            resolve_notifier("mattermost://mattermost.example.com/hooks/xxx").unwrap();
+            resolve_notifier("mattermost://mattermost.example.com/hooks/xxx", &Default::default()).unwrap();
         assert_eq!(notifier.name(), "mattermost");
     }
 
     #[test]
     fn test_resolve_unknown_scheme() {
-        let err = resolve_notifier("foobar://something").unwrap_err();
+        let err = resolve_notifier("foobar://something", &Default::default()).unwrap_err();
         assert_eq!(err.service, "resolve");
         assert!(err.message.contains("unknown notification scheme"));
         assert!(err.message.contains("foobar://"));
@@ -347,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_resolve_no_scheme() {
-        let err = resolve_notifier("just-a-string").unwrap_err();
+        let err = resolve_notifier("just-a-string", &Default::default()).unwrap_err();
         assert_eq!(err.service, "resolve");
     }
 
@@ -355,7 +362,7 @@ mod tests {
     #[test]
     fn test_resolve_with_env_var() {
         std::env::set_var("TEST_RESOLVE_SLACK_URL", "hooks.slack.com/services/T/B/x");
-        let notifier = resolve_notifier("slack://$TEST_RESOLVE_SLACK_URL").unwrap();
+        let notifier = resolve_notifier("slack://$TEST_RESOLVE_SLACK_URL", &Default::default()).unwrap();
         assert_eq!(notifier.name(), "slack");
         std::env::remove_var("TEST_RESOLVE_SLACK_URL");
     }
@@ -363,7 +370,24 @@ mod tests {
     #[cfg(feature = "slack")]
     #[test]
     fn test_resolve_empty_after_scheme() {
-        let err = resolve_notifier("slack://").unwrap_err();
+        let err = resolve_notifier("slack://", &Default::default()).unwrap_err();
         assert_eq!(err.service, "slack");
+    }
+
+    #[test]
+    fn test_expand_env_vars_extra_env_precedence() {
+        // extra_env should take precedence over real env vars
+        let mut extra = std::collections::HashMap::new();
+        extra.insert("TEST_EXTRA_VAR".to_string(), "from_extra".to_string());
+        let result = expand_env_vars("slack://$TEST_EXTRA_VAR/path", &extra);
+        assert_eq!(result, "slack://from_extra/path");
+    }
+
+    #[test]
+    fn test_expand_env_vars_extra_env_brace_syntax() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert("MY_SECRET".to_string(), "secret_value".to_string());
+        let result = expand_env_vars("mattermost://${MY_SECRET}/hooks/x", &extra);
+        assert_eq!(result, "mattermost://secret_value/hooks/x");
     }
 }

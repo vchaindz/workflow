@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::core::config::Config;
 use crate::core::db;
 use crate::core::discovery::{resolve_task_ref, scan_workflows};
-use crate::core::executor::{execute_workflow, send_notifications, ExecuteOpts};
+use crate::core::executor::{execute_workflow, load_secret_env, send_notifications, ExecuteOpts};
 use crate::core::models::{StepStatus, TaskKind};
 use crate::core::parser::{parse_shell_task, parse_workflow};
 use crate::error::Result;
@@ -115,7 +115,12 @@ pub fn cmd_run(
         }
 
         // Send trait-based notifications
-        send_notifications(&canonical_ref, &run_log, &workflow.name, &workflow.notify, &config.notify);
+        let secret_env = load_secret_env(
+            &opts.secrets,
+            &config.workflows_dir,
+            config.secrets_ssh_key.as_ref().map(std::path::Path::new),
+        );
+        send_notifications(&canonical_ref, &run_log, &workflow.name, &workflow.notify, &config.notify, &secret_env);
     }
 
     Ok(exit_code)

@@ -268,13 +268,14 @@ pub fn build_notifiers_for_run(
     wf_notify: &NotifyConfig,
     global_notify: &NotifyConfig,
     success: bool,
+    secret_env: &HashMap<String, String>,
 ) -> Vec<Box<dyn Notifier>> {
     let severity = if success { Severity::Success } else { Severity::Failure };
     let targets = resolve_targets(wf_notify, global_notify, &severity);
 
     let mut notifiers: Vec<Box<dyn Notifier>> = Vec::new();
     for url in &targets {
-        match resolve_notifier(url) {
+        match resolve_notifier(url, secret_env) {
             Ok(n) => notifiers.push(n),
             Err(e) => eprintln!("Warning: failed to resolve notifier '{}': {}", url, e),
         }
@@ -369,15 +370,43 @@ pub fn resolve_rate_limit_configs(
 /// Notification errors are logged but never block workflow completion.
 /// Retries are per-notifier: one failing service does not delay others.
 /// Rate-limited notifications are dropped with a warning.
+/// Load secret values from the encrypted secrets store.
+///
+/// Returns a map of secret names → values, suitable for passing to `send_notifications`
+/// so that notification URL templates (e.g. `mattermost://$WEBHOOK_URL`) can be expanded.
+pub fn load_secret_env(
+    secret_names: &[String],
+    workflows_dir: &std::path::Path,
+    secrets_ssh_key: Option<&std::path::Path>,
+) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    if secret_names.is_empty() {
+        return env;
+    }
+    if let Some(ssh_key) = secrets_ssh_key {
+        if workflows_dir.join("secrets.age").exists() {
+            if let Ok(store) = crate::core::secrets::SecretsStore::load(workflows_dir, ssh_key) {
+                for name in secret_names {
+                    if let Some(val) = store.get(name) {
+                        env.insert(name.clone(), val.to_string());
+                    }
+                }
+            }
+        }
+    }
+    env
+}
+
 pub fn send_notifications(
     task_ref: &str,
     run_log: &RunLog,
     workflow_name: &str,
     wf_notify: &NotifyConfig,
     global_notify: &NotifyConfig,
+    secret_env: &HashMap<String, String>,
 ) {
     let success = run_log.exit_code == 0;
-    let notifiers = build_notifiers_for_run(wf_notify, global_notify, success);
+    let notifiers = build_notifiers_for_run(wf_notify, global_notify, success, secret_env);
     if notifiers.is_empty() {
         return;
     }
@@ -2570,7 +2599,7 @@ mod tests {
     fn test_build_notifiers_for_run_empty_config() {
         let wf_notify = NotifyConfig::default();
         let global_notify = NotifyConfig::default();
-        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, true);
+        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, true, &Default::default());
         assert!(notifiers.is_empty());
     }
 
@@ -2582,7 +2611,7 @@ mod tests {
         };
         let global_notify = NotifyConfig::default();
         // Invalid scheme logs warning but returns empty
-        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, false);
+        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, false, &Default::default());
         assert!(notifiers.is_empty());
     }
 
@@ -2594,7 +2623,7 @@ mod tests {
             ..Default::default()
         };
         let global_notify = NotifyConfig::default();
-        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, false);
+        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, false, &Default::default());
         // Both are invalid schemes, so empty, but both were tried
         assert!(notifiers.is_empty());
     }
@@ -2623,7 +2652,7 @@ mod tests {
             on_failure: vec!["foobar://g1".to_string(), "foobar://g2".to_string()],
             ..Default::default()
         };
-        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, false);
+        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, false, &Default::default());
         assert!(notifiers.is_empty()); // invalid schemes, but global was used
     }
 

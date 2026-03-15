@@ -8,7 +8,7 @@ use crate::core::ai;
 use crate::core::catalog;
 use crate::core::compare;
 use crate::core::db;
-use crate::core::executor::{execute_workflow, send_notifications, ExecuteOpts, StreamingRequest};
+use crate::core::executor::{execute_workflow, load_secret_env, send_notifications, ExecuteOpts, StreamingRequest};
 use crate::core::history;
 use crate::core::models::{ExecutionEvent, RuntimeVariable, Task, TaskHeat, TaskKind, Workflow};
 use crate::core::parser::{parse_shell_task, parse_workflow, parse_workflow_from_str};
@@ -486,6 +486,9 @@ fn launch_workflow(
 
     thread::spawn(move || {
         let workflows_dir = workflows_dir_for_thread;
+        let secrets_clone = secrets.clone();
+        let workflows_dir_clone = workflows_dir.clone();
+        let ssh_key_clone = secrets_ssh_key.clone();
         let opts = ExecuteOpts {
             dry_run,
             force: false,
@@ -506,11 +509,19 @@ fn launch_workflow(
                     if let Ok(conn) = db::open_db(&db_path) {
                         let _ = db::insert_run_log_with_source(&conn, &run_log, "tui");
                     }
-
-                    // Send trait-based notifications
-                    send_notifications(&task_ref_for_notify, &run_log, &wf_name, &wf_notify, &cfg_notify);
                 }
-                let _ = tx.send(ExecutionEvent::WorkflowFinished { run_log });
+                // Send WorkflowFinished before notifications so the TUI
+                // exits Running mode immediately (notifications may be slow).
+                let _ = tx.send(ExecutionEvent::WorkflowFinished { run_log: run_log.clone() });
+
+                if !dry_run {
+                    let secret_env = load_secret_env(
+                        &secrets_clone,
+                        &workflows_dir_clone,
+                        ssh_key_clone.as_deref(),
+                    );
+                    send_notifications(&task_ref_for_notify, &run_log, &wf_name, &wf_notify, &cfg_notify, &secret_env);
+                }
             }
             Err(e) => {
                 let _ = tx.send(ExecutionEvent::WorkflowError {
