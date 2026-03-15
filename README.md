@@ -226,13 +226,14 @@ notify:
 | `ntfy://SERVER/TOPIC` | ntfy | Priority-mapped push notifications |
 | `gotify://SERVER?token=TOKEN` | Gotify | Priority-mapped push notifications |
 | `webhook://URL` | Generic webhook | JSON body with all fields |
+| `mattermost://SERVER/hooks/ID` | Mattermost | Slack-compatible attachments with fields |
 | `email://USER@HOST?smtp=...&port=...` | Email (SMTP) | Formatted email via `lettre` |
 
 Environment variables (`$VAR`) are expanded in URLs. Notifications include retry with exponential backoff and per-service rate limiting. Failures are logged but never block workflow execution. Per-workflow `notify:` merges with global `config.toml` defaults (set `notify_override: true` to replace instead).
 
 Notification commands have access to rich template variables: `{{task_ref}}`, `{{exit_code}}`, `{{workflow_name}}`, `{{hostname}}`, `{{failed_steps}}`, `{{duration_ms}}`, `{{timestamp}}`, `{{status}}`, plus any keys from `notify.env`.
 
-**Cargo feature flags** (default: slack, discord, webhook, ntfy, telegram, email):
+**Cargo feature flags** (default: slack, discord, webhook, ntfy, telegram, email, mattermost):
 
 ```bash
 # Build with all defaults

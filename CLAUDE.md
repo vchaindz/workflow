@@ -117,7 +117,7 @@ Config lives in `[sync]` section of `config.toml` via `SyncConfig` in `core/conf
 - **Trait** (`mod.rs`): `Notifier` trait with `name()` and `send(&Notification)`. `MultiNotifier` fans out to all registered backends, collecting errors without short-circuiting.
 - **Message** (`message.rs`): `Notification` struct (subject, body, severity, fields) and `Severity` enum (Success, Failure, Warning, Info).
 - **Resolver** (`resolve.rs`): `resolve_notifier(url)` parses URL-scheme strings (`slack://`, `discord://`, `telegram://`, `teams://`, `ntfy://`, `gotify://`, `webhook://`, `email://`) into `Box<dyn Notifier>`. Environment variable references (`$VAR`) are expanded.
-- **Backends**: Each in its own file, gated behind cargo feature flags. Uses `ureq` for HTTP (synchronous, no tokio) and `lettre` for SMTP email. Default features: slack, discord, webhook, ntfy, telegram, email. Optional: msteams, gotify.
+- **Backends**: Each in its own file, gated behind cargo feature flags. Uses `ureq` for HTTP (synchronous, no tokio) and `lettre` for SMTP email. Default features: slack, discord, webhook, ntfy, telegram, email, mattermost. Optional: msteams, gotify.
 - **Retry** (`retry.rs`): Exponential backoff wrapper with configurable max_attempts, initial_delay, and backoff_factor.
 - **Rate limiting** (`rate_limit.rs`): Per-service sliding-window rate limiter with sensible defaults (Discord 30/min, Telegram 30/sec).
 - **Rich formatting**: Each backend uses service-native formatting (Slack Block Kit, Discord Embeds, Teams Adaptive Cards, Telegram MarkdownV2).
@@ -156,6 +156,7 @@ Config lives in `[sync]` section of `config.toml` via `SyncConfig` in `core/conf
 | `src/core/notify/ntfy.rs` | ntfy push notification backend |
 | `src/core/notify/gotify.rs` | Gotify push notification backend |
 | `src/core/notify/webhook.rs` | Generic webhook backend |
+| `src/core/notify/mattermost.rs` | Mattermost webhook backend |
 | `src/core/notify/email.rs` | Email via lettre/SMTP backend |
 | `src/core/notify/retry.rs` | Retry with exponential backoff |
 | `src/core/notify/rate_limit.rs` | Per-service rate limiting |

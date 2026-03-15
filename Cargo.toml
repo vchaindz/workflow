@@ -10,7 +10,7 @@ name = "workflow"
 path = "src/main.rs"
 
 [features]
-default = ["slack", "discord", "webhook", "ntfy", "telegram", "email"]
+default = ["slack", "discord", "webhook", "ntfy", "telegram", "email", "mattermost"]
 slack = ["ureq"]
 discord = ["ureq"]
 webhook = ["ureq"]
@@ -19,6 +19,7 @@ telegram = ["ureq"]
 email = ["lettre"]
 msteams = ["ureq"]
 gotify = ["ureq"]
+mattermost = ["ureq"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

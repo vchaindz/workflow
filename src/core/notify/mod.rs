@@ -24,6 +24,8 @@ pub mod ntfy;
 pub mod msteams;
 #[cfg(feature = "gotify")]
 pub mod gotify;
+#[cfg(feature = "mattermost")]
+pub mod mattermost;
 
 pub use error::NotifyError;
 pub use message::{Notification, Severity};

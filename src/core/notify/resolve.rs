@@ -8,6 +8,7 @@
 //!   - `telegram://BOT_TOKEN@CHAT_ID`
 //!   - `ntfy://ntfy.sh/my-topic` or `ntfy://server/topic?token=tk_xxx`
 //!   - `gotify://server?token=APP_TOKEN`
+//!   - `mattermost://mattermost.example.com/hooks/xxx`
 //!   - `email://recipient@host?smtp=smtp.host&port=587`
 //!
 //! Environment variable references (`$VAR` or `${VAR}`) are expanded before parsing.
@@ -76,6 +77,8 @@ pub fn resolve_notifier(url: &str) -> Result<Box<dyn Notifier>, NotifyError> {
         resolve_gotify(&expanded)
     } else if expanded.starts_with("email://") {
         resolve_email(&expanded)
+    } else if let Some(rest) = expanded.strip_prefix("mattermost://") {
+        resolve_mattermost(rest)
     } else {
         let scheme = expanded.split("://").next().unwrap_or("unknown");
         Err(NotifyError::new(
@@ -193,6 +196,23 @@ fn resolve_gotify(_url: &str) -> Result<Box<dyn Notifier>, NotifyError> {
     ))
 }
 
+#[cfg(feature = "mattermost")]
+fn resolve_mattermost(rest: &str) -> Result<Box<dyn Notifier>, NotifyError> {
+    if rest.is_empty() {
+        return Err(NotifyError::new("mattermost", "empty webhook URL"));
+    }
+    let webhook_url = format!("https://{rest}");
+    Ok(Box::new(super::mattermost::MattermostWebhook::new(webhook_url)))
+}
+
+#[cfg(not(feature = "mattermost"))]
+fn resolve_mattermost(_rest: &str) -> Result<Box<dyn Notifier>, NotifyError> {
+    Err(NotifyError::new(
+        "mattermost",
+        "mattermost feature is not enabled; recompile with --features mattermost",
+    ))
+}
+
 #[cfg(feature = "email")]
 fn resolve_email(url: &str) -> Result<Box<dyn Notifier>, NotifyError> {
     Ok(Box::new(super::email::EmailNotifier::new(url)?))
@@ -307,6 +327,14 @@ mod tests {
         let notifier =
             resolve_notifier("email://user@example.com?smtp=smtp.example.com").unwrap();
         assert_eq!(notifier.name(), "email");
+    }
+
+    #[cfg(feature = "mattermost")]
+    #[test]
+    fn test_resolve_mattermost() {
+        let notifier =
+            resolve_notifier("mattermost://mattermost.example.com/hooks/xxx").unwrap();
+        assert_eq!(notifier.name(), "mattermost");
     }
 
     #[test]
