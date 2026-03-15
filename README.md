@@ -9,7 +9,7 @@
 
 **Stop losing one-liners to shell history. Stop rewriting the same maintenance scripts on every box.**
 
-`workflow` is a file-based workflow orchestrator for Linux built for the AI age. Like n8n gives you visual workflow automation in the browser, `workflow` gives you the same power in the terminal — parallel DAGs, sub-workflows, loops, conditional branching, webhooks, encrypted secrets, native notifications — but with a TUI you can browse over SSH, a headless CLI for cron, and first-class integration with Claude Code, OpenAI Codex CLI, and Google Gemini CLI to generate, fix, and refine workflows using natural language. No web server. No Docker stack. Just a single binary.
+`workflow` is a file-based workflow orchestrator for Linux built for the AI age. Like n8n gives you visual workflow automation in the browser, `workflow` gives you the same power in the terminal — parallel DAGs, sub-workflows, for-each loops, conditional branching, expression filters, a webhook REST API, step retries and timeouts, encrypted secrets, native notifications to 9 services — but with a TUI you can browse over SSH, a headless CLI for cron, and first-class integration with Claude Code, OpenAI Codex CLI, and Google Gemini CLI to generate, fix, and refine workflows using natural language. No web server to maintain. No Docker stack. Just a single binary.
 
 Drop a `.sh` or `.yaml` file into `~/.config/workflow/` and it's immediately available to run, schedule, and track. No daemon. No database to set up. No YAML-hell configuration. Or skip the file entirely — describe what you need in English and let AI write it for you.
 
@@ -171,6 +171,93 @@ env:
 
 If a step fails, its dependents are skipped — but independent branches keep running. Steps can capture output via regex and pass values downstream with `{{step_id.var}}`. Cleanup steps run regardless of success or failure, like a `finally` block. Interactive commands (REPLs, `journalctl -f`, TUI tools) are auto-detected and run with the terminal restored — or mark steps `interactive: true` explicitly.
 
+### Sub-workflows and `call` steps
+
+Compose complex automation by calling workflows from other workflows. Use the `call:` field instead of `cmd:` to invoke any task by reference:
+
+```yaml
+name: Full Deploy Pipeline
+steps:
+  - id: pre-checks
+    call: monitoring/health-check
+  - id: backup
+    call: backup/db-full
+    needs: [pre-checks]
+  - id: deploy
+    call: deploy/rolling-update
+    needs: [backup]
+  - id: smoke
+    call: monitoring/smoke-test
+    needs: [deploy]
+  - id: rollback
+    call: deploy/rollback
+    run_if: "test '{{smoke.status}}' = 'failed'"
+```
+
+Sub-workflows execute recursively with a depth limit (max 10) to prevent cycles. Each inherits the parent's environment and template variables. This is how you build runbooks that orchestrate other runbooks — the n8n equivalent of sub-workflow nodes.
+
+### Loops with `for_each`
+
+Iterate over static lists, template variable references, or dynamic command output. Each iteration gets `{{item}}` as a template variable:
+
+```yaml
+steps:
+  - id: backup-all
+    cmd: pg_dump {{item}} > /tmp/{{item}}_backup.sql
+    for_each:
+      source: list
+      items: [users_db, orders_db, analytics_db]
+    for_each_parallel: true         # run iterations concurrently
+    for_each_continue_on_error: true # keep going if one fails
+```
+
+Dynamic lists from command output:
+
+```yaml
+steps:
+  - id: restart-unhealthy
+    cmd: docker restart {{item}}
+    for_each:
+      source: command
+      command: "docker ps --filter health=unhealthy --format '{{.Names}}'"
+```
+
+### Expression language with pipe filters
+
+Template variables support pipe filters for in-line transformation — no shell gymnastics needed:
+
+```yaml
+cmd: echo "Host: {{hostname | upper}}, DB: {{db_name | default 'mydb'}}"
+```
+
+Available filters: `upper`, `lower`, `trim`, `default`, `replace`, `truncate`, `split`, `first`, `last`, `nth`, `count`. Ternary expressions work too: `{{var | eq "prod" ? "production" : "staging"}}`. Date offsets: `{{date_offset +7d}}`, `{{date_offset -1w}}`. Docker and Go template syntax (e.g. `{{.Names}}`) is passed through untouched.
+
+### Webhook server — trigger workflows via HTTP
+
+Run `workflow serve` to expose a REST API for triggering workflows from CI pipelines, monitoring alerts, or chatbots:
+
+```bash
+workflow serve --port 8080
+```
+
+Endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `GET` | `/tasks` | List all available tasks |
+| `POST` | `/run/<category>/<task>` | Trigger workflow (returns 202 + run_id) |
+| `GET` | `/status/<run_id>` | Poll run status |
+
+Authenticated via auto-generated Bearer token (printed at startup). Supports JSON body for environment variable injection, concurrent run limits (default 4), CSRF protection, and 1MB max body size.
+
+```bash
+curl -X POST http://localhost:8080/run/backup/db-full \
+  -H "Authorization: Bearer <token>" \
+  -H "X-Workflow-Client: curl" \
+  -d '{"env": {"TARGET": "production"}}'
+```
+
 ### Step-level branching with `run_if` / `skip_if`
 
 After each step completes, `{{step_id.status}}` is automatically set to `success`, `failed`, `skipped`, or `timedout`. Use this in `run_if` or `skip_if` to branch on outcomes:
@@ -189,9 +276,9 @@ steps:
 
 `run_if` runs the step only when the condition succeeds (exit 0). `skip_if` is the inverse — it skips when the condition succeeds. Both support full template expansion, so `{{var}}` references work in conditions.
 
-### Native notifications — 8 services, zero external dependencies
+### Native notifications — 9 services, zero external dependencies
 
-Send notifications to Slack, Discord, Telegram, Microsoft Teams, ntfy, Gotify, generic webhooks, and email — all via native HTTP (no `curl` or `mail` required). Each backend is gated behind a cargo feature flag so you only pull the dependencies you need.
+Send notifications to Slack, Discord, Mattermost, Telegram, Microsoft Teams, ntfy, Gotify, generic webhooks, and email — all via native HTTP (no `curl` or `mail` required). Each backend is gated behind a cargo feature flag so you only pull the dependencies you need.
 
 ```yaml
 notify:
@@ -244,6 +331,34 @@ cargo build --release --no-default-features
 
 # Pick specific backends
 cargo build --release --no-default-features --features "slack,ntfy"
+```
+
+### Runtime variable prompting
+
+Workflows can declare variables with descriptions, defaults, and dynamic choices. When you run the task from the TUI, it prompts for values before execution:
+
+```yaml
+name: Database Restore
+variables:
+  - name: db_name
+    description: "Target database"
+    default: "mydb"
+  - name: backup_file
+    description: "Backup to restore"
+    choices_cmd: "ls /backups/*.sql.gz"
+steps:
+  - id: restore
+    cmd: zcat {{backup_file}} | psql {{db_name}}
+```
+
+### Soft delete and trash recovery
+
+Press `D` in the TUI or use the CLI to safely remove tasks. Nothing is permanently deleted — files move to a timestamped `.trash/` directory:
+
+```bash
+workflow trash list                  # see trashed files with timestamps
+workflow trash restore db-full.yaml  # put it back
+workflow trash empty                 # permanently delete when you're sure
 ```
 
 ### Built-in safety nets
@@ -325,6 +440,15 @@ workflow secrets set API_KEY --value x   # set directly
 workflow secrets list                    # names only
 workflow secrets get DB_PASSWORD         # decrypt and print
 workflow secrets rm DB_PASSWORD          # remove
+
+# Trash
+workflow trash list                  # timestamped soft-deleted files
+workflow trash restore db-full.yaml  # restore from trash
+workflow trash empty                 # permanently delete
+
+# Webhook server
+workflow serve                       # start on default port 8080
+workflow serve --port 9090           # custom port
 
 # Logs
 workflow logs backup/db-full
@@ -426,16 +550,16 @@ workflow sync setup    # creates private repo, enables auto-sync
 
 After setup, changes auto-commit and push. The TUI pulls on startup. Press `G` in the TUI for manual sync controls. Logs, history, and local config stay local.
 
-### Branch switching (multi-tenant workflows)
+### Branch switching (workflow libraries)
 
-Each customer or environment can live on its own branch. Switch from the CLI or TUI:
+Each git branch holds a complete workflow library — one per customer, environment, or site. Switching branches swaps your entire set of workflows in one command:
 
 ```bash
 workflow sync branch                 # list branches (* marks current)
 workflow sync branch customer-acme   # switch to branch (creates if needed)
 ```
 
-In the TUI, press `G` → "Switch branch" to browse and switch interactively. Dirty changes are auto-committed before switching, and workflows are rescanned automatically for the new branch content.
+In the TUI, press `G` → "Switch branch" to browse and switch interactively. Dirty changes are auto-committed before switching, and workflows are rescanned automatically for the new branch content. This is how MSPs manage per-client runbooks, or how teams keep dev/staging/prod workflow sets separated — all version-controlled in one repo.
 
 ```toml
 # ~/.config/workflow/config.toml
@@ -454,13 +578,23 @@ Optional `~/.config/workflow/config.toml` — everything has sensible defaults:
 workflows_dir = "/home/user/.config/workflow"
 log_retention_days = 30
 editor = "vim"
+default_timeout = 600
 
 [hooks]
 pre_run = "echo 'starting'"
 post_run = "echo 'done'"
 
+[notify]
+on_failure = "slack://https://hooks.slack.com/services/..."
+
+[server]
+port = 8080
+max_concurrent_runs = 4
+
 bookmarks = ["backup/db-full", "deploy/staging"]
 ```
+
+For machine-specific overrides (different editor, custom paths), create `config.local.toml` alongside `config.toml`. It merges on top without affecting the shared configuration — useful when syncing config across machines via Git.
 
 ## AI tool integration
 
@@ -568,3 +702,4 @@ Requires Rust 1.56+ (2021 edition). Single binary. Notification backends use nat
 ## License
 
 MIT — Copyright 2026 Dennis Zimmer
+
