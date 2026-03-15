@@ -1,0 +1,360 @@
+# Ralph Progress Log
+Started: Sun Mar 15 09:35:06 AM CET 2026
+---
+
+## Codebase Patterns
+- `NotifyConfig.on_failure` and `on_success` are `Vec<String>` with `string_or_vec` serde deserializer — accepts both single string and array in YAML/TOML
+- `resolve_notifier(url)` in `resolve.rs` is the unified entry point for parsing notification URL strings into `Box<dyn Notifier>` — use this instead of constructing notifiers directly
+- The legacy `NotifyCommand`/`resolve_notify_command`/`run_notify` shell-out code has been removed — all notification delivery now goes through trait-based `Notifier` implementations
+- `send_notifications()` in `executor.rs` is the top-level function for post-workflow notifications — it builds notifiers from config, constructs a `Notification`, and fans out via `MultiNotifier`
+- `build_notification()` creates a `Notification` struct from `RunLog` — use this when you need to build notifications outside the executor
+- All `pub mod` declarations are in `src/core/mod.rs` — the `pub mod notify;` line works for both file and directory modules, no change needed
+- Existing executor uses `crate::core::notify::NotifyCommand` and `crate::core::notify::resolve_notify_command` — backward compat re-exports in mod.rs keep these working
+- Tests in this crate are inline (`#[cfg(test)] mod tests`) not in separate test files
+- Integration tests are in `tests/cli_tests.rs` using `assert_cmd`
+- Feature flags go in `[features]` section BEFORE `[dependencies]` in Cargo.toml — each notification backend has its own feature gating its HTTP/SMTP dep
+- `ureq` (sync HTTP) is used instead of `reqwest` to avoid pulling in tokio — all notification backends that do HTTP share the `ureq` optional dep
+- `lettre` is used for SMTP email — gated behind `email` feature
+- Notifier module pattern: `#[cfg(feature = "X")] pub mod X;` in mod.rs, struct with `new()`, private `build_payload()` for testable JSON, `Notifier` trait impl with `ureq::post`
+- Sort HashMap-derived fields alphabetically in `build_payload()` for deterministic test assertions
+- lettre 0.11: use `message.formatted()` for test assertions (body field is private); `SmtpTransport::builder_dangerous()` returns builder directly (not Result)
+- `NotifyConfig.channels` is `Vec<NotifyChannel>` with `target` (URL string) and `on` (Vec<Severity>) — channels take precedence over legacy `on_failure`/`on_success` within the same config level
+- `resolve_targets()` in `executor.rs` is the unified target resolution function — it **merges** workflow + global targets by default (dedup by URL); set `notify_override: true` on workflow config to fully replace global
+- `collect_targets()` is the per-config helper that resolves channels vs legacy for a single `NotifyConfig` — used by `resolve_targets()` for both workflow and global levels
+- `Severity` has `#[serde(rename_all = "lowercase")]` so it deserializes from "success"/"failure"/"warning"/"info" strings in YAML/TOML
+- `RetryConfig` in `notify/retry.rs` provides exponential backoff; `send_with_retry()` is the per-notifier retry function — use `resolve_retry_config()` in executor to get the effective config from workflow/global
+- When adding new fields to `NotifyConfig`, use `..Default::default()` in existing tests to avoid breakage — don't list all fields explicitly
+- `RateLimiter::with_configs()` merges user overrides on top of built-in defaults (Discord 30/min, Telegram 30/sec) — use this constructor when building from config
+
+---
+
+## 2026-03-15 - US-001
+- Implemented Notifier trait, Notification struct, Severity enum, NotifyError type, and MultiNotifier dispatcher
+- Converted `src/core/notify.rs` → `src/core/notify/` module directory
+- Files changed:
+  - `src/core/notify.rs` → `src/core/notify/legacy.rs` (renamed, unchanged)
+  - `src/core/notify/mod.rs` (new: trait, MultiNotifier, re-exports)
+  - `src/core/notify/message.rs` (new: Notification, Severity)
+  - `src/core/notify/error.rs` (new: NotifyError)
+- **Learnings for future iterations:**
+  - Converting a single-file module to a directory module in Rust: move old file to submodule, create mod.rs with re-exports — `pub mod notify;` in parent works for both
+  - All types are Send + Sync (verified by compile-time test `assert_send_sync`)
+  - The executor at `src/core/executor.rs:206-240` uses `NotifyCommand` — keep legacy re-exports until US-012 refactors it
+---
+
+## 2026-03-15 - US-002
+- Added `ureq` (v2, with `json` feature, optional) and `lettre` (v0.11, optional) to Cargo.toml
+- Added `[features]` section with 8 backend feature flags: slack, discord, webhook, ntfy, telegram, email, msteams, gotify
+- Default features: slack, discord, webhook, ntfy, telegram, email
+- Files changed:
+  - `Cargo.toml` (added [features] section, ureq and lettre deps)
+- **Learnings for future iterations:**
+  - `ureq` v2 is sync-only (no tokio) — perfect for this project's non-async architecture
+  - Each HTTP-based backend feature (slack, discord, etc.) depends on `["ureq"]`; email depends on `["lettre"]`
+  - `cargo tree -e normal | grep tokio` is a quick way to verify no async runtime leaked in
+  - `cargo build --no-default-features` must always be tested to ensure the base crate compiles without any notification backends
+- Each notifier module is feature-gated in `mod.rs` with `#[cfg(feature = "X")] pub mod X;` and has a `build_payload()` method for testable JSON construction without network calls
+- Sort HashMap-derived fields alphabetically for deterministic test assertions
+---
+
+## 2026-03-15 - US-003
+- Implemented SlackWebhook notifier in `src/core/notify/slack.rs`
+- POST JSON payload to webhook URL via `ureq` with severity-colored attachments
+- Colors: green (#2ecc71), red (#e74c3c), orange (#f39c12), blue (#3498db)
+- Workflow fields rendered as Slack attachment fields (short: true)
+- Gated behind `feature = "slack"`
+- 4 unit tests verify payload structure, severity colors, fields, and empty fields
+- Files changed:
+  - `src/core/notify/slack.rs` (new)
+  - `src/core/notify/mod.rs` (added `#[cfg(feature = "slack")] pub mod slack;`)
+- **Learnings for future iterations:**
+  - Pattern for notifier modules: struct with `new()`, private `build_payload() -> serde_json::Value`, and `Notifier` trait impl that calls `ureq::post`
+  - Tests only verify `build_payload()` output — no HTTP mocking needed since JSON structure is the contract
+  - Sort fields by key before serialization for deterministic test assertions on HashMap-derived data
+  - `ureq::post().set().send_string()` is the sync HTTP pattern — map error with `NotifyError::new`
+---
+
+## 2026-03-15 - US-004
+- Implemented GenericWebhook notifier in `src/core/notify/webhook.rs`
+- POST JSON payload with subject, body, severity (as string), and fields to webhook URL via `ureq`
+- Gated behind `feature = "webhook"`
+- 4 unit tests: payload structure, severity string values, empty fields, sorted field keys
+- Files changed:
+  - `src/core/notify/webhook.rs` (new)
+  - `src/core/notify/mod.rs` (added `#[cfg(feature = "webhook")] pub mod webhook;`)
+- **Learnings for future iterations:**
+  - GenericWebhook uses flat JSON with severity as a string ("success", "failure", etc.) rather than colors — simpler contract for arbitrary endpoints
+  - Fields are serialized as a JSON object (not array) with sorted keys via `serde_json::Map` for deterministic output
+  - Same `build_payload()` + test pattern as Slack module — no HTTP mocking needed
+---
+
+## 2026-03-15 - US-005
+- Implemented EmailNotifier in `src/core/notify/email.rs` using lettre crate for SMTP delivery
+- Parses config from `email://recipient@host?smtp=smtp.host&port=587&from=sender@host&tls=starttls` URL scheme
+- Supports TLS modes: starttls (default for port 587), implicit (default for port 465), none
+- SMTP credentials read from SMTP_USERNAME and SMTP_PASSWORD env vars
+- Severity-prefixed subjects: [SUCCESS], [FAILURE], [WARNING], [INFO]
+- Body includes sorted fields section when fields are present
+- 10 unit tests: URL parsing (6 tests), message construction (4 tests)
+- Files changed:
+  - `src/core/notify/email.rs` (new)
+  - `src/core/notify/mod.rs` (added `#[cfg(feature = "email")] pub mod email;`)
+- **Learnings for future iterations:**
+  - lettre 0.11 `Message` has a private `body` field — use `message.formatted()` to get the full RFC822 bytes for test assertions
+  - `SmtpTransport::builder_dangerous()` returns `SmtpTransportBuilder` directly (no Result), unlike `relay()` and `starttls_relay()` which return `Result<SmtpTransportBuilder>` — handle each match arm separately
+  - `headers().get_raw("Subject")` returns `&str` not `&[u8]` in lettre 0.11
+  - Email notifier differs from HTTP notifiers: uses `build_message()` instead of `build_payload()`, returns `lettre::Message` instead of `serde_json::Value`
+  - Sort iterator of HashMap refs: use `(*k).clone()` not `k.clone()` to avoid `suspicious_double_ref_op` warning
+---
+
+## 2026-03-15 - US-006
+- Implemented DiscordWebhook notifier in `src/core/notify/discord.rs`
+- Sends Discord embed with severity-based color coding (0x2ECC71 green, 0xE74C3C red, 0xF39C12 orange, 0x3498DB blue)
+- Workflow fields rendered as inline embed fields, sorted alphabetically
+- Gated behind `feature = "discord"`
+- 4 unit tests: embed structure (success/failure), severity colors, empty fields
+- Files changed:
+  - `src/core/notify/discord.rs` (new)
+  - `src/core/notify/mod.rs` (added `#[cfg(feature = "discord")] pub mod discord;`)
+- **Learnings for future iterations:**
+  - Discord embeds use integer color values (e.g., `0x2ECC71`) not hex strings like Slack (`"#2ecc71"`)
+  - Discord embed fields use `"name"` and `"value"` keys (vs Slack's `"title"` and `"value"`), with `"inline": true` for side-by-side display
+  - Same `build_payload()` + test pattern as Slack/Webhook modules — very mechanical to add new HTTP-based notifiers
+---
+
+## 2026-03-15 - US-007
+- Implemented TelegramBot notifier in `src/core/notify/telegram.rs`
+- Uses Bot API `sendMessage` endpoint with MarkdownV2 formatting
+- Severity icons: ✅ (success), ❌ (failure), ⚠️ (warning), ℹ️ (info)
+- Proper MarkdownV2 escaping for all 18 special characters
+- Separate `escape_markdown_v2_code()` for inline code blocks (only `` ` `` and `\`)
+- Bot token and chat_id parsed from `telegram://BOT_TOKEN@CHAT_ID` URL via `from_url()`
+- Uses `rsplit_once('@')` so tokens containing `@` are handled correctly
+- Gated behind `feature = "telegram"`
+- 9 unit tests: message formatting (2), severity icons, escaping (2), URL parsing (2), no-body, API URL
+- Files changed:
+  - `src/core/notify/telegram.rs` (new)
+  - `src/core/notify/mod.rs` (added `#[cfg(feature = "telegram")] pub mod telegram;`)
+- **Learnings for future iterations:**
+  - Telegram MarkdownV2 has 18 special chars that must be escaped: `_*[]()~`>#+-=|{}.!`
+  - Inside inline code blocks, only `` ` `` and `\` need escaping — different from regular text
+  - `rsplit_once('@')` is better than `split_once('@')` for parsing `telegram://TOKEN@CHAT_ID` since bot tokens can contain `@`
+  - Telegram Bot API URL pattern: `https://api.telegram.org/bot{TOKEN}/sendMessage`
+---
+
+## 2026-03-15 - US-008
+- Implemented Ntfy notifier in `src/core/notify/ntfy.rs`
+- POST message body to topic URL with headers for Title, Priority, Tags
+- Severity mapped to ntfy priority levels: 5=urgent (failure), 4=high (warning), 3=default (success/info)
+- Severity mapped to ntfy tags: white_check_mark, x, warning, information_source
+- Optional auth token support via `?token=tk_xxx` query parameter (sent as Bearer token)
+- Config parsed from `ntfy://server/topic` or `ntfy://server/topic?token=tk_xxx` URL
+- Gated behind `feature = "ntfy"`
+- 11 unit tests: priority mapping, tags mapping, URL parsing (5 tests), body construction (3 tests), name
+- Files changed:
+  - `src/core/notify/ntfy.rs` (new)
+  - `src/core/notify/mod.rs` (added `#[cfg(feature = "ntfy")] pub mod ntfy;`)
+- **Learnings for future iterations:**
+  - ntfy uses HTTP headers (`Title`, `Priority`, `Tags`) for metadata instead of JSON body — body is plain text message content
+  - ntfy priority levels: 1=min, 2=low, 3=default, 4=high, 5=urgent
+  - ntfy tags are emoji shortcodes (e.g., `white_check_mark`) not Unicode — the server maps them to emoji
+  - Auth token is sent as `Authorization: Bearer {token}` header
+  - `from_url()` pattern: strip scheme prefix, split on `?` for query, parse key=value pairs for config options
+---
+
+## 2026-03-15 - US-009
+- Implemented TeamsWebhook notifier in `src/core/notify/msteams.rs`
+- Uses Adaptive Card JSON format for the new Workflows/Power Automate connector
+- Severity mapped to Adaptive Card color styles: Good (success), Attention (failure), Warning (warning), Accent (info)
+- Card body: TextBlock header with severity label, optional TextBlock for body, FactSet for workflow fields
+- Gated behind `feature = "msteams"` (not in default features)
+- 5 unit tests: full card structure (success), failure card, severity colors, no fields/body, fields without body
+- Files changed:
+  - `src/core/notify/msteams.rs` (new)
+  - `src/core/notify/mod.rs` (added `#[cfg(feature = "msteams")] pub mod msteams;`)
+- **Learnings for future iterations:**
+  - Adaptive Cards use style-based colors (`Good`, `Attention`, `Warning`, `Accent`) not hex codes — these map to Teams theme colors
+  - Adaptive Card structure: outer `type: "message"` with `attachments[]` containing `contentType: "application/vnd.microsoft.card.adaptive"` and `content` with the card
+  - Card body is an array of elements: `TextBlock` for text, `FactSet` for key-value pairs — conditionally include elements based on whether body/fields are present
+  - `msteams` feature is defined in Cargo.toml but NOT in default features — must use `--features msteams` to test
+---
+
+## 2026-03-15 - US-010
+- Implemented Gotify notifier in `src/core/notify/gotify.rs`
+- POST JSON to `/message` endpoint with `title`, `message`, `priority` fields
+- Auth via `X-Gotify-Key` header with app token
+- Severity mapped to Gotify priority levels: 8=high (failure), 5=normal (warning), 2=low (success/info)
+- App token parsed from `gotify://server?token=APP_TOKEN` URL via `from_url()`
+- Gated behind `feature = "gotify"` (not in default features, like msteams)
+- 11 unit tests: priority mapping, URL parsing (4 tests including error cases), payload construction (4 tests), name
+- Files changed:
+  - `src/core/notify/gotify.rs` (new)
+  - `src/core/notify/mod.rs` (added `#[cfg(feature = "gotify")] pub mod gotify;`)
+- **Learnings for future iterations:**
+  - Gotify uses `X-Gotify-Key` header for app token authentication (not Bearer token like ntfy)
+  - Gotify `/message` endpoint accepts JSON with `title`, `message`, `priority` fields — uses `send_json()` instead of `send_string()`
+  - Gotify priority levels: 0=min, 2=low, 5=normal, 8=high — different scale than ntfy (1-5)
+  - `gotify` feature is NOT in default features (like `msteams`) — must use `--features gotify` to test
+---
+
+## 2026-03-15 - US-011
+- Implemented URL-scheme resolver in `src/core/notify/resolve.rs`
+- `resolve_notifier(url)` parses all 8 URL schemes into `Box<dyn Notifier>`:
+  - `slack://`, `discord://`, `webhook://`, `teams://` → strip scheme, prepend `https://`, construct notifier
+  - `telegram://`, `ntfy://`, `gotify://` → delegate to existing `from_url()` methods
+  - `email://` → delegate to `EmailNotifier::new()`
+- Environment variable expansion (`$VAR` and `${VAR}`) applied before parsing
+- Feature-gated: unavailable schemes return descriptive error messages
+- Unknown schemes return `NotifyError` with the unrecognized scheme name
+- 14 unit tests: 5 env expansion tests, 8 scheme resolution tests (one per backend), 2 error tests, 1 env+resolve combo
+- Files changed:
+  - `src/core/notify/resolve.rs` (new)
+  - `src/core/notify/mod.rs` (added `pub mod resolve;`)
+- **Learnings for future iterations:**
+  - `take_while` on `Peekable` consumes the delimiter — use a manual `peek()` loop when the next character after a variable name must be preserved
+  - Resolver uses dual `fn` pattern: `#[cfg(feature = "X")] fn resolve_X()` and `#[cfg(not(feature = "X"))] fn resolve_X()` for compile-time feature gating with descriptive errors
+  - Slack/Discord/Webhook/Teams URLs are simple scheme-to-https conversions; Telegram/Ntfy/Gotify/Email delegate to existing `from_url()`/`new()` methods
+  - Test env vars should use unique prefixes (`TEST_RESOLVE_*`) to avoid collision with parallel test threads
+---
+
+## 2026-03-15 - US-012
+- Refactored executor to use trait-based notifications, fully removing the old shell-out code
+- Added `build_notification()` — creates `Notification` from `RunLog` with severity, fields, subject, body
+- Added `build_notifiers_for_run()` — resolves notifier URLs from workflow/global config via `resolve_notifier()`
+- Added `send_notifications()` — top-level function combining the above, used by both CLI and TUI
+- Removed `run_notify()` (shell-out function) and `build_notify_vars()` (old template var builder)
+- Removed `legacy.rs` module (`NotifyCommand` enum and `resolve_notify_command()`)
+- Removed legacy re-exports from `notify/mod.rs`
+- Updated `cli/run.rs` and `tui/actions.rs` to use `send_notifications()` instead of old `run_notify()`
+- Replaced 3 old `build_notify_vars` tests with 5 new tests for `build_notification` and `build_notifiers_for_run`
+- Files changed:
+  - `src/core/executor.rs` (replaced run_notify/build_notify_vars with build_notification/build_notifiers_for_run/send_notifications)
+  - `src/core/notify/mod.rs` (removed legacy module and re-exports)
+  - `src/core/notify/legacy.rs` (deleted)
+  - `src/cli/run.rs` (updated imports and call site)
+  - `src/tui/actions.rs` (updated imports and call site)
+- **Learnings for future iterations:**
+  - The two call sites (CLI and TUI) had identical notify patterns — consolidating into `send_notifications()` reduces duplication
+  - `NotifyConfig` from `models.rs` is the data type for both workflow-level and global config; pass both to `send_notifications()` for fallback logic
+  - Notification errors should never block workflow completion — `send_notifications()` logs errors to stderr
+  - `build_notifiers_for_run()` handles invalid URLs gracefully (logs warning, returns empty vec) so callers don't need error handling
+---
+
+## 2026-03-15 - US-013
+- Changed `NotifyConfig.on_failure` and `on_success` from `Option<String>` to `Vec<String>`
+- Added `string_or_vec` serde deserializer for backward compatibility (single string → one-element Vec)
+- Added `vec_as_string_or_vec` serializer (single-element Vec → plain string, empty → skip)
+- Updated `build_notifiers_for_run()` to iterate all URLs in the Vec
+- All targets are notified independently (one failure does not skip others)
+- Works in both config.toml (TOML) and workflow YAML
+- Files changed:
+  - `src/core/models.rs` (changed NotifyConfig fields, added string_or_vec deserializer, 7 unit tests)
+  - `src/core/executor.rs` (updated build_notifiers_for_run, 3 new multi-target tests)
+  - `src/core/parser.rs` (updated 3 existing test assertions, added 2 new YAML deserialization tests)
+- **Learnings for future iterations:**
+  - serde `deserialize_with` + `#[serde(untagged)]` enum is the pattern for "string or array" flexibility — wrap in `Option` for null/missing handling
+  - `serialize_with` + `skip_serializing_if = "Vec::is_empty"` keeps TOML output clean — single-element serializes as string for backward compat
+  - Workflow-level targets take precedence over global (empty Vec = "not set", fall back to global)
+  - Tests for multi-target use invalid schemes to verify the iteration logic without needing real HTTP endpoints
+---
+
+## 2026-03-15 - US-014
+- Added severity-based notification routing via `channels` config format
+- `NotifyChannel` struct with `target` (URL) and `on` (list of severity levels)
+- `resolve_targets()` function handles the full resolution chain: wf channels → wf legacy → global channels → global legacy
+- Channels take precedence over `on_failure`/`on_success` within the same config level
+- Old `on_failure`/`on_success` format still works alongside channels (backward compat)
+- Added `Serialize`/`Deserialize` derives to `Severity` enum with `rename_all = "lowercase"`
+- Files changed:
+  - `src/core/notify/message.rs` (added serde derives to Severity)
+  - `src/core/models.rs` (added NotifyChannel struct, channels field on NotifyConfig, 4 new tests)
+  - `src/core/executor.rs` (added resolve_targets(), targets_from_channels(), refactored build_notifiers_for_run(), 7 new routing tests)
+- **Learnings for future iterations:**
+  - `Severity` now has `serde::Serialize + Deserialize` with `rename_all = "lowercase"` — can be used directly in config structs
+  - Channel routing is separate from notifier resolution — `resolve_targets()` returns URL strings, `build_notifiers_for_run()` resolves them to `Box<dyn Notifier>`
+  - Warning/Info severities have no legacy equivalent — they only work via channels config
+  - Test pattern for routing: use invalid scheme URLs (e.g., `foobar://`) to verify routing logic without needing real HTTP endpoints
+---
+
+## 2026-03-15 - US-015
+- Changed `resolve_targets()` from priority-fallback to **merge** behavior: workflow targets are combined with global targets by default, with URL deduplication
+- Added `notify_override: bool` field to `NotifyConfig` — when `true`, workflow fully replaces global (old behavior)
+- Extracted `collect_targets()` helper for per-config target resolution (channels vs legacy)
+- `notify_override` defaults to `false`, serialization skips it when false via `skip_serializing_if`
+- Files changed:
+  - `src/core/models.rs` (added `notify_override` field, 4 new deserialization/serialization tests)
+  - `src/core/executor.rs` (refactored `resolve_targets()` to merge, added `collect_targets()`, 6 new tests, updated 1 existing test)
+- **Learnings for future iterations:**
+  - When adding a new `bool` field to a struct used in explicit constructor tests, all those tests need updating — use `..Default::default()` where possible to avoid this
+  - `skip_serializing_if = "std::ops::Not::not"` is a clean way to skip serializing `false` bools without a custom function
+  - Merge dedup uses `Vec::contains()` which is O(n²) — fine for notification targets (typically <10) but would need a HashSet for larger collections
+  - The behavioral change from "replace" to "merge" is backward-compatible because the old behavior only triggered when workflow had targets (which now merge with global); workflows that had no targets already fell back to global
+---
+
+## 2026-03-15 - US-016
+- Implemented retry with exponential backoff for notification delivery
+- `RetryConfig` struct with `max_attempts` (default 3), `initial_delay_ms` (default 1000), `backoff_factor` (default 2.0)
+- `send_with_retry()` function in `notify/retry.rs` — retries per-notifier with `std::thread::sleep` (no async)
+- Configurable globally in config.toml under `[notify.retry]` and per-workflow in YAML `notify.retry`
+- Workflow-level retry takes precedence over global via `resolve_retry_config()`
+- When no retry config is set, single attempt via `MultiNotifier::send_all()` (unchanged behavior)
+- Final failure error includes all attempt messages for debugging
+- Files changed:
+  - `src/core/notify/retry.rs` (new: RetryConfig, send_with_retry, 8 unit tests)
+  - `src/core/notify/mod.rs` (added `pub mod retry;` and `pub use retry::RetryConfig;`)
+  - `src/core/models.rs` (added `retry: Option<RetryConfig>` to NotifyConfig, fixed 2 explicit-constructor tests to use `..Default::default()`, 4 new serde tests)
+  - `src/core/executor.rs` (added `resolve_retry_config()`, updated `send_notifications()` for per-notifier retry, 4 new tests)
+- **Learnings for future iterations:**
+  - Adding `Option<T>` fields to `NotifyConfig` is safe with `#[serde(default)]` — `None` when absent, no backward compat issues
+  - Explicit-constructor tests (listing all fields) break when new fields are added — always use `..Default::default()` instead (fixed 2 existing tests)
+  - `send_with_retry()` uses `thread::sleep` which is blocking — fine for notification delivery but would need refactoring if async is ever introduced
+  - Retry timing tests should use small delays (50ms) and generous tolerances to avoid flaky CI
+  - `max_attempts.max(1)` ensures at least one attempt even if someone sets `max_attempts: 0`
+---
+
+## 2026-03-15 - US-017
+- Implemented per-service rate limiting for notification delivery
+- `RateLimitConfig` struct with `max_per_window` (default 60) and `window_secs` (default 60)
+- `RateLimiter` struct with `Instant`-based sliding window, thread-safe via internal `Mutex`
+- Default limits: Discord 30/min, Telegram 30/sec, others 60/min
+- `with_configs()` constructor merges custom overrides with built-in defaults
+- Configurable per-service in config.toml under `[notify.rate_limit.<service>]` and per-workflow in YAML `notify.rate_limit`
+- `resolve_rate_limit_configs()` in executor merges workflow + global configs (workflow overrides global per-service)
+- Rate-limited notifications dropped with warning log message
+- In-process only (HashMap of Vec<Instant> per service, resets on restart)
+- Updated `send_notifications()` to check rate limiter before each notifier send (both retry and non-retry paths)
+- Removed unused `MultiNotifier` import from executor (now sends per-notifier for rate limit checks)
+- Files changed:
+  - `src/core/notify/rate_limit.rs` (new: RateLimitConfig, RateLimiter, 10 unit tests)
+  - `src/core/notify/mod.rs` (added `pub mod rate_limit;` and `pub use` for RateLimitConfig, RateLimiter)
+  - `src/core/models.rs` (added `rate_limit: HashMap<String, RateLimitConfig>` to NotifyConfig, 4 new serde tests)
+  - `src/core/executor.rs` (added `resolve_rate_limit_configs()`, integrated rate limiting into `send_notifications()`, 4 new tests)
+- **Learnings for future iterations:**
+  - `RateLimiter::with_configs()` merges user configs on top of built-in defaults — this preserves Discord/Telegram limits even when user only configures other services
+- Rich formatting pattern: `build_payload()` delegates to `build_rich_payload()` (returns `Option`) with `build_plain_payload()` as fallback — all four services (Slack, Discord, Telegram, Teams) use this pattern
+  - Sliding window uses `Vec<Instant>` per service with `retain()` to prune expired entries — simple and correct for low-volume notification use case
+  - Rate limiting is checked per-notifier before send (not before retry) so a rate-limited service doesn't consume retry attempts
+  - Window expiry test uses `thread::sleep(1100ms)` with a 1-second window — generous tolerance to avoid flaky CI
+  - `HashMap<String, RateLimitConfig>` in TOML serializes as `[rate_limit.service_name]` sections — clean nested config format
+---
+
+## 2026-03-15 - US-018
+- Added rich service-specific formatting with fallback to plain text for all four services
+- **Slack**: Upgraded from legacy attachments to Block Kit format — header block, section blocks for body and mrkdwn fields, colored sidebar via attachment wrapper
+- **Discord**: Already used embeds with colored sidebar and inline fields — added `build_rich_payload()`/`build_plain_payload()` fallback pattern
+- **Telegram**: Already used MarkdownV2 with bold subject, inline code, severity icons — added plain-text fallback (no parse_mode)
+- **Teams**: Already used Adaptive Cards with TextBlock header, FactSet, colored accent — added simple TextBlock fallback
+- All services now follow the pattern: `build_payload()` → `build_rich_payload()` (Option) → `build_plain_payload()` fallback
+- Updated Slack tests from legacy attachment assertions to Block Kit structure assertions
+- Added `test_plain_fallback_payload` test for Slack
+- Files changed:
+  - `src/core/notify/slack.rs` (Block Kit upgrade + fallback + updated tests)
+  - `src/core/notify/discord.rs` (added fallback pattern)
+  - `src/core/notify/telegram.rs` (added plain-text fallback)
+  - `src/core/notify/msteams.rs` (added simple TextBlock fallback)
+- **Learnings for future iterations:**
+  - Slack Block Kit uses `header` block type for titles (plain_text only), `section` for body (mrkdwn), and `section.fields` for key-value pairs — blocks go inside `attachments[].blocks` for color sidebar
+  - Block Kit fields use `*key:* value` mrkdwn format (not separate title/value like legacy attachments)
+  - The `build_rich_payload() -> Option` + `build_plain_payload()` pattern provides a clean fallback mechanism — currently `build_rich_payload` always returns `Some`, but the structure allows future error handling if payload construction becomes fallible
+  - Discord, Telegram, and Teams already had rich formatting from their initial implementation — US-018 mainly upgraded Slack and added the fallback pattern to all four
+---

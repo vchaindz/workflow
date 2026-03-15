@@ -8,7 +8,7 @@ use crate::core::ai;
 use crate::core::catalog;
 use crate::core::compare;
 use crate::core::db;
-use crate::core::executor::{execute_workflow, run_notify, build_notify_vars, ExecuteOpts, StreamingRequest};
+use crate::core::executor::{execute_workflow, send_notifications, ExecuteOpts, StreamingRequest};
 use crate::core::history;
 use crate::core::models::{ExecutionEvent, RuntimeVariable, Task, TaskHeat, TaskKind, Workflow};
 use crate::core::parser::{parse_shell_task, parse_workflow, parse_workflow_from_str};
@@ -507,21 +507,8 @@ fn launch_workflow(
                         let _ = db::insert_run_log_with_source(&conn, &run_log, "tui");
                     }
 
-                    // Run notifications
-                    let notify_on_failure = wf_notify.on_failure.as_ref()
-                        .or(cfg_notify.on_failure.as_ref());
-                    let notify_on_success = wf_notify.on_success.as_ref()
-                        .or(cfg_notify.on_success.as_ref());
-
-                    let notify_vars = build_notify_vars(&task_ref_for_notify, &run_log, &wf_name, &wf_notify.env);
-
-                    if run_log.exit_code == 0 {
-                        if let Some(cmd) = notify_on_success {
-                            run_notify(cmd, &notify_vars);
-                        }
-                    } else if let Some(cmd) = notify_on_failure {
-                        run_notify(cmd, &notify_vars);
-                    }
+                    // Send trait-based notifications
+                    send_notifications(&task_ref_for_notify, &run_log, &wf_name, &wf_notify, &cfg_notify);
                 }
                 let _ = tx.send(ExecutionEvent::WorkflowFinished { run_log });
             }

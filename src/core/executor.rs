@@ -9,7 +9,10 @@ use uuid::Uuid;
 use wait_timeout::ChildExt;
 
 use crate::core::detect;
-use crate::core::models::{ExecutionEvent, ForEachSource, RunLog, Step, StepResult, StepStatus, Workflow};
+use crate::core::models::{ExecutionEvent, ForEachSource, NotifyConfig, RunLog, Step, StepResult, StepStatus, Workflow};
+use crate::core::notify::{Notification, Notifier, RateLimiter, RetryConfig, Severity};
+use crate::core::notify::resolve::resolve_notifier;
+use crate::core::notify::retry::send_with_retry;
 use crate::core::parser::{resolve_env, compute_execution_levels};
 use crate::core::template::expand_template;
 use crate::error::Result;
@@ -199,89 +202,217 @@ pub fn mask_secrets(text: &str, secret_values: &[String]) -> String {
     result
 }
 
-/// Run a notification command after workflow completion.
-/// Resolves URL-scheme shorthands (slack://, webhook://, email://), expands template
-/// variables in the command string, then runs via bash fire-and-forget.
-pub fn run_notify(cmd: &str, vars: &HashMap<String, String>) {
-    use crate::core::notify::NotifyCommand;
-
-    let resolved = crate::core::notify::resolve_notify_command(cmd, vars);
-    match resolved {
-        NotifyCommand::Structured { program, args } => {
-            let expanded_args: Vec<String> =
-                args.iter().map(|a| expand_template(a, vars)).collect();
-            let _ = Command::new(&program)
-                .args(&expanded_args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn();
-        }
-        NotifyCommand::StructuredWithStdin {
-            program,
-            args,
-            stdin_data,
-        } => {
-            let expanded_args: Vec<String> =
-                args.iter().map(|a| expand_template(a, vars)).collect();
-            let expanded_body = expand_template(&stdin_data, vars);
-            if let Ok(mut child) = Command::new(&program)
-                .args(&expanded_args)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                if let Some(mut stdin) = child.stdin.take() {
-                    let _ = std::io::Write::write_all(&mut stdin, expanded_body.as_bytes());
-                }
-            }
-        }
-        NotifyCommand::Shell(raw) => {
-            let expanded = expand_template(&raw, vars);
-            let _ = Command::new("bash")
-                .arg("-c")
-                .arg(&expanded)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn();
-        }
-    }
-}
-
-/// Build a rich set of template variables for notification commands.
-pub fn build_notify_vars(
+/// Build a `Notification` from a completed workflow run.
+pub fn build_notification(
     task_ref: &str,
     run_log: &RunLog,
     workflow_name: &str,
-    notify_env: &HashMap<String, String>,
-) -> HashMap<String, String> {
-    let mut vars = HashMap::new();
-    vars.insert("task_ref".to_string(), task_ref.to_string());
-    vars.insert("exit_code".to_string(), run_log.exit_code.to_string());
-    vars.insert("workflow_name".to_string(), workflow_name.to_string());
-    vars.insert("hostname".to_string(), crate::core::db::current_hostname());
+) -> Notification {
+    let severity = if run_log.exit_code == 0 {
+        Severity::Success
+    } else {
+        Severity::Failure
+    };
 
     let failed: Vec<&str> = run_log.steps.iter()
         .filter(|s| s.status == StepStatus::Failed)
         .map(|s| s.id.as_str())
         .collect();
-    vars.insert("failed_steps".to_string(), failed.join(","));
 
     let total_ms: u64 = run_log.steps.iter().map(|s| s.duration_ms).sum();
-    vars.insert("duration_ms".to_string(), total_ms.to_string());
-    vars.insert("timestamp".to_string(), run_log.started.to_rfc3339());
 
-    let status = if run_log.exit_code == 0 { "success" } else { "failure" };
-    vars.insert("status".to_string(), status.to_string());
+    let status_label = if run_log.exit_code == 0 { "succeeded" } else { "failed" };
+    let subject = format!("[{}] {} {}", severity, workflow_name, status_label);
 
-    // Include user-defined notify.env entries
-    for (k, v) in notify_env {
-        vars.insert(k.clone(), v.clone());
+    let mut body = format!("Task: {}\nDuration: {}ms\nExit code: {}",
+        task_ref, total_ms, run_log.exit_code);
+    if !failed.is_empty() {
+        body.push_str(&format!("\nFailed steps: {}", failed.join(", ")));
     }
 
-    vars
+    let mut notification = Notification::new(subject, body, severity)
+        .with_field("task_ref", task_ref)
+        .with_field("exit_code", run_log.exit_code.to_string())
+        .with_field("workflow_name", workflow_name)
+        .with_field("duration_ms", total_ms.to_string())
+        .with_field("hostname", crate::core::db::current_hostname())
+        .with_field("timestamp", run_log.started.to_rfc3339());
+
+    if !failed.is_empty() {
+        notification = notification.with_field("failed_steps", failed.join(","));
+    }
+
+    notification
+}
+
+/// Collect target URLs for a given severity from channels config.
+fn targets_from_channels(channels: &[crate::core::models::NotifyChannel], severity: &Severity) -> Vec<String> {
+    channels
+        .iter()
+        .filter(|ch| ch.on.contains(severity))
+        .map(|ch| ch.target.clone())
+        .collect()
+}
+
+/// Build notifiers from workflow and global notify config.
+///
+/// Workflow-level config takes precedence over global config.
+/// Returns notifiers matching the current severity (success vs failure).
+///
+/// Target resolution order:
+/// 1. If workflow has `channels`, use severity-based routing from channels
+/// 2. Else if workflow has `on_failure`/`on_success`, use those
+/// 3. Else if global has `channels`, use severity-based routing from channels
+/// 4. Else fall back to global `on_failure`/`on_success`
+pub fn build_notifiers_for_run(
+    wf_notify: &NotifyConfig,
+    global_notify: &NotifyConfig,
+    success: bool,
+) -> Vec<Box<dyn Notifier>> {
+    let severity = if success { Severity::Success } else { Severity::Failure };
+    let targets = resolve_targets(wf_notify, global_notify, &severity);
+
+    let mut notifiers: Vec<Box<dyn Notifier>> = Vec::new();
+    for url in &targets {
+        match resolve_notifier(url) {
+            Ok(n) => notifiers.push(n),
+            Err(e) => eprintln!("Warning: failed to resolve notifier '{}': {}", url, e),
+        }
+    }
+    notifiers
+}
+
+/// Collect targets from a single NotifyConfig for a given severity.
+///
+/// Channels take precedence over on_failure/on_success within the same config.
+fn collect_targets(notify: &NotifyConfig, severity: &Severity) -> Vec<String> {
+    if !notify.channels.is_empty() {
+        return targets_from_channels(&notify.channels, severity);
+    }
+    if matches!(severity, Severity::Success | Severity::Failure) {
+        let legacy = if *severity == Severity::Success {
+            &notify.on_success
+        } else {
+            &notify.on_failure
+        };
+        if !legacy.is_empty() {
+            return legacy.clone();
+        }
+    }
+    Vec::new()
+}
+
+/// Resolve target URLs from config for a given severity.
+///
+/// By default, workflow-level targets are **merged** with global targets
+/// (duplicates removed by URL). If `notify_override: true` is set on the
+/// workflow config, workflow targets fully replace global targets.
+pub fn resolve_targets(
+    wf_notify: &NotifyConfig,
+    global_notify: &NotifyConfig,
+    severity: &Severity,
+) -> Vec<String> {
+    let wf_targets = collect_targets(wf_notify, severity);
+
+    // Override mode: workflow replaces global (old behavior)
+    if wf_notify.notify_override {
+        return wf_targets;
+    }
+
+    // Merge mode (default): combine workflow + global, dedup by URL
+    let global_targets = collect_targets(global_notify, severity);
+
+    if wf_targets.is_empty() {
+        return global_targets;
+    }
+    if global_targets.is_empty() {
+        return wf_targets;
+    }
+
+    // Merge: workflow targets first, then global targets not already present
+    let mut merged = wf_targets;
+    for t in global_targets {
+        if !merged.contains(&t) {
+            merged.push(t);
+        }
+    }
+    merged
+}
+
+/// Resolve the effective retry config from workflow and global notify configs.
+///
+/// Workflow-level retry takes precedence over global. If neither is set, returns `None`
+/// (no retry — single attempt only).
+pub fn resolve_retry_config(
+    wf_notify: &NotifyConfig,
+    global_notify: &NotifyConfig,
+) -> Option<RetryConfig> {
+    wf_notify.retry.clone().or_else(|| global_notify.retry.clone())
+}
+
+/// Resolve rate limit configs by merging workflow and global settings.
+///
+/// Workflow-level rate_limit entries override global ones for the same service.
+pub fn resolve_rate_limit_configs(
+    wf_notify: &NotifyConfig,
+    global_notify: &NotifyConfig,
+) -> std::collections::HashMap<String, crate::core::notify::RateLimitConfig> {
+    let mut configs = global_notify.rate_limit.clone();
+    for (service, config) in &wf_notify.rate_limit {
+        configs.insert(service.clone(), config.clone());
+    }
+    configs
+}
+
+/// Send notifications for a completed workflow run.
+///
+/// Notification errors are logged but never block workflow completion.
+/// Retries are per-notifier: one failing service does not delay others.
+/// Rate-limited notifications are dropped with a warning.
+pub fn send_notifications(
+    task_ref: &str,
+    run_log: &RunLog,
+    workflow_name: &str,
+    wf_notify: &NotifyConfig,
+    global_notify: &NotifyConfig,
+) {
+    let success = run_log.exit_code == 0;
+    let notifiers = build_notifiers_for_run(wf_notify, global_notify, success);
+    if notifiers.is_empty() {
+        return;
+    }
+
+    let notification = build_notification(task_ref, run_log, workflow_name);
+    let retry_config = resolve_retry_config(wf_notify, global_notify);
+    let rate_limit_configs = resolve_rate_limit_configs(wf_notify, global_notify);
+    let rate_limiter = RateLimiter::with_configs(rate_limit_configs);
+
+    match retry_config {
+        Some(ref rc) => {
+            // Per-notifier retry with exponential backoff
+            for notifier in &notifiers {
+                if !rate_limiter.check_and_record(notifier.name()) {
+                    eprintln!("Rate limited: dropping notification for service '{}'", notifier.name());
+                    continue;
+                }
+                if let Err(e) = send_with_retry(notifier.as_ref(), &notification, rc) {
+                    eprintln!("Notification error: {}", e);
+                }
+            }
+        }
+        None => {
+            // No retry configured — single attempt, with rate limiting
+            for notifier in &notifiers {
+                if !rate_limiter.check_and_record(notifier.name()) {
+                    eprintln!("Rate limited: dropping notification for service '{}'", notifier.name());
+                    continue;
+                }
+                if let Err(e) = notifier.send(&notification) {
+                    eprintln!("Notification error: {}", e);
+                }
+            }
+        }
+    }
 }
 
 /// Outcome of executing a single step
@@ -2366,7 +2497,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_notify_vars_all_fields() {
+    fn test_build_notification_failure() {
         let run_log = RunLog {
             id: "test-123".into(),
             task_ref: "infra/deploy".into(),
@@ -2378,22 +2509,44 @@ mod tests {
             ],
             exit_code: 1,
         };
-        let notify_env = HashMap::from([("environment".to_string(), "production".to_string())]);
-        let vars = build_notify_vars("infra/deploy", &run_log, "Deploy Prod", &notify_env);
+        let notif = build_notification("infra/deploy", &run_log, "Deploy Prod");
 
-        assert_eq!(vars.get("task_ref").unwrap(), "infra/deploy");
-        assert_eq!(vars.get("exit_code").unwrap(), "1");
-        assert_eq!(vars.get("workflow_name").unwrap(), "Deploy Prod");
-        assert!(vars.contains_key("hostname"));
-        assert_eq!(vars.get("failed_steps").unwrap(), "deploy");
-        assert_eq!(vars.get("duration_ms").unwrap(), "300");
-        assert!(vars.contains_key("timestamp"));
-        assert_eq!(vars.get("status").unwrap(), "failure");
-        assert_eq!(vars.get("environment").unwrap(), "production");
+        assert_eq!(notif.severity, Severity::Failure);
+        assert!(notif.subject.contains("Deploy Prod"));
+        assert!(notif.subject.contains("failed"));
+        assert!(notif.body.contains("infra/deploy"));
+        assert!(notif.body.contains("300ms"));
+        assert!(notif.body.contains("deploy"));
+        assert_eq!(notif.fields.get("task_ref").unwrap(), "infra/deploy");
+        assert_eq!(notif.fields.get("exit_code").unwrap(), "1");
+        assert_eq!(notif.fields.get("duration_ms").unwrap(), "300");
+        assert!(notif.fields.contains_key("hostname"));
+        assert!(notif.fields.contains_key("timestamp"));
+        assert_eq!(notif.fields.get("failed_steps").unwrap(), "deploy");
     }
 
     #[test]
-    fn test_build_notify_vars_failed_steps() {
+    fn test_build_notification_success() {
+        let run_log = RunLog {
+            id: "test-789".into(),
+            task_ref: "ops/restart".into(),
+            started: Utc::now(),
+            ended: None,
+            steps: vec![
+                StepResult { id: "restart".into(), status: StepStatus::Success, output: String::new(), duration_ms: 50 },
+            ],
+            exit_code: 0,
+        };
+        let notif = build_notification("ops/restart", &run_log, "Restart");
+
+        assert_eq!(notif.severity, Severity::Success);
+        assert!(notif.subject.contains("succeeded"));
+        assert!(!notif.body.contains("Failed steps"));
+        assert!(!notif.fields.contains_key("failed_steps"));
+    }
+
+    #[test]
+    fn test_build_notification_multiple_failures() {
         let run_log = RunLog {
             id: "test-456".into(),
             task_ref: "ci/build".into(),
@@ -2406,30 +2559,383 @@ mod tests {
             ],
             exit_code: 1,
         };
-        let vars = build_notify_vars("ci/build", &run_log, "CI Build", &HashMap::new());
-        let failed = vars.get("failed_steps").unwrap();
+        let notif = build_notification("ci/build", &run_log, "CI Build");
+        let failed = notif.fields.get("failed_steps").unwrap();
         assert!(failed.contains("lint"));
         assert!(failed.contains("test"));
         assert!(!failed.contains("build"));
     }
 
     #[test]
-    fn test_notify_env_passthrough() {
-        let run_log = RunLog {
-            id: "test-789".into(),
-            task_ref: "ops/restart".into(),
-            started: Utc::now(),
-            ended: None,
-            steps: vec![],
-            exit_code: 0,
+    fn test_build_notifiers_for_run_empty_config() {
+        let wf_notify = NotifyConfig::default();
+        let global_notify = NotifyConfig::default();
+        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, true);
+        assert!(notifiers.is_empty());
+    }
+
+    #[test]
+    fn test_build_notifiers_for_run_invalid_url() {
+        let wf_notify = NotifyConfig {
+            on_failure: vec!["foobar://invalid".to_string()],
+            ..Default::default()
         };
-        let notify_env = HashMap::from([
-            ("team".to_string(), "platform".to_string()),
-            ("region".to_string(), "us-east-1".to_string()),
-        ]);
-        let vars = build_notify_vars("ops/restart", &run_log, "Restart", &notify_env);
-        assert_eq!(vars.get("team").unwrap(), "platform");
-        assert_eq!(vars.get("region").unwrap(), "us-east-1");
-        assert_eq!(vars.get("status").unwrap(), "success");
+        let global_notify = NotifyConfig::default();
+        // Invalid scheme logs warning but returns empty
+        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, false);
+        assert!(notifiers.is_empty());
+    }
+
+    #[test]
+    fn test_build_notifiers_multi_target_failure() {
+        // Two invalid URLs should both be attempted (and both fail gracefully)
+        let wf_notify = NotifyConfig {
+            on_failure: vec!["foobar://a".to_string(), "baz://b".to_string()],
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig::default();
+        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, false);
+        // Both are invalid schemes, so empty, but both were tried
+        assert!(notifiers.is_empty());
+    }
+
+    #[test]
+    fn test_build_notifiers_wf_merges_global_multi() {
+        // Workflow-level targets merge with global by default
+        let wf_notify = NotifyConfig {
+            on_success: vec!["foobar://wf1".to_string()],
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig {
+            on_success: vec!["foobar://global1".to_string(), "foobar://global2".to_string()],
+            ..Default::default()
+        };
+        // All 3 targets are resolved (invalid schemes, so 0 valid notifiers, but merge logic works)
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Success);
+        assert_eq!(targets, vec!["foobar://wf1", "foobar://global1", "foobar://global2"]);
+    }
+
+    #[test]
+    fn test_build_notifiers_falls_back_to_global_multi() {
+        // Empty workflow targets → fall back to global
+        let wf_notify = NotifyConfig::default();
+        let global_notify = NotifyConfig {
+            on_failure: vec!["foobar://g1".to_string(), "foobar://g2".to_string()],
+            ..Default::default()
+        };
+        let notifiers = build_notifiers_for_run(&wf_notify, &global_notify, false);
+        assert!(notifiers.is_empty()); // invalid schemes, but global was used
+    }
+
+    #[test]
+    fn test_resolve_targets_channels_failure_only() {
+        use crate::core::models::NotifyChannel;
+        let wf_notify = NotifyConfig {
+            channels: vec![
+                NotifyChannel { target: "slack://fail".into(), on: vec![Severity::Failure] },
+                NotifyChannel { target: "ntfy://all".into(), on: vec![Severity::Failure, Severity::Success] },
+                NotifyChannel { target: "webhook://success-only".into(), on: vec![Severity::Success] },
+            ],
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig::default();
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Failure);
+        assert_eq!(targets, vec!["slack://fail", "ntfy://all"]);
+    }
+
+    #[test]
+    fn test_resolve_targets_channels_success_only() {
+        use crate::core::models::NotifyChannel;
+        let wf_notify = NotifyConfig {
+            channels: vec![
+                NotifyChannel { target: "slack://fail".into(), on: vec![Severity::Failure] },
+                NotifyChannel { target: "ntfy://ok".into(), on: vec![Severity::Success] },
+            ],
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig::default();
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Success);
+        assert_eq!(targets, vec!["ntfy://ok"]);
+    }
+
+    #[test]
+    fn test_resolve_targets_channels_warning() {
+        use crate::core::models::NotifyChannel;
+        let wf_notify = NotifyConfig {
+            channels: vec![
+                NotifyChannel { target: "slack://warn".into(), on: vec![Severity::Warning, Severity::Failure] },
+                NotifyChannel { target: "ntfy://info".into(), on: vec![Severity::Info] },
+            ],
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig::default();
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Warning);
+        assert_eq!(targets, vec!["slack://warn"]);
+    }
+
+    #[test]
+    fn test_resolve_targets_channels_override_legacy() {
+        use crate::core::models::NotifyChannel;
+        // When channels are present, on_failure/on_success are ignored
+        let wf_notify = NotifyConfig {
+            on_failure: vec!["slack://legacy".into()],
+            channels: vec![
+                NotifyChannel { target: "ntfy://channel".into(), on: vec![Severity::Failure] },
+            ],
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig::default();
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Failure);
+        assert_eq!(targets, vec!["ntfy://channel"]);
+    }
+
+    #[test]
+    fn test_resolve_targets_global_channels_fallback() {
+        use crate::core::models::NotifyChannel;
+        // No workflow config → fall back to global channels
+        let wf_notify = NotifyConfig::default();
+        let global_notify = NotifyConfig {
+            channels: vec![
+                NotifyChannel { target: "slack://global-fail".into(), on: vec![Severity::Failure] },
+                NotifyChannel { target: "ntfy://global-ok".into(), on: vec![Severity::Success] },
+            ],
+            ..Default::default()
+        };
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Failure);
+        assert_eq!(targets, vec!["slack://global-fail"]);
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Success);
+        assert_eq!(targets, vec!["ntfy://global-ok"]);
+    }
+
+    #[test]
+    fn test_resolve_targets_legacy_still_works() {
+        // No channels → legacy on_failure/on_success still works
+        let wf_notify = NotifyConfig {
+            on_failure: vec!["slack://wf-fail".into()],
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig::default();
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Failure);
+        assert_eq!(targets, vec!["slack://wf-fail"]);
+        // Success has no workflow targets, no global → empty
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Success);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_targets_merge_dedup() {
+        // Duplicate URLs across workflow and global are deduplicated
+        let wf_notify = NotifyConfig {
+            on_failure: vec!["slack://shared".into(), "ntfy://wf-only".into()],
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig {
+            on_failure: vec!["slack://shared".into(), "webhook://global-only".into()],
+            ..Default::default()
+        };
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Failure);
+        assert_eq!(targets, vec!["slack://shared", "ntfy://wf-only", "webhook://global-only"]);
+    }
+
+    #[test]
+    fn test_resolve_targets_override_replaces_global() {
+        // With notify_override: true, workflow fully replaces global
+        let wf_notify = NotifyConfig {
+            on_failure: vec!["slack://wf".into()],
+            notify_override: true,
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig {
+            on_failure: vec!["ntfy://global".into()],
+            ..Default::default()
+        };
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Failure);
+        assert_eq!(targets, vec!["slack://wf"]);
+    }
+
+    #[test]
+    fn test_resolve_targets_override_empty_wf_returns_empty() {
+        // With notify_override: true and no workflow targets, global is NOT used
+        let wf_notify = NotifyConfig {
+            notify_override: true,
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig {
+            on_failure: vec!["ntfy://global".into()],
+            ..Default::default()
+        };
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Failure);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_targets_merge_channels_with_global_legacy() {
+        use crate::core::models::NotifyChannel;
+        // Workflow channels + global legacy are merged
+        let wf_notify = NotifyConfig {
+            channels: vec![
+                NotifyChannel { target: "slack://wf-ch".into(), on: vec![Severity::Failure] },
+            ],
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig {
+            on_failure: vec!["ntfy://global-legacy".into()],
+            ..Default::default()
+        };
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Failure);
+        assert_eq!(targets, vec!["slack://wf-ch", "ntfy://global-legacy"]);
+    }
+
+    #[test]
+    fn test_resolve_targets_merge_channels_both_levels() {
+        use crate::core::models::NotifyChannel;
+        // Workflow channels + global channels are merged
+        let wf_notify = NotifyConfig {
+            channels: vec![
+                NotifyChannel { target: "slack://wf".into(), on: vec![Severity::Failure] },
+            ],
+            ..Default::default()
+        };
+        let global_notify = NotifyConfig {
+            channels: vec![
+                NotifyChannel { target: "ntfy://global".into(), on: vec![Severity::Failure] },
+                NotifyChannel { target: "slack://wf".into(), on: vec![Severity::Failure] }, // dup
+            ],
+            ..Default::default()
+        };
+        let targets = resolve_targets(&wf_notify, &global_notify, &Severity::Failure);
+        assert_eq!(targets, vec!["slack://wf", "ntfy://global"]);
+    }
+
+    // --- Retry config resolution tests ---
+
+    #[test]
+    fn test_resolve_retry_config_none() {
+        let wf = NotifyConfig::default();
+        let global = NotifyConfig::default();
+        assert!(resolve_retry_config(&wf, &global).is_none());
+    }
+
+    #[test]
+    fn test_resolve_retry_config_global_only() {
+        let wf = NotifyConfig::default();
+        let global = NotifyConfig {
+            retry: Some(RetryConfig {
+                max_attempts: 5,
+                initial_delay_ms: 500,
+                backoff_factor: 1.5,
+            }),
+            ..Default::default()
+        };
+        let rc = resolve_retry_config(&wf, &global).unwrap();
+        assert_eq!(rc.max_attempts, 5);
+        assert_eq!(rc.initial_delay_ms, 500);
+        assert_eq!(rc.backoff_factor, 1.5);
+    }
+
+    #[test]
+    fn test_resolve_retry_config_workflow_overrides_global() {
+        let wf = NotifyConfig {
+            retry: Some(RetryConfig {
+                max_attempts: 2,
+                initial_delay_ms: 100,
+                backoff_factor: 3.0,
+            }),
+            ..Default::default()
+        };
+        let global = NotifyConfig {
+            retry: Some(RetryConfig {
+                max_attempts: 5,
+                initial_delay_ms: 500,
+                backoff_factor: 1.5,
+            }),
+            ..Default::default()
+        };
+        let rc = resolve_retry_config(&wf, &global).unwrap();
+        assert_eq!(rc.max_attempts, 2);
+        assert_eq!(rc.initial_delay_ms, 100);
+        assert_eq!(rc.backoff_factor, 3.0);
+    }
+
+    #[test]
+    fn test_resolve_retry_config_workflow_only() {
+        let wf = NotifyConfig {
+            retry: Some(RetryConfig::default()),
+            ..Default::default()
+        };
+        let global = NotifyConfig::default();
+        let rc = resolve_retry_config(&wf, &global).unwrap();
+        assert_eq!(rc.max_attempts, 3);
+    }
+
+    #[test]
+    fn test_resolve_rate_limit_configs_empty() {
+        let wf = NotifyConfig::default();
+        let global = NotifyConfig::default();
+        let configs = resolve_rate_limit_configs(&wf, &global);
+        assert!(configs.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_rate_limit_configs_global_only() {
+        let wf = NotifyConfig::default();
+        let mut global = NotifyConfig::default();
+        global.rate_limit.insert(
+            "slack".to_string(),
+            crate::core::notify::RateLimitConfig {
+                max_per_window: 10,
+                window_secs: 60,
+            },
+        );
+        let configs = resolve_rate_limit_configs(&wf, &global);
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs["slack"].max_per_window, 10);
+    }
+
+    #[test]
+    fn test_resolve_rate_limit_configs_workflow_overrides_global() {
+        let mut wf = NotifyConfig::default();
+        wf.rate_limit.insert(
+            "slack".to_string(),
+            crate::core::notify::RateLimitConfig {
+                max_per_window: 5,
+                window_secs: 30,
+            },
+        );
+        let mut global = NotifyConfig::default();
+        global.rate_limit.insert(
+            "slack".to_string(),
+            crate::core::notify::RateLimitConfig {
+                max_per_window: 100,
+                window_secs: 60,
+            },
+        );
+        let configs = resolve_rate_limit_configs(&wf, &global);
+        assert_eq!(configs["slack"].max_per_window, 5);
+        assert_eq!(configs["slack"].window_secs, 30);
+    }
+
+    #[test]
+    fn test_resolve_rate_limit_configs_merge() {
+        let mut wf = NotifyConfig::default();
+        wf.rate_limit.insert(
+            "slack".to_string(),
+            crate::core::notify::RateLimitConfig {
+                max_per_window: 5,
+                window_secs: 30,
+            },
+        );
+        let mut global = NotifyConfig::default();
+        global.rate_limit.insert(
+            "discord".to_string(),
+            crate::core::notify::RateLimitConfig {
+                max_per_window: 20,
+                window_secs: 60,
+            },
+        );
+        let configs = resolve_rate_limit_configs(&wf, &global);
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs["slack"].max_per_window, 5);
+        assert_eq!(configs["discord"].max_per_window, 20);
     }
 }

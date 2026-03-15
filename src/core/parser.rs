@@ -774,8 +774,8 @@ steps:
 
         let wf = parse_workflow(&path).unwrap();
         assert_eq!(wf.secrets, vec!["DB_PASS", "API_KEY"]);
-        assert_eq!(wf.notify.on_failure, Some("echo failed".to_string()));
-        assert_eq!(wf.notify.on_success, Some("echo ok".to_string()));
+        assert_eq!(wf.notify.on_failure, vec!["echo failed".to_string()]);
+        assert_eq!(wf.notify.on_success, vec!["echo ok".to_string()]);
     }
 
     #[test]
@@ -795,8 +795,8 @@ steps:
 
         let wf = parse_workflow(&path).unwrap();
         assert!(wf.secrets.is_empty());
-        assert!(wf.notify.on_failure.is_none());
-        assert!(wf.notify.on_success.is_none());
+        assert!(wf.notify.on_failure.is_empty());
+        assert!(wf.notify.on_success.is_empty());
         assert_eq!(wf.steps[0].run_if, None);
         assert_eq!(wf.steps[0].retry, None);
     }
@@ -935,8 +935,61 @@ steps:
         .unwrap();
 
         let wf = parse_workflow(&path).unwrap();
-        assert_eq!(wf.notify.on_failure, Some("echo failed".to_string()));
+        assert_eq!(wf.notify.on_failure, vec!["echo failed".to_string()]);
         assert_eq!(wf.notify.env.get("environment").unwrap(), "production");
         assert_eq!(wf.notify.env.get("team").unwrap(), "platform");
+    }
+
+    #[test]
+    fn test_parse_notify_multi_target_array() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("multi_notify.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Multi Notify
+notify:
+  on_failure:
+    - "slack://hooks.slack.com/xxx"
+    - "ntfy://ntfy.sh/alerts"
+  on_success:
+    - "webhook://example.com/hook"
+steps:
+  - id: s1
+    cmd: echo hello
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.notify.on_failure, vec![
+            "slack://hooks.slack.com/xxx".to_string(),
+            "ntfy://ntfy.sh/alerts".to_string(),
+        ]);
+        assert_eq!(wf.notify.on_success, vec!["webhook://example.com/hook".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_notify_single_string_compat() {
+        // Single string should be deserialized as a one-element Vec
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("single_notify.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Single Notify
+notify:
+  on_failure: "slack://hooks.slack.com/xxx"
+steps:
+  - id: s1
+    cmd: echo hello
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.notify.on_failure.len(), 1);
+        assert_eq!(wf.notify.on_failure[0], "slack://hooks.slack.com/xxx");
+        assert!(wf.notify.on_success.is_empty());
     }
 }

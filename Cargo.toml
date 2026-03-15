@@ -9,6 +9,17 @@ license = "MIT"
 name = "workflow"
 path = "src/main.rs"
 
+[features]
+default = ["slack", "discord", "webhook", "ntfy", "telegram", "email"]
+slack = ["ureq"]
+discord = ["ureq"]
+webhook = ["ureq"]
+ntfy = ["ureq"]
+telegram = ["ureq"]
+email = ["lettre"]
+msteams = ["ureq"]
+gotify = ["ureq"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.28"
@@ -36,6 +47,8 @@ age = { version = "0.11", features = ["ssh"] }
 ssh-key = { version = "0.6", features = ["ed25519"] }
 zeroize = { version = "1", features = ["derive"] }
 rpassword = "5"
+ureq = { version = "2", features = ["json"], optional = true }
+lettre = { version = "0.11", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"

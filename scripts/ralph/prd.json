@@ -1,0 +1,330 @@
+{
+  "project": "workflow",
+  "branchName": "ralph/notification-system",
+  "description": "Notification System Overhaul - Replace shell-out notifications with trait-based native HTTP supporting 8 backends",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Define Notifier trait, Notification struct, and MultiNotifier",
+      "description": "As a developer, I want a Notifier trait and MultiNotifier dispatcher so that adding new notification backends is just implementing a trait.",
+      "acceptanceCriteria": [
+        "Create src/core/notify/ module directory with mod.rs, message.rs, error.rs",
+        "Notifier trait defined with name() -> &str and send(&Notification) -> Result<(), NotifyError>",
+        "Notification struct with subject: String, body: String, severity: Severity, fields: HashMap<String, String>",
+        "Severity enum with Success, Failure, Warning, Info variants",
+        "NotifyError type with service name (String) and message (String)",
+        "MultiNotifier struct with add(Box<dyn Notifier>) and send_all(&Notification) -> Vec<NotifyError>",
+        "All types are Send + Sync",
+        "Old src/core/notify.rs replaced by src/core/notify/mod.rs re-exporting the old resolve_notify_command for backward compat",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Add ureq and lettre dependencies with feature flags",
+      "description": "As a developer, I want ureq for native HTTP and lettre for SMTP so notifications don't depend on external binaries.",
+      "acceptanceCriteria": [
+        "ureq added to Cargo.toml with json feature",
+        "lettre added to Cargo.toml, gated behind feature = 'email'",
+        "Feature flags defined: slack, discord, webhook, ntfy, telegram, email, msteams, gotify",
+        "Default features include: slack, discord, webhook, ntfy, telegram, email",
+        "No tokio or async runtime in dependency tree",
+        "cargo build succeeds with default features",
+        "cargo build --no-default-features succeeds",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Implement SlackWebhook notifier",
+      "description": "As a user, I want Slack notifications via native HTTP so they work without curl installed.",
+      "acceptanceCriteria": [
+        "SlackWebhook struct in src/core/notify/slack.rs implements Notifier trait",
+        "POST JSON payload to webhook URL via ureq",
+        "Message includes severity-colored attachment (green/red/orange/blue)",
+        "Workflow fields rendered in attachment fields",
+        "Gated behind feature = 'slack'",
+        "Unit test verifies payload JSON structure",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Implement GenericWebhook notifier",
+      "description": "As a user, I want generic webhook notifications via native HTTP for reliability.",
+      "acceptanceCriteria": [
+        "GenericWebhook struct in src/core/notify/webhook.rs implements Notifier trait",
+        "POST JSON body with subject, body, severity, and fields",
+        "Gated behind feature = 'webhook'",
+        "Unit test verifies payload JSON structure",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Implement EmailNotifier with lettre",
+      "description": "As a user, I want email notifications via SMTP so they don't depend on the system mail command.",
+      "acceptanceCriteria": [
+        "EmailNotifier struct in src/core/notify/email.rs implements Notifier trait",
+        "Uses lettre crate for SMTP delivery",
+        "Supports TLS (STARTTLS and implicit)",
+        "SMTP credentials read from SMTP_USERNAME and SMTP_PASSWORD environment variables",
+        "Config parsed from email://user@host?smtp=smtp.example.com&port=587 URL scheme",
+        "Gated behind feature = 'email'",
+        "Unit test verifies message construction (no actual SMTP call)",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Implement DiscordWebhook notifier",
+      "description": "As a user, I want to send workflow notifications to Discord so my team gets alerts.",
+      "acceptanceCriteria": [
+        "DiscordWebhook struct in src/core/notify/discord.rs implements Notifier trait",
+        "Sends Discord embed with severity-based color coding (0x2ECC71 green, 0xE74C3C red, 0xF39C12 orange, 0x3498DB blue)",
+        "Workflow fields rendered as inline embed fields",
+        "Gated behind feature = 'discord'",
+        "Unit test verifies embed JSON structure",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Implement TelegramBot notifier",
+      "description": "As a user, I want to send workflow notifications to Telegram so I get mobile alerts.",
+      "acceptanceCriteria": [
+        "TelegramBot struct in src/core/notify/telegram.rs implements Notifier trait",
+        "Uses Bot API sendMessage endpoint with MarkdownV2 formatting",
+        "Severity icons in message prefix (checkmark, X, warning, info)",
+        "Proper MarkdownV2 character escaping for special chars",
+        "Bot token and chat_id parsed from telegram://BOT_TOKEN@CHAT_ID URL",
+        "Gated behind feature = 'telegram'",
+        "Unit test verifies message formatting and escaping",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Implement ntfy notifier",
+      "description": "As a user, I want to send notifications via ntfy for self-hosted push alerts.",
+      "acceptanceCriteria": [
+        "Ntfy struct in src/core/notify/ntfy.rs implements Notifier trait",
+        "POST message body to topic URL with headers for title, priority, tags",
+        "Severity mapped to ntfy priority levels (5=urgent for failure, 4=high for warning, 3=default for success/info)",
+        "Optional auth token support via token query parameter",
+        "Config parsed from ntfy://ntfy.sh/my-topic or ntfy://my-server.local/topic?token=tk_xxx",
+        "Gated behind feature = 'ntfy'",
+        "Unit test verifies header construction",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Implement TeamsWebhook notifier",
+      "description": "As a user, I want to send workflow notifications to Microsoft Teams.",
+      "acceptanceCriteria": [
+        "TeamsWebhook struct in src/core/notify/msteams.rs implements Notifier trait",
+        "Uses Adaptive Card JSON format for the new Workflows/Power Automate connector",
+        "Severity-colored card header",
+        "Workflow fields rendered as Adaptive Card facts",
+        "Gated behind feature = 'msteams'",
+        "Unit test verifies Adaptive Card payload structure",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Implement Gotify notifier",
+      "description": "As a user, I want to send notifications via Gotify for self-hosted push notifications.",
+      "acceptanceCriteria": [
+        "Gotify struct in src/core/notify/gotify.rs implements Notifier trait",
+        "POST to /message endpoint with title, message, priority fields",
+        "Severity mapped to Gotify priority levels (8=high for failure, 5=normal for warning, 2=low for success/info)",
+        "App token parsed from gotify://my-server.local?token=APP_TOKEN URL",
+        "Gated behind feature = 'gotify'",
+        "Unit test verifies payload construction",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Implement URL-scheme resolver for all backends",
+      "description": "As a developer, I want a unified URL-scheme resolver so config strings are parsed into the correct Notifier trait objects.",
+      "acceptanceCriteria": [
+        "resolve.rs parses all 8 URL schemes (slack://, discord://, telegram://, teams://, ntfy://, gotify://, webhook://, email://) into Box<dyn Notifier>",
+        "Unknown schemes return a descriptive NotifyError",
+        "Environment variable references ($VAR) expanded in URLs before parsing",
+        "Feature-gated: unavailable schemes return a compile-time or descriptive error",
+        "Unit tests for each scheme's parsing",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Refactor executor to use trait-based notifications",
+      "description": "As a developer, I want the executor to use the new trait-based system so the old shell-out code is fully removed.",
+      "acceptanceCriteria": [
+        "build_notification() function creates Notification from RunLog + template vars",
+        "build_notifiers_from_config() uses resolve.rs to construct Vec<Box<dyn Notifier>> from config",
+        "Old run_notify() shell-out function removed from executor.rs",
+        "Old NotifyCommand enum and resolve_notify_command() removed (replaced by new resolver)",
+        "Notification errors logged but never block workflow completion",
+        "ExecutionEvent variants updated if needed for TUI display",
+        "All existing integration tests pass",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Support multi-target notification config",
+      "description": "As a user, I want to send notifications to multiple targets so failures go to both Slack and my phone.",
+      "acceptanceCriteria": [
+        "on_failure and on_success accept both a single string and an array of strings in YAML and TOML",
+        "Serde deserialize_with string_or_vec for backward compatibility",
+        "Single string deserialized as one-element vec",
+        "All targets notified independently (one failure does not skip others)",
+        "Works in both config.toml (global) and workflow YAML (per-workflow)",
+        "Unit test for single-string and array deserialization",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 13,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Add severity-based notification routing",
+      "description": "As a user, I want to route different severity levels to different targets.",
+      "acceptanceCriteria": [
+        "New channels config format with target (string) and on (array of severities) fields",
+        "on accepts: success, failure, warning, info",
+        "Old on_failure/on_success format still works alongside channels",
+        "Per-workflow notify.channels overrides or extends global config",
+        "Unit test for routing logic (correct targets selected per severity)",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 14,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Implement global + per-workflow notify merge",
+      "description": "As a user, I want per-workflow notifications to add to global defaults rather than replace them.",
+      "acceptanceCriteria": [
+        "By default workflow-level notify merges with global config.toml notify targets",
+        "Workflow can set notify_override: true to fully replace global targets",
+        "Merge deduplicates identical target URLs",
+        "Unit test for merge and override behavior",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 15,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-016",
+      "title": "Add retry with exponential backoff",
+      "description": "As a user, I want failed notifications to retry automatically so transient network issues don't cause missed alerts.",
+      "acceptanceCriteria": [
+        "RetryConfig struct with max_attempts (default 3), initial_delay_ms (default 1000), backoff_factor (default 2.0)",
+        "Configurable globally in config.toml under [notify.retry]",
+        "Retries are per-notifier (one failing service does not delay others)",
+        "Final failure logged with all attempt error messages",
+        "Retry uses std::thread::sleep (no async)",
+        "Unit test for retry logic with a mock notifier that fails then succeeds",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 16,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-017",
+      "title": "Add per-service rate limiting",
+      "description": "As a developer, I want per-service rate limiting so we don't hit API limits when workflows run frequently.",
+      "acceptanceCriteria": [
+        "RateLimiter tracks sends per service name per time window using Instant-based sliding window",
+        "Default limits: Discord 30/min, Telegram 30/sec, others 60/min",
+        "Excess notifications dropped with a warning log message",
+        "Configurable per-service in config.toml under [notify.rate_limit]",
+        "In-process only (no persistence, resets on restart)",
+        "Unit test for rate limiting behavior",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 17,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-018",
+      "title": "Add rich service-specific formatting",
+      "description": "As a user, I want notifications to use each service's native rich formatting for readable alerts.",
+      "acceptanceCriteria": [
+        "Slack: Block Kit with header, section blocks, and colored sidebar",
+        "Discord: Embeds with title, description, colored sidebar, and inline fields",
+        "Telegram: MarkdownV2 with bold subject, inline code for step output, severity icon",
+        "Teams: Adaptive Cards with TextBlock header, FactSet for fields, colored accent",
+        "Fallback to plain text body if rich formatting construction fails",
+        "Existing unit tests updated to verify rich payload structure",
+        "Typecheck passes",
+        "cargo test passes"
+      ],
+      "priority": 18,
+      "passes": true,
+      "notes": ""
+    }
+  ]
+}

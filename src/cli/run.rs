@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::core::config::Config;
 use crate::core::db;
 use crate::core::discovery::{resolve_task_ref, scan_workflows};
-use crate::core::executor::{execute_workflow, run_notify, build_notify_vars, ExecuteOpts};
+use crate::core::executor::{execute_workflow, send_notifications, ExecuteOpts};
 use crate::core::models::{StepStatus, TaskKind};
 use crate::core::parser::{parse_shell_task, parse_workflow};
 use crate::error::Result;
@@ -114,21 +114,8 @@ pub fn cmd_run(
             }
         }
 
-        // Notifications: workflow notify overrides config notify
-        let notify_on_failure = workflow.notify.on_failure.as_ref()
-            .or(config.notify.on_failure.as_ref());
-        let notify_on_success = workflow.notify.on_success.as_ref()
-            .or(config.notify.on_success.as_ref());
-
-        let notify_vars = build_notify_vars(&canonical_ref, &run_log, &workflow.name, &workflow.notify.env);
-
-        if exit_code == 0 {
-            if let Some(cmd) = notify_on_success {
-                run_notify(cmd, &notify_vars);
-            }
-        } else if let Some(cmd) = notify_on_failure {
-            run_notify(cmd, &notify_vars);
-        }
+        // Send trait-based notifications
+        send_notifications(&canonical_ref, &run_log, &workflow.name, &workflow.notify, &config.notify);
     }
 
     Ok(exit_code)

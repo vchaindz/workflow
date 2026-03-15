@@ -25,5 +25,8 @@ Thumbs.db
 # Claude Code
 CLAUDE.md
 
+# Ralph / PRD tasks
+/scripts/ralph/
+
 # Logs and databases (local dev)
 *.log
