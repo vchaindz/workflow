@@ -102,7 +102,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('B') => app.view_background_result(),
         KeyCode::Char('L') => view_logs(app)?,
-        KeyCode::Char('w') => start_history_wizard(app),
+        KeyCode::Char('n') => start_new_workflow_menu(app),
         KeyCode::Char('W') => start_clone_wizard(app)?,
         KeyCode::Char('c') => compare_selected(app)?,
         KeyCode::Char('a') => {
@@ -110,12 +110,9 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 && app.run_output_task_path.is_some()
             {
                 start_ai_fix_from_run(app);
-            } else {
-                start_ai_wizard(app);
             }
         }
         KeyCode::Char('A') => start_ai_update_wizard(app),
-        KeyCode::Char('t') => start_template_wizard(app),
         KeyCode::Char('R') => open_recent_runs(app)?,
         KeyCode::Char('s') => open_saved_tasks(app),
         KeyCode::Char('S') => toggle_bookmark(app),
@@ -1380,16 +1377,13 @@ fn handle_rename_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-fn start_history_wizard(app: &mut App) {
-    let entries = history::load_shell_history(5000);
-    let filtered: Vec<usize> = (0..entries.len()).collect();
-
+fn start_new_workflow_menu(app: &mut App) {
     app.wizard = Some(WizardState {
-        mode: WizardMode::FromHistory,
-        stage: WizardStage::ShellHistory,
-        history_entries: entries,
+        mode: WizardMode::FromHistory, // placeholder, overridden on selection
+        stage: WizardStage::PickMode,
+        history_entries: Vec::new(),
         history_filter: String::new(),
-        history_filtered: filtered,
+        history_filtered: Vec::new(),
         history_cursor: 0,
         history_selected: Vec::new(),
         history_scroll_offset: 0,
@@ -1424,8 +1418,86 @@ fn start_history_wizard(app: &mut App) {
         save_message: None,
         failed_run: None,
         preview_diff_mode: false,
+        pick_mode_cursor: 0,
     });
     app.mode = AppMode::Wizard;
+}
+
+/// Build the list of options for the PickMode menu.
+/// Index 0 is always "From shell history", index 1 is "AI generate" (only when
+/// an AI tool is detected), and the last entry is "From template".
+fn pick_mode_options(has_ai: bool) -> Vec<(&'static str, &'static str)> {
+    let mut opts = vec![("From shell history", "w")];
+    if has_ai {
+        opts.push(("AI generate", "a"));
+    }
+    opts.push(("From template", "t"));
+    opts
+}
+
+fn handle_wizard_pick_mode(app: &mut App, key: KeyEvent) {
+    let has_ai = app.ai_tool().is_some();
+    let options = pick_mode_options(has_ai);
+    let max = options.len().saturating_sub(1);
+    let cursor = app.wizard.as_ref().unwrap().pick_mode_cursor;
+
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            let wiz = app.wizard.as_mut().unwrap();
+            wiz.pick_mode_cursor = cursor.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let wiz = app.wizard.as_mut().unwrap();
+            wiz.pick_mode_cursor = (cursor + 1).min(max);
+        }
+        KeyCode::Enter => {
+            let label = options[cursor].0;
+            match label {
+                "From shell history" => {
+                    let entries = history::load_shell_history(5000);
+                    let filtered: Vec<usize> = (0..entries.len()).collect();
+                    let wiz = app.wizard.as_mut().unwrap();
+                    wiz.mode = WizardMode::FromHistory;
+                    wiz.stage = WizardStage::ShellHistory;
+                    wiz.history_entries = entries;
+                    wiz.history_filtered = filtered;
+                }
+                "AI generate" => {
+                    // has_ai is guaranteed true here
+                    let tool = app.ai_tool().unwrap();
+                    let wiz = app.wizard.as_mut().unwrap();
+                    wiz.mode = WizardMode::AiChat;
+                    wiz.stage = WizardStage::AiPrompt;
+                    wiz.ai_tool = Some(tool);
+                }
+                "From template" => {
+                    let cache_dir = app.config.workflows_dir.join(".template-cache");
+                    let entries = catalog::all_templates(&cache_dir);
+                    if entries.is_empty() {
+                        app.footer_log.push(format!(
+                            "[{}] No templates available",
+                            chrono::Local::now().format("%H:%M:%S"),
+                        ));
+                        app.wizard = None;
+                        app.mode = AppMode::Normal;
+                        return;
+                    }
+                    let filtered: Vec<usize> = (0..entries.len()).collect();
+                    let wiz = app.wizard.as_mut().unwrap();
+                    wiz.mode = WizardMode::FromTemplate;
+                    wiz.stage = WizardStage::TemplateBrowse;
+                    wiz.template_entries = entries;
+                    wiz.template_filtered = filtered;
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Esc => {
+            app.wizard = None;
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
 }
 
 fn start_clone_wizard(app: &mut App) -> Result<()> {
@@ -1488,68 +1560,13 @@ fn start_clone_wizard(app: &mut App) -> Result<()> {
         save_message: None,
         failed_run: None,
         preview_diff_mode: false,
+        pick_mode_cursor: 0,
     });
     app.mode = AppMode::Wizard;
     app.focus = Focus::Details;
     app.detail_scroll = 0;
 
     Ok(())
-}
-
-fn start_ai_wizard(app: &mut App) {
-    let tool = match app.ai_tool() {
-        Some(t) => t,
-        None => {
-            app.footer_log.push(format!(
-                "[{}] No AI tool found (install `claude`, `codex`, or `gemini`)",
-                chrono::Local::now().format("%H:%M:%S"),
-            ));
-            return;
-        }
-    };
-
-    app.wizard = Some(WizardState {
-        mode: WizardMode::AiChat,
-        stage: WizardStage::AiPrompt,
-        history_entries: Vec::new(),
-        history_filter: String::new(),
-        history_filtered: Vec::new(),
-        history_cursor: 0,
-        history_selected: Vec::new(),
-        history_scroll_offset: 0,
-        source_task_ref: None,
-        source_workflow: None,
-        source_run: None,
-        ai_prompt: String::new(),
-        ai_tool: Some(tool),
-        ai_result_rx: None,
-        ai_commands: Vec::new(),
-        ai_error: None,
-        ai_tick: 0,
-        ai_source_yaml: String::new(),
-        ai_source_path: None,
-        ai_updated_yaml: None,
-        template_entries: Vec::new(),
-        template_filter: String::new(),
-        template_filtered: Vec::new(),
-        template_cursor: 0,
-        template_scroll_offset: 0,
-        template_var_values: Vec::new(),
-        template_var_cursor: 0,
-        category: String::new(),
-        task_name: String::new(),
-        category_cursor: None,
-        remove_failed: false,
-        remove_skipped: false,
-        parallelize: false,
-        active_toggle: 0,
-        preview_scroll: 0,
-        ai_refine_prompt: String::new(),
-        save_message: None,
-        failed_run: None,
-        preview_diff_mode: false,
-    });
-    app.mode = AppMode::Wizard;
 }
 
 fn start_ai_update_wizard(app: &mut App) {
@@ -1621,6 +1638,7 @@ fn start_ai_update_wizard(app: &mut App) {
         save_message: None,
         failed_run: None,
         preview_diff_mode: false,
+        pick_mode_cursor: 0,
     });
     app.mode = AppMode::Wizard;
 }
@@ -1735,6 +1753,7 @@ fn start_ai_fix_from_run(app: &mut App) {
         save_message: None,
         failed_run,
         preview_diff_mode: true,
+        pick_mode_cursor: 0,
     });
     app.mode = AppMode::Wizard;
 }
@@ -1836,6 +1855,7 @@ fn start_ai_fix_from_var_prompt(app: &mut App) -> Result<()> {
         save_message: None,
         failed_run: None,
         preview_diff_mode: false,
+        pick_mode_cursor: 0,
     });
     app.mode = AppMode::Wizard;
     Ok(())
@@ -1926,6 +1946,7 @@ fn handle_wizard_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.mode = AppMode::Normal;
         }
         _ => match wiz.stage {
+            WizardStage::PickMode => handle_wizard_pick_mode(app, key),
             WizardStage::ShellHistory => handle_wizard_history(app, key),
             WizardStage::AiPrompt => handle_wizard_ai_prompt(app, key),
             WizardStage::AiThinking => handle_wizard_ai_thinking(app, key),
@@ -2322,64 +2343,6 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
-}
-
-fn start_template_wizard(app: &mut App) {
-    let cache_dir = app.config.workflows_dir.join(".template-cache");
-    let entries = catalog::all_templates(&cache_dir);
-
-    if entries.is_empty() {
-        app.footer_log.push(format!(
-            "[{}] No templates available",
-            chrono::Local::now().format("%H:%M:%S"),
-        ));
-        return;
-    }
-
-    let filtered: Vec<usize> = (0..entries.len()).collect();
-
-    app.wizard = Some(WizardState {
-        mode: WizardMode::FromTemplate,
-        stage: WizardStage::TemplateBrowse,
-        history_entries: Vec::new(),
-        history_filter: String::new(),
-        history_filtered: Vec::new(),
-        history_cursor: 0,
-        history_selected: Vec::new(),
-        history_scroll_offset: 0,
-        source_task_ref: None,
-        source_workflow: None,
-        source_run: None,
-        ai_prompt: String::new(),
-        ai_tool: None,
-        ai_result_rx: None,
-        ai_commands: Vec::new(),
-        ai_error: None,
-        ai_tick: 0,
-        ai_source_yaml: String::new(),
-        ai_source_path: None,
-        ai_updated_yaml: None,
-        template_entries: entries,
-        template_filter: String::new(),
-        template_filtered: filtered,
-        template_cursor: 0,
-        template_scroll_offset: 0,
-        template_var_values: Vec::new(),
-        template_var_cursor: 0,
-        category: String::new(),
-        task_name: String::new(),
-        category_cursor: None,
-        remove_failed: false,
-        remove_skipped: false,
-        parallelize: false,
-        active_toggle: 0,
-        preview_scroll: 0,
-        ai_refine_prompt: String::new(),
-        save_message: None,
-        failed_run: None,
-        preview_diff_mode: false,
-    });
-    app.mode = AppMode::Wizard;
 }
 
 fn handle_wizard_template_browse(app: &mut App, key: KeyEvent) {

@@ -157,6 +157,7 @@ pub struct SecretsState {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WizardStage {
+    PickMode,
     ShellHistory,
     AiPrompt,
     AiThinking,
@@ -265,6 +266,9 @@ pub struct WizardState {
 
     // Diff toggle for Preview stage (true = show diff, false = plain YAML)
     pub preview_diff_mode: bool,
+
+    // PickMode cursor (0=History, 1=AI, 2=Template)
+    pub pick_mode_cursor: usize,
 
     // Shared fields
     pub category: String,

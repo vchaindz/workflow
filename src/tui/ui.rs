@@ -230,16 +230,8 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             )),
             Line::from(""),
             Line::from(vec![
-                Span::styled(" w ", Style::default().fg(Color::Black).bg(Color::White)),
-                Span::styled(" From history", Style::default().fg(Color::DarkGray)),
-            ]),
-            Line::from(vec![
-                Span::styled(" a ", Style::default().fg(Color::Black).bg(Color::White)),
-                Span::styled(" AI generate", Style::default().fg(Color::DarkGray)),
-            ]),
-            Line::from(vec![
-                Span::styled(" t ", Style::default().fg(Color::Black).bg(Color::White)),
-                Span::styled(" Templates", Style::default().fg(Color::DarkGray)),
+                Span::styled(" n ", Style::default().fg(Color::Black).bg(Color::White)),
+                Span::styled(" New workflow", Style::default().fg(Color::DarkGray)),
             ]),
             Line::from(vec![
                 Span::styled(" e ", Style::default().fg(Color::Black).bg(Color::White)),
@@ -526,38 +518,35 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Focus::Sidebar => {
                     hints.extend_from_slice(&[
                         "Enter:expand", "m:rename-cat",
-                        "w:from-history", "t:template",
+                        "n:new",
                     ]);
-                    if has_ai && !has_failed_run {
-                        hints.push("a:ai");
-                    }
                 }
                 Focus::TaskList => {
                     hints.extend_from_slice(&[
                         "r:run", "d:dry-run", "e:edit", "m:rename",
                     ]);
-                    if has_ai && !has_failed_run {
-                        hints.push("a:ai");
+                    if has_ai && has_failed_run {
+                        hints.push("a:ai-fix");
                     }
                     if has_ai {
                         hints.push("A:ai-update");
                     }
                     hints.extend_from_slice(&[
                         "c:compare", "W:clone", "L:logs",
-                        "w:from-history", "t:template",
+                        "n:new",
                     ]);
                 }
                 Focus::Details => {
                     hints.extend_from_slice(&[
                         "r:run", "d:dry-run", "e:edit",
                     ]);
-                    if has_ai && !has_failed_run {
-                        hints.push("a:ai");
+                    if has_ai && has_failed_run {
+                        hints.push("a:ai-fix");
                     }
                     if has_ai {
                         hints.push("A:ai-update");
                     }
-                    hints.push("l:scroll");
+                    hints.extend_from_slice(&["n:new", "l:scroll"]);
                 }
             }
 
@@ -591,8 +580,10 @@ fn draw_wizard(f: &mut Frame, app: &App) {
     };
 
     let area = f.area();
-    // Larger modal for history stage, medium for AI stages
-    let (mw, mh) = if matches!(wiz.stage, WizardStage::ShellHistory | WizardStage::TemplateBrowse) {
+    // Larger modal for history stage, medium for AI stages, small for pick mode
+    let (mw, mh) = if matches!(wiz.stage, WizardStage::PickMode) {
+        (40.min(area.width.saturating_sub(4)), 10.min(area.height.saturating_sub(2)))
+    } else if matches!(wiz.stage, WizardStage::ShellHistory | WizardStage::TemplateBrowse) {
         (80.min(area.width.saturating_sub(4)), 32.min(area.height.saturating_sub(2)))
     } else if matches!(wiz.stage, WizardStage::AiPrompt | WizardStage::AiThinking | WizardStage::TemplateVariables) {
         (70.min(area.width.saturating_sub(4)), 20.min(area.height.saturating_sub(2)))
@@ -605,12 +596,16 @@ fn draw_wizard(f: &mut Frame, app: &App) {
 
     f.render_widget(Clear, popup);
 
-    let title = match wiz.mode {
-        WizardMode::FromHistory => " New Task from History ",
-        WizardMode::CloneTask => " Clone Task ",
-        WizardMode::AiChat => " AI Task Generator ",
-        WizardMode::AiUpdate => " AI Task Update ",
-        WizardMode::FromTemplate => " Template Catalog ",
+    let title = if wiz.stage == WizardStage::PickMode {
+        " New Workflow "
+    } else {
+        match wiz.mode {
+            WizardMode::FromHistory => " New Task from History ",
+            WizardMode::CloneTask => " Clone Task ",
+            WizardMode::AiChat => " AI Task Generator ",
+            WizardMode::AiUpdate => " AI Task Update ",
+            WizardMode::FromTemplate => " Template Catalog ",
+        }
     };
     let block = Block::default()
         .title(title)
@@ -620,6 +615,55 @@ fn draw_wizard(f: &mut Frame, app: &App) {
     f.render_widget(block, popup);
 
     let inner = Rect::new(popup.x + 2, popup.y + 1, popup.width.saturating_sub(4), popup.height.saturating_sub(2));
+
+    // PickMode: render selection menu and return early
+    if wiz.stage == WizardStage::PickMode {
+        let cursor = wiz.pick_mode_cursor;
+        let has_ai = app.cached_ai_tool.flatten().is_some();
+        let mut options: Vec<(&str, &str)> = vec![("From shell history", "w")];
+        if has_ai {
+            options.push(("AI generate", "a"));
+        }
+        options.push(("From template", "t"));
+
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(Span::styled(
+            "Select creation method:",
+            Style::default().fg(Color::White),
+        )));
+        lines.push(Line::from(""));
+        for (i, (label, hint)) in options.iter().enumerate() {
+            let selected = i == cursor;
+            let bullet = if selected { "●" } else { "○" };
+            let (style_bullet, style_label, style_hint) = if selected {
+                (
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::DarkGray),
+                )
+            } else {
+                (
+                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::DarkGray),
+                )
+            };
+            let prefix = if selected { "> " } else { "  " };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, style_bullet),
+                Span::styled(format!("{bullet} {label}"), style_label),
+                Span::styled(format!("   ({hint})"), style_hint),
+            ]));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Enter: select  Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )));
+        let para = Paragraph::new(lines);
+        f.render_widget(para, inner);
+        return;
+    }
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -757,6 +801,7 @@ fn draw_wizard(f: &mut Frame, app: &App) {
     }
 
     match wiz.stage {
+        WizardStage::PickMode => unreachable!(), // handled above with early return
         WizardStage::AiPrompt => {
             let tool_name = wiz.ai_tool.map(|t| t.name()).unwrap_or("AI");
             let is_update = wiz.mode == WizardMode::AiUpdate;
@@ -2051,12 +2096,11 @@ fn draw_help(f: &mut Frame, app: &App) {
             Line::from("  r           Run selected task"),
             Line::from("  d           Dry-run selected task"),
             Line::from("  e           Edit task (in-app editor)"),
-            Line::from("  n           Rename task/category"),
-            Line::from("  w           New task from shell history"),
+            Line::from("  m           Rename task/category"),
+            Line::from("  n           New workflow (menu)"),
             Line::from("  W           Clone selected task"),
-            Line::from("  a           AI task generator"),
+            Line::from("  a           AI fix failed run"),
             Line::from("  A           AI update selected task"),
-            Line::from("  t           New task from template"),
             Line::from("  Del         Delete selected task"),
             Line::from("  T           Empty trash"),
             Line::from("  c           Compare last 2 runs"),
