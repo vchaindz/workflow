@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod run;
 pub mod schedule;
 pub mod secrets;
+pub mod snapshot;
 pub mod status;
 pub mod sync;
 pub mod templates;
@@ -118,6 +119,11 @@ pub fn dispatch(config: &mut Config, command: Commands) -> Result<i32> {
                 eprintln!("MCP commands require the mcp feature. Rebuild with: cargo build --features mcp");
                 Ok(1)
             }
+        }
+
+        Commands::Snapshot { action } => {
+            snapshot::cmd_snapshot(config, action)?;
+            Ok(0)
         }
 
         Commands::Serve { port, bind } => serve::cmd_serve(config, port, &bind),

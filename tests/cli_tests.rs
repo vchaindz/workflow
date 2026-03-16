@@ -205,3 +205,65 @@ fn test_version_flag() {
         .success()
         .stdout(predicate::str::contains("workflow"));
 }
+
+#[test]
+fn test_snapshot_set_get_delete_roundtrip() {
+    let dir = setup_fixtures();
+    // set
+    Command::cargo_bin("workflow")
+        .unwrap()
+        .args(["--dir", dir.path().to_str().unwrap()])
+        .args(["snapshot", "set", "test/task", "baseline", "--value", r#"{"status":"200"}"#])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Snapshot stored"));
+    // get
+    Command::cargo_bin("workflow")
+        .unwrap()
+        .args(["--dir", dir.path().to_str().unwrap()])
+        .args(["snapshot", "get", "test/task", "baseline"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"{"status":"200"}"#));
+    // list
+    Command::cargo_bin("workflow")
+        .unwrap()
+        .args(["--dir", dir.path().to_str().unwrap()])
+        .args(["snapshot", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test/task"));
+    // delete
+    Command::cargo_bin("workflow")
+        .unwrap()
+        .args(["--dir", dir.path().to_str().unwrap()])
+        .args(["snapshot", "delete", "test/task", "baseline"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Snapshot deleted"));
+    // get after delete → exit 1
+    Command::cargo_bin("workflow")
+        .unwrap()
+        .args(["--dir", dir.path().to_str().unwrap()])
+        .args(["snapshot", "get", "test/task", "baseline"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn test_snapshot_list_json() {
+    let dir = setup_fixtures();
+    Command::cargo_bin("workflow")
+        .unwrap()
+        .args(["--dir", dir.path().to_str().unwrap()])
+        .args(["snapshot", "set", "a/b", "key1", "--value", "val1"])
+        .assert()
+        .success();
+    Command::cargo_bin("workflow")
+        .unwrap()
+        .args(["--dir", dir.path().to_str().unwrap()])
+        .args(["snapshot", "list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""task_ref": "a/b""#));
+}

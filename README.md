@@ -460,6 +460,14 @@ workflow mcp list-tools github --json       # full schemas as JSON
 workflow mcp call github create_issue --arg repo=myorg/app --arg title="Bug"
 workflow mcp check github                   # verify server connectivity
 
+# Snapshots (key-value baselines)
+workflow snapshot set backup/db-full baseline '{"hash":"abc123"}'
+workflow snapshot get backup/db-full baseline        # prints value (for shell capture)
+workflow snapshot delete backup/db-full baseline     # reset baseline
+workflow snapshot list                               # all snapshots
+workflow snapshot list backup/db-full                # filter by task
+workflow snapshot list --json                        # machine-readable
+
 # Sync across machines
 workflow sync setup                      # one-time: init + private GitHub repo
 workflow sync push                       # auto-commit and push
@@ -544,7 +552,47 @@ notify:
     team: platform
 ```
 
-Template variables available in all commands: `{{date}}`, `{{datetime}}`, `{{hostname}}`, `{{step_id.status}}` (after each step: success/failed/skipped/timedout), plus any captured step outputs.
+Template variables available in all commands: `{{date}}`, `{{datetime}}`, `{{hostname}}`, `{{task_ref}}` (current task identity), `{{step_id.status}}` (after each step: success/failed/skipped/timedout), plus any captured step outputs.
+
+## Snapshot baselines (push/pop content checks)
+
+Workflows often need to verify that something hasn't changed — a web page still has the expected content, a config file hasn't drifted, an API response matches a known shape. The `snapshot` subcommand provides a generic key-value store in SQLite for this pattern.
+
+The idea: **first run auto-learns** a baseline, subsequent runs compare against it. No hardcoded expected values to maintain.
+
+```yaml
+name: Page Drift Check
+steps:
+  - id: fingerprint
+    cmd: curl -s https://example.com | sha256sum | cut -d' ' -f1
+    outputs:
+      - name: hash
+        pattern: '^(\S+)'
+
+  - id: baseline-check
+    needs: [fingerprint]
+    cmd: |
+      EXISTING=$(workflow snapshot get "{{task_ref}}" content-hash 2>/dev/null || true)
+      if [ -z "$EXISTING" ]; then
+        echo "First run — storing baseline"
+        workflow snapshot set "{{task_ref}}" content-hash "{{fingerprint.hash}}"
+      elif [ "$EXISTING" != "{{fingerprint.hash}}" ]; then
+        echo "DRIFT: $EXISTING -> {{fingerprint.hash}}"
+        exit 1
+      else
+        echo "OK: matches baseline"
+      fi
+```
+
+Snapshots are stored in the same `history.db` that tracks run history — no extra files, no git noise. Reset a baseline anytime with `workflow snapshot delete`.
+
+```bash
+workflow snapshot get mycat/mytask baseline       # inspect stored value
+workflow snapshot delete mycat/mytask baseline     # force re-learn on next run
+workflow snapshot list --json                      # all snapshots as JSON
+```
+
+Shell steps can capture `workflow snapshot get` output via `$(...)` since `get` prints the raw value to stdout (exits 1 if not found). The `set` subcommand reads from stdin when `--value` is omitted, so you can pipe content directly: `echo '{"k":"v"}' | workflow snapshot set task key`.
 
 ## Sync across machines
 

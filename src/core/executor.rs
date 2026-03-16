@@ -1630,6 +1630,7 @@ pub fn execute_workflow(
 
     // Expand templates in env values
     let mut template_vars: HashMap<String, String> = env.clone();
+    template_vars.insert("task_ref".to_string(), task_ref.to_string());
 
     let step_map: HashMap<&str, &Step> = workflow
         .steps

@@ -203,6 +203,12 @@ pub enum Commands {
         action: McpAction,
     },
 
+    /// Manage key-value snapshots for workflow baselines
+    Snapshot {
+        #[command(subcommand)]
+        action: SnapshotAction,
+    },
+
     /// View run logs
     Logs {
         /// Task reference (omit for all recent)
@@ -299,6 +305,42 @@ pub enum SyncAction {
     Branch {
         /// Branch name to switch to (omit to list all)
         name: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnapshotAction {
+    /// Store a snapshot value (reads stdin if --value is omitted)
+    Set {
+        /// Task reference (e.g., sbom.sh/sbom-check-page)
+        task: String,
+        /// Snapshot key
+        key: String,
+        /// Value to store (reads stdin if omitted)
+        #[arg(long)]
+        value: Option<String>,
+    },
+    /// Retrieve a snapshot value
+    Get {
+        /// Task reference
+        task: String,
+        /// Snapshot key
+        key: String,
+    },
+    /// Delete a snapshot
+    Delete {
+        /// Task reference
+        task: String,
+        /// Snapshot key
+        key: String,
+    },
+    /// List stored snapshots
+    List {
+        /// Filter by task reference
+        task: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 

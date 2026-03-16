@@ -134,26 +134,41 @@ pub fn resolve_task_ref<'a>(
     categories: &'a [Category],
     ref_str: &str,
 ) -> Result<&'a Task> {
-    // Normalize: accept both "/" and "." as separator
-    let normalized = ref_str.replace('.', "/");
-    let parts: Vec<&str> = normalized.splitn(2, '/').collect();
-
-    let (cat_name, task_name) = if parts.len() == 2 {
-        (parts[0], parts[1])
-    } else {
-        // Search all categories for a matching task
-        let task_name = parts[0];
-        for cat in categories {
-            if let Some(task) = cat.tasks.iter().find(|t| t.name == task_name) {
-                return Ok(task);
+    // Try literal slash split first (preserves dots in category names like "sbom.sh")
+    if ref_str.contains('/') {
+        let parts: Vec<&str> = ref_str.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            let (cat_name, task_name) = (parts[0], parts[1]);
+            for cat in categories {
+                if cat.name == cat_name {
+                    if let Some(task) = cat.tasks.iter().find(|t| t.name == task_name) {
+                        return Ok(task);
+                    }
+                }
             }
         }
-        return Err(DzError::TaskNotFound(ref_str.to_string()));
-    };
+    }
 
-    for cat in categories {
-        if cat.name == cat_name {
-            if let Some(task) = cat.tasks.iter().find(|t| t.name == task_name) {
+    // Fall back to dot-as-separator for backward compat (e.g. "backup.db-full")
+    if ref_str.contains('.') {
+        let normalized = ref_str.replace('.', "/");
+        let parts: Vec<&str> = normalized.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            let (cat_name, task_name) = (parts[0], parts[1]);
+            for cat in categories {
+                if cat.name == cat_name {
+                    if let Some(task) = cat.tasks.iter().find(|t| t.name == task_name) {
+                        return Ok(task);
+                    }
+                }
+            }
+        }
+    }
+
+    // No separator — search all categories for a matching task name
+    if !ref_str.contains('/') && !ref_str.contains('.') {
+        for cat in categories {
+            if let Some(task) = cat.tasks.iter().find(|t| t.name == ref_str) {
                 return Ok(task);
             }
         }

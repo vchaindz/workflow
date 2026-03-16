@@ -48,7 +48,72 @@ pub fn open_db(db_path: &Path) -> Result<Connection> {
         )?;
     }
 
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS snapshots (
+            task_ref TEXT NOT NULL,
+            key      TEXT NOT NULL,
+            value    TEXT NOT NULL,
+            created  TEXT NOT NULL,
+            PRIMARY KEY (task_ref, key)
+        );",
+    )?;
+
     Ok(conn)
+}
+
+// ── Snapshot store ──────────────────────────────────────────────────
+
+pub fn store_snapshot(conn: &Connection, task_ref: &str, key: &str, value: &str) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR REPLACE INTO snapshots (task_ref, key, value, created) VALUES (?1, ?2, ?3, ?4)",
+        params![task_ref, key, value, now],
+    )?;
+    Ok(())
+}
+
+pub fn get_snapshot(conn: &Connection, task_ref: &str, key: &str) -> Result<Option<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT value, created FROM snapshots WHERE task_ref = ?1 AND key = ?2",
+    )?;
+    let result = stmt.query_row(params![task_ref, key], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    });
+    match result {
+        Ok(pair) => Ok(Some(pair)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn delete_snapshot(conn: &Connection, task_ref: &str, key: &str) -> Result<bool> {
+    let count = conn.execute(
+        "DELETE FROM snapshots WHERE task_ref = ?1 AND key = ?2",
+        params![task_ref, key],
+    )?;
+    Ok(count > 0)
+}
+
+pub fn list_snapshots(conn: &Connection, task_ref: Option<&str>) -> Result<Vec<(String, String, String)>> {
+    let mut rows_out = Vec::new();
+    if let Some(tr) = task_ref {
+        let mut stmt = conn.prepare(
+            "SELECT task_ref, key, created FROM snapshots WHERE task_ref = ?1 ORDER BY task_ref, key",
+        )?;
+        let rows = stmt.query_map(params![tr], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        for r in rows { rows_out.push(r?); }
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT task_ref, key, created FROM snapshots ORDER BY task_ref, key",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        for r in rows { rows_out.push(r?); }
+    }
+    Ok(rows_out)
 }
 
 /// Get the current username from the environment.
@@ -512,6 +577,69 @@ mod tests {
         let remaining = get_recent_runs(&conn, 10).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].task_ref, "backup/db-full");
+    }
+
+    #[test]
+    fn test_snapshot_store_and_get() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("history.db");
+        let conn = open_db(&db_path).unwrap();
+
+        store_snapshot(&conn, "sbom.sh/check", "baseline", r#"{"status":"200"}"#).unwrap();
+        let result = get_snapshot(&conn, "sbom.sh/check", "baseline").unwrap();
+        assert!(result.is_some());
+        let (val, _created) = result.unwrap();
+        assert_eq!(val, r#"{"status":"200"}"#);
+    }
+
+    #[test]
+    fn test_snapshot_upsert() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("history.db");
+        let conn = open_db(&db_path).unwrap();
+
+        store_snapshot(&conn, "t/a", "k", "v1").unwrap();
+        store_snapshot(&conn, "t/a", "k", "v2").unwrap();
+        let (val, _) = get_snapshot(&conn, "t/a", "k").unwrap().unwrap();
+        assert_eq!(val, "v2");
+    }
+
+    #[test]
+    fn test_snapshot_delete() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("history.db");
+        let conn = open_db(&db_path).unwrap();
+
+        store_snapshot(&conn, "t/a", "k", "v").unwrap();
+        assert!(delete_snapshot(&conn, "t/a", "k").unwrap());
+        assert!(!delete_snapshot(&conn, "t/a", "k").unwrap());
+        assert!(get_snapshot(&conn, "t/a", "k").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_snapshot_list() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("history.db");
+        let conn = open_db(&db_path).unwrap();
+
+        store_snapshot(&conn, "a/1", "x", "v1").unwrap();
+        store_snapshot(&conn, "a/1", "y", "v2").unwrap();
+        store_snapshot(&conn, "b/2", "x", "v3").unwrap();
+
+        let all = list_snapshots(&conn, None).unwrap();
+        assert_eq!(all.len(), 3);
+
+        let filtered = list_snapshots(&conn, Some("a/1")).unwrap();
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_snapshot_get_missing() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("history.db");
+        let conn = open_db(&db_path).unwrap();
+
+        assert!(get_snapshot(&conn, "nope", "nope").unwrap().is_none());
     }
 
     #[test]
