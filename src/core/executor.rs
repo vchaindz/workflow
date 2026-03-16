@@ -15,7 +15,7 @@ use crate::core::notify::{Notification, Notifier, RateLimiter, RetryConfig, Seve
 use crate::core::notify::resolve::resolve_notifier;
 use crate::core::notify::retry::send_with_retry;
 use crate::core::parser::{resolve_env, compute_execution_levels};
-use crate::core::template::expand_template;
+use crate::core::template::{expand_template, expand_env_vars};
 use crate::error::Result;
 
 /// Gracefully terminate a child process: SIGTERM first, wait grace period, then SIGKILL.
@@ -625,9 +625,12 @@ fn execute_mcp_step(
     let timer = Instant::now();
 
     // Build env for MCP server: workflow env + server-specific env + secrets
+    // Env values support both {{template_var}} and $ENV_VAR expansion.
     let mut mcp_env: HashMap<String, String> = env.clone();
     for (k, v) in &server_env {
-        mcp_env.insert(k.clone(), expand_template(v, template_vars));
+        let expanded = expand_template(v, template_vars);
+        let expanded = expand_env_vars(&expanded, env);
+        mcp_env.insert(k.clone(), expanded);
     }
 
     // Inject secrets from the secrets store into the MCP server env.
@@ -3443,5 +3446,90 @@ mod tests {
         assert!(!masked.contains("s3cret_token"), "workflow secret should be masked");
         assert!(!masked.contains("mcp_api_key_123"), "MCP secret should be masked");
         assert_eq!(masked, "connecting with [REDACTED] and [REDACTED] to server");
+    }
+
+    #[test]
+    fn test_expand_json_templates_string_var() {
+        let mut vars = HashMap::new();
+        vars.insert("version".to_string(), "1.2.3".to_string());
+        let args = serde_json::json!({
+            "tag": "v{{version}}",
+            "name": "Release {{version}}"
+        });
+        let expanded = expand_json_templates(&args, &vars);
+        assert_eq!(expanded["tag"], "v1.2.3");
+        assert_eq!(expanded["name"], "Release 1.2.3");
+    }
+
+    #[test]
+    fn test_expand_json_templates_nested_mixed() {
+        let mut vars = HashMap::new();
+        vars.insert("repo".to_string(), "myorg/myapp".to_string());
+        vars.insert("env".to_string(), "prod".to_string());
+        let args = serde_json::json!({
+            "repo": "{{repo}}",
+            "count": 5,
+            "draft": false,
+            "labels": ["bug", "{{env}}"],
+            "config": {
+                "target": "{{env}}-cluster",
+                "retries": 3,
+                "enabled": true
+            }
+        });
+        let expanded = expand_json_templates(&args, &vars);
+        assert_eq!(expanded["repo"], "myorg/myapp");
+        assert_eq!(expanded["count"], 5);
+        assert_eq!(expanded["draft"], false);
+        assert_eq!(expanded["labels"][0], "bug");
+        assert_eq!(expanded["labels"][1], "prod");
+        assert_eq!(expanded["config"]["target"], "prod-cluster");
+        assert_eq!(expanded["config"]["retries"], 3);
+        assert_eq!(expanded["config"]["enabled"], true);
+    }
+
+    #[test]
+    fn test_expand_json_templates_null_passthrough() {
+        let vars = HashMap::new();
+        let args = serde_json::Value::Null;
+        let expanded = expand_json_templates(&args, &vars);
+        assert!(expanded.is_null());
+    }
+
+    #[test]
+    fn test_mcp_env_dollar_var_expansion() {
+        // Simulate $DB_PASSWORD expansion in MCP env values
+        use crate::core::template::expand_env_vars;
+        let mut env = HashMap::new();
+        env.insert("DB_PASSWORD".to_string(), "s3cret".to_string());
+        let input = "postgres://user:$DB_PASSWORD@host/db";
+        let expanded = expand_env_vars(input, &env);
+        assert_eq!(expanded, "postgres://user:s3cret@host/db");
+    }
+
+    #[test]
+    fn test_mcp_env_brace_var_expansion() {
+        use crate::core::template::expand_env_vars;
+        let mut env = HashMap::new();
+        env.insert("TOKEN".to_string(), "abc123".to_string());
+        let input = "Bearer ${TOKEN}";
+        let expanded = expand_env_vars(input, &env);
+        assert_eq!(expanded, "Bearer abc123");
+    }
+
+    #[test]
+    fn test_mcp_env_combined_template_and_dollar() {
+        // Template vars and $VAR expansion work together
+        use crate::core::template::{expand_template, expand_env_vars};
+        let mut template_vars = HashMap::new();
+        template_vars.insert("host".to_string(), "db.example.com".to_string());
+        let mut env = HashMap::new();
+        env.insert("DB_PASSWORD".to_string(), "s3cret".to_string());
+
+        let input = "postgres://user:$DB_PASSWORD@{{host}}/mydb";
+        // Same order as executor: expand_template first, then expand_env_vars
+        let step1 = expand_template(input, &template_vars);
+        let step2 = expand_env_vars(&step1, &env);
+        assert_eq!(step2, "postgres://user:s3cret@db.example.com/mydb");
     }
 }
