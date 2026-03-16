@@ -1422,6 +1422,8 @@ fn start_history_wizard(app: &mut App) {
         preview_scroll: 0,
         ai_refine_prompt: String::new(),
         save_message: None,
+        failed_run: None,
+        preview_diff_mode: false,
     });
     app.mode = AppMode::Wizard;
 }
@@ -1484,6 +1486,8 @@ fn start_clone_wizard(app: &mut App) -> Result<()> {
         preview_scroll: 0,
         ai_refine_prompt: String::new(),
         save_message: None,
+        failed_run: None,
+        preview_diff_mode: false,
     });
     app.mode = AppMode::Wizard;
     app.focus = Focus::Details;
@@ -1542,6 +1546,8 @@ fn start_ai_wizard(app: &mut App) {
         preview_scroll: 0,
         ai_refine_prompt: String::new(),
         save_message: None,
+        failed_run: None,
+        preview_diff_mode: false,
     });
     app.mode = AppMode::Wizard;
 }
@@ -1613,6 +1619,8 @@ fn start_ai_update_wizard(app: &mut App) {
         preview_scroll: 0,
         ai_refine_prompt: String::new(),
         save_message: None,
+        failed_run: None,
+        preview_diff_mode: false,
     });
     app.mode = AppMode::Wizard;
 }
@@ -1683,6 +1691,7 @@ fn start_ai_fix_from_run(app: &mut App) {
         let _ = tx.send(result);
     });
 
+    let failed_run = app.run_output.clone();
     app.run_output = None;
     app.run_output_task_path = None;
 
@@ -1724,6 +1733,8 @@ fn start_ai_fix_from_run(app: &mut App) {
         preview_scroll: 0,
         ai_refine_prompt: String::new(),
         save_message: None,
+        failed_run,
+        preview_diff_mode: true,
     });
     app.mode = AppMode::Wizard;
 }
@@ -1823,6 +1834,8 @@ fn start_ai_fix_from_var_prompt(app: &mut App) -> Result<()> {
         preview_scroll: 0,
         ai_refine_prompt: String::new(),
         save_message: None,
+        failed_run: None,
+        preview_diff_mode: false,
     });
     app.mode = AppMode::Wizard;
     Ok(())
@@ -2236,6 +2249,13 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
             let wiz = app.wizard.as_mut().unwrap();
             wiz.preview_scroll = wiz.preview_scroll.saturating_add(1);
         }
+        KeyCode::Char('D') => {
+            // Toggle diff view in AiUpdate mode
+            let wiz = app.wizard.as_mut().unwrap();
+            if wiz.mode == WizardMode::AiUpdate && wiz.ai_updated_yaml.is_some() {
+                wiz.preview_diff_mode = !wiz.preview_diff_mode;
+            }
+        }
         KeyCode::Char('d') => {
             let yaml = get_wizard_preview_yaml(wiz);
             if yaml.is_empty() {
@@ -2356,6 +2376,8 @@ fn start_template_wizard(app: &mut App) {
         preview_scroll: 0,
         ai_refine_prompt: String::new(),
         save_message: None,
+        failed_run: None,
+        preview_diff_mode: false,
     });
     app.mode = AppMode::Wizard;
 }

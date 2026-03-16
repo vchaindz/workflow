@@ -260,6 +260,12 @@ pub struct WizardState {
     // AI Refine fields
     pub ai_refine_prompt: String,
 
+    // Failure context for AI-fix wizard
+    pub failed_run: Option<RunLog>,
+
+    // Diff toggle for Preview stage (true = show diff, false = plain YAML)
+    pub preview_diff_mode: bool,
+
     // Shared fields
     pub category: String,
     pub task_name: String,
@@ -419,6 +425,7 @@ pub struct StepState {
     pub cmd_preview: String,
     pub status: StepStatus,
     pub duration_ms: Option<u64>,
+    pub last_output: Option<String>,
 }
 
 impl App {
@@ -961,6 +968,7 @@ impl App {
                             cmd_preview: cmd_preview.clone(),
                             status: StepStatus::Running,
                             duration_ms: None,
+                            last_output: None,
                         });
                         self.footer_log.push(format!(
                             "[{}] ▶ {} — {}",
@@ -1001,7 +1009,10 @@ impl App {
                             duration_ms,
                         ));
                     }
-                    ExecutionEvent::StepOutput { step_id: _, line } => {
+                    ExecutionEvent::StepOutput { step_id, line } => {
+                        if let Some(state) = self.step_states.iter_mut().find(|s| s.id == step_id && s.status == StepStatus::Running) {
+                            state.last_output = Some(line.clone());
+                        }
                         self.streaming_lines.push(line);
                         // Auto-scroll if enabled
                         if self.streaming_auto_scroll {
@@ -1041,6 +1052,7 @@ impl App {
                             cmd_preview: String::new(),
                             status: StepStatus::Skipped,
                             duration_ms: None,
+                            last_output: None,
                         });
                         self.footer_log.push(format!(
                             "[{}] ⊘ {} skipped",
@@ -1241,6 +1253,7 @@ impl App {
                                 cmd_preview: cmd_preview.clone(),
                                 status: StepStatus::Running,
                                 duration_ms: None,
+                                last_output: None,
                             });
                             bg.footer_log.push(format!(
                                 "[{}] ▶ {} — {}",
@@ -1266,6 +1279,7 @@ impl App {
                                 cmd_preview: String::new(),
                                 status: StepStatus::Skipped,
                                 duration_ms: None,
+                                last_output: None,
                             });
                         }
                         ExecutionEvent::WorkflowFinished { run_log } => {

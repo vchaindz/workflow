@@ -1,7 +1,7 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, LineGauge, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::core::db;
@@ -395,8 +395,10 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
 
     let lines: Vec<Line> = if app.mode == AppMode::Comparing {
         if let Some(ref result) = app.compare_result {
-            // Compare still returns a String; wrap as raw text for now
-            Text::raw(compare::format_compare(result, false)).lines.into_iter().collect()
+            compare::format_compare(result, false)
+                .lines()
+                .map(|l| Line::from(colorize_compare_line(l)))
+                .collect()
         } else {
             vec![Line::from(Span::styled("No comparison data", Style::default().fg(Color::DarkGray)))]
         }
@@ -425,6 +427,44 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let text = Text::from(lines);
+
+    // When running, show a progress gauge at the top
+    if app.mode == AppMode::Running && !app.step_states.is_empty() {
+        let total = app.step_states.len() as f64;
+        let completed = app.step_states.iter()
+            .filter(|s| matches!(s.status, StepStatus::Success | StepStatus::Failed | StepStatus::Skipped | StepStatus::Timedout))
+            .count() as f64;
+        let ratio = if total > 0.0 { (completed / total).min(1.0) } else { 0.0 };
+        let label = format!(" {}/{} steps ", completed as usize, total as usize);
+
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(inner);
+
+        let gauge = LineGauge::default()
+            .ratio(ratio)
+            .label(label)
+            .filled_style(Style::default().fg(Color::Green))
+            .unfilled_style(Style::default().fg(Color::DarkGray));
+        f.render_widget(gauge, chunks[0]);
+
+        let iw = chunks[1].width as usize;
+        let cl: u16 = text.lines.iter()
+            .map(|l| if iw == 0 { 1u16 } else { 1 + (l.width() / iw.max(1)) as u16 })
+            .sum();
+        let max_scroll = cl.saturating_sub(chunks[1].height);
+        let scroll = app.detail_scroll.min(max_scroll);
+
+        let para = Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0));
+        f.render_widget(para, chunks[1]);
+        return;
+    }
 
     // Approximate line count (including wraps) to clamp scroll
     let inner_width = area.width.saturating_sub(2) as usize; // borders
@@ -809,6 +849,11 @@ fn draw_wizard(f: &mut Frame, app: &App) {
                     ("Esc", "Back to prompt"),
                 ]);
             } else {
+                // Show failure context if available
+                if let Some(ref failed_log) = wiz.failed_run {
+                    lines.extend(format_failed_run_summary(failed_log));
+                }
+
                 // Spinner state
                 let spinner_frames = ["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
                 let frame = spinner_frames[(wiz.ai_tick as usize) % spinner_frames.len()];
@@ -1272,6 +1317,24 @@ fn draw_wizard(f: &mut Frame, app: &App) {
 
         WizardStage::Preview => {
             let is_update = wiz.mode == WizardMode::AiUpdate;
+
+            // Show failure context header for AI-fix
+            if is_update {
+                if let Some(ref failed_log) = wiz.failed_run {
+                    let failed_names: Vec<String> = failed_log.steps.iter()
+                        .filter(|s| s.status == StepStatus::Failed)
+                        .map(|s| format!("{} (exit 1)", s.id))
+                        .collect();
+                    if !failed_names.is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            format!("Fixing: {}", failed_names.join(" | ")),
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        )));
+                        lines.push(Line::from(""));
+                    }
+                }
+            }
+
             lines.push(Line::from(Span::styled(
                 if is_update { "Review updated workflow" } else { "Review and save" },
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -1336,26 +1399,49 @@ fn draw_wizard(f: &mut Frame, app: &App) {
                 }
             };
 
-            for line in yaml.lines() {
-                let owned = line.to_string();
-                let color = if line.starts_with("name:") || line.starts_with("env:") || line.starts_with("workdir:") || line.starts_with("steps:") {
-                    Color::Cyan
-                } else if line.trim_start().starts_with("- id:") {
-                    Color::Yellow
-                } else if line.trim_start().starts_with("cmd:") {
-                    Color::Green
-                } else if line.trim_start().starts_with("needs:") || line.trim_start().starts_with("parallel:") {
-                    Color::Magenta
-                } else {
-                    Color::White
-                };
-                lines.push(Line::from(Span::styled(owned, Style::default().fg(color))));
+            // Show diff view or plain YAML based on toggle
+            if is_update && wiz.preview_diff_mode && !wiz.ai_source_yaml.is_empty() {
+                let diff = simple_line_diff(&wiz.ai_source_yaml, &yaml);
+                for dl in &diff {
+                    match dl {
+                        DiffLine::Same(s) => lines.push(Line::from(Span::styled(
+                            format!("  {}", s), Style::default().fg(Color::DarkGray),
+                        ))),
+                        DiffLine::Added(s) => lines.push(Line::from(Span::styled(
+                            format!("+ {}", s), Style::default().fg(Color::Green),
+                        ))),
+                        DiffLine::Removed(s) => lines.push(Line::from(Span::styled(
+                            format!("- {}", s), Style::default().fg(Color::Red),
+                        ))),
+                    }
+                }
+            } else {
+                for line in yaml.lines() {
+                    let owned = line.to_string();
+                    let color = if line.starts_with("name:") || line.starts_with("env:") || line.starts_with("workdir:") || line.starts_with("steps:") {
+                        Color::Cyan
+                    } else if line.trim_start().starts_with("- id:") {
+                        Color::Yellow
+                    } else if line.trim_start().starts_with("cmd:") {
+                        Color::Green
+                    } else if line.trim_start().starts_with("needs:") || line.trim_start().starts_with("parallel:") {
+                        Color::Magenta
+                    } else {
+                        Color::White
+                    };
+                    lines.push(Line::from(Span::styled(owned, Style::default().fg(color))));
+                }
             }
 
             if matches!(wiz.mode, WizardMode::AiChat | WizardMode::AiUpdate) {
-                push_wizard_footer(&mut lines, inner.height, &[
+                let diff_hint = if is_update { ("D", "Toggle diff") } else { ("", "") };
+                let mut footer: Vec<(&str, &str)> = vec![
                     ("Enter", "Save"), ("d", "Dry-run"), ("r", "Refine"), ("Up/Down", "Scroll"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
-                ]);
+                ];
+                if is_update {
+                    footer.insert(2, diff_hint);
+                }
+                push_wizard_footer(&mut lines, inner.height, &footer);
             } else {
                 push_wizard_footer(&mut lines, inner.height, &[
                     ("Enter", "Save"), ("d", "Dry-run"), ("Up/Down", "Scroll"), ("Shift+Tab", "Back"), ("Esc", "Cancel"),
@@ -1573,12 +1659,27 @@ fn format_live_progress_styled(app: &App) -> Vec<Line<'static>> {
             Span::styled(duration, Style::default().fg(Color::DarkGray)),
         ]));
 
-        if !state.cmd_preview.is_empty() && state.status == StepStatus::Running {
+        if !state.cmd_preview.is_empty() && matches!(state.status, StepStatus::Running | StepStatus::Failed | StepStatus::Timedout) {
+            let cmd_color = if matches!(state.status, StepStatus::Failed | StepStatus::Timedout) {
+                Color::Red
+            } else {
+                Color::DarkGray
+            };
             lines.push(Line::from(vec![
                 Span::raw("       "),
                 Span::styled("$ ", Style::default().fg(Color::Green)),
-                Span::styled(state.cmd_preview.replace('\t', "  "), Style::default().fg(Color::DarkGray)),
+                Span::styled(state.cmd_preview.replace('\t', "  "), Style::default().fg(cmd_color)),
             ]));
+        }
+
+        if let Some(ref output) = state.last_output {
+            if !output.trim().is_empty() && state.status != StepStatus::Pending {
+                let truncated: String = output.chars().take(80).collect();
+                lines.push(Line::from(vec![
+                    Span::raw("       "),
+                    colorize_output_line(&truncated),
+                ]));
+            }
         }
     }
 
@@ -1777,7 +1878,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             } else if line.contains("⊘") || line.contains("skipped") {
                 Color::DarkGray
             } else {
-                Color::White
+                return Line::from(colorize_output_line(line.as_str()));
             };
             Line::from(Span::styled(line.as_str(), Style::default().fg(color)))
         })
@@ -1790,6 +1891,55 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
 fn format_run_log_styled(log: &crate::core::models::RunLog) -> Vec<Line<'static>> {
     let label_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let mut lines = Vec::new();
+
+    // Structured failure banner when workflow failed
+    if log.exit_code != 0 {
+        lines.push(Line::from(Span::styled(
+            "  WORKFLOW FAILED  ",
+            Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        let passed = log.steps.iter().filter(|s| s.status == StepStatus::Success).count();
+        let failed = log.steps.iter().filter(|s| s.status == StepStatus::Failed).count();
+        let skipped = log.steps.iter().filter(|s| s.status == StepStatus::Skipped).count();
+        let total_ms: u64 = log.steps.iter().map(|s| s.duration_ms).sum();
+        lines.push(Line::from(vec![
+            Span::styled(format!("Passed: {}", passed), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled("  ", Style::default()),
+            Span::styled(format!("Failed: {}", failed), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled("  ", Style::default()),
+            Span::styled(format!("Skipped: {}", skipped), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("  Duration: {:.1}s", total_ms as f64 / 1000.0), Style::default().fg(Color::DarkGray)),
+        ]));
+        lines.push(Line::from(""));
+
+        // Show failed step details
+        for step in &log.steps {
+            if step.status == StepStatus::Failed {
+                lines.push(Line::from(Span::styled(
+                    format!("  {} (exit failure)", step.id),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )));
+                let out_lines: Vec<&str> = step.output.trim().lines().collect();
+                let tail = if out_lines.len() > 5 { &out_lines[out_lines.len()-5..] } else { &out_lines };
+                for ol in tail {
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(ol.replace('\t', "  "), Style::default().fg(Color::DarkGray)),
+                    ]));
+                }
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Press 'a' to auto-fix with AI",
+            Style::default().fg(Color::Cyan),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("─────────────────────────────", Style::default().fg(Color::DarkGray))));
+        lines.push(Line::from(""));
+    }
 
     lines.push(Line::from(vec![
         Span::styled("Run:     ", label_style),
@@ -1836,7 +1986,7 @@ fn format_run_log_styled(log: &crate::core::models::RunLog) -> Vec<Line<'static>
             for out_line in step.output.trim().lines() {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(out_line.replace('\t', "  "), Style::default().fg(Color::DarkGray)),
+                    colorize_output_line(&out_line.replace('\t', "  ")),
                 ]));
             }
         }
@@ -1977,9 +2127,9 @@ fn draw_streaming_modal(f: &mut Frame, app: &App) {
     let inner = block.inner(popup);
     let content_height = inner.height.saturating_sub(1) as usize; // -1 for status line
 
-    // Build output lines
+    // Build output lines with pattern-based coloring
     let lines: Vec<Line> = app.streaming_lines.iter().map(|l| {
-        Line::from(Span::raw(l.as_str()))
+        Line::from(colorize_output_line(l))
     }).collect();
 
     // Calculate scroll offset
@@ -2026,6 +2176,156 @@ fn draw_streaming_modal(f: &mut Frame, app: &App) {
     f.render_widget(block, popup);
     f.render_widget(para, inner_chunks[0]);
     f.render_widget(status_bar, inner_chunks[1]);
+}
+
+/// Simple line-level diff between old and new text.
+#[derive(Debug)]
+enum DiffLine {
+    Same(String),
+    Added(String),
+    Removed(String),
+}
+
+fn simple_line_diff(old: &str, new: &str) -> Vec<DiffLine> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let (n, m) = (old_lines.len(), new_lines.len());
+
+    // Build LCS table
+    let mut dp = vec![vec![0u16; m + 1]; n + 1];
+    for i in 1..=n {
+        for j in 1..=m {
+            dp[i][j] = if old_lines[i - 1] == new_lines[j - 1] {
+                dp[i - 1][j - 1] + 1
+            } else {
+                dp[i - 1][j].max(dp[i][j - 1])
+            };
+        }
+    }
+
+    // Backtrack
+    let mut result = Vec::new();
+    let (mut i, mut j) = (n, m);
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && old_lines[i - 1] == new_lines[j - 1] {
+            result.push(DiffLine::Same(old_lines[i - 1].to_string()));
+            i -= 1;
+            j -= 1;
+        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+            result.push(DiffLine::Added(new_lines[j - 1].to_string()));
+            j -= 1;
+        } else {
+            result.push(DiffLine::Removed(old_lines[i - 1].to_string()));
+            i -= 1;
+        }
+    }
+    result.reverse();
+    result
+}
+
+/// Format a failed run's step failures as a compact summary.
+fn format_failed_run_summary(log: &crate::core::models::RunLog) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let failed: Vec<_> = log.steps.iter()
+        .filter(|s| s.status == StepStatus::Failed)
+        .collect();
+    if failed.is_empty() {
+        return lines;
+    }
+    let names: Vec<String> = failed.iter().map(|s| s.id.clone()).collect();
+    lines.push(Line::from(Span::styled(
+        format!("Fixing: {}", names.join(", ")),
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    )));
+    for step in &failed {
+        let snippet: String = step.output.trim().lines().last().unwrap_or("(no output)").to_string();
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {} ", step.id), Style::default().fg(Color::Red)),
+            Span::styled(snippet, Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines
+}
+
+/// Colorize a single output line based on pattern matching.
+fn colorize_output_line(line: &str) -> Span<'static> {
+    let trimmed = line.trim();
+    let lower = trimmed.to_lowercase();
+
+    // Unicode check/cross marks (cargo, npm, etc.)
+    if trimmed.contains('✓') || trimmed.contains('✔') {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Green));
+    }
+    if trimmed.contains('✗') || trimmed.contains('✘') {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Red));
+    }
+    // Stack traces / line-number noise — de-emphasize
+    if trimmed.starts_with("at ") || (trimmed.len() > 2 && trimmed.as_bytes()[0].is_ascii_digit() && (trimmed.contains("):") || trimmed.contains(")."))) {
+        return Span::styled(line.to_string(), Style::default().fg(Color::DarkGray));
+    }
+    // File path with line number (e.g. src/foo.rs:42:)
+    if trimmed.contains(':') && trimmed.len() > 3 {
+        let parts: Vec<&str> = trimmed.splitn(3, ':').collect();
+        if parts.len() >= 2 && parts[1].chars().all(|c| c.is_ascii_digit()) && !parts[0].is_empty() {
+            return Span::styled(line.to_string(), Style::default().fg(Color::Cyan));
+        }
+    }
+
+    if trimmed.starts_with('#') {
+        return Span::styled(line.to_string(), Style::default().fg(Color::DarkGray));
+    }
+    if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Green));
+    }
+    if trimmed.starts_with('-') && !trimmed.starts_with("---") {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Red));
+    }
+    if trimmed.starts_with('$') || trimmed.starts_with('>') {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Green));
+    }
+    if lower.contains("error") || lower.contains("fatal") || lower.contains("panic") {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Red));
+    }
+    if lower.contains("warning") || lower.contains("warn") || lower.contains("deprecated") {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Yellow));
+    }
+    if lower.contains("ok") || lower.contains("pass") || lower.contains("success") {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Green));
+    }
+    Span::styled(line.to_string(), Style::default().fg(Color::White))
+}
+
+/// Colorize a comparison output line based on diff-like patterns.
+fn colorize_compare_line(line: &str) -> Span<'static> {
+    let trimmed = line.trim();
+    let upper = trimmed.to_uppercase();
+
+    // Section headers (step IDs, labels ending with ':')
+    if trimmed.ends_with(':') && !trimmed.contains(' ') {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    }
+    if upper.contains("ADDED") {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Green));
+    }
+    if upper.contains("REMOVED") {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Red));
+    }
+    if upper.contains("CHANGED") {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Yellow));
+    }
+    // Positive/negative deltas
+    if trimmed.contains('+') && trimmed.chars().any(|c| c.is_ascii_digit()) {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Green));
+    }
+    if trimmed.starts_with('-') || (trimmed.contains('-') && trimmed.chars().any(|c| c.is_ascii_digit()) && !trimmed.starts_with("---")) {
+        return Span::styled(line.to_string(), Style::default().fg(Color::Red));
+    }
+    // Separator lines
+    if trimmed.chars().all(|c| c == '─' || c == '-' || c == '=') && trimmed.len() > 2 {
+        return Span::styled(line.to_string(), Style::default().fg(Color::DarkGray));
+    }
+    Span::styled(line.to_string(), Style::default().fg(Color::White))
 }
 
 fn format_logs_styled(logs: &[crate::core::models::RunLog]) -> Vec<Line<'static>> {
@@ -3163,12 +3463,14 @@ steps:
                 cmd_preview: "[dry-run] pg_dump mydb".into(),
                 status: StepStatus::Success,
                 duration_ms: Some(0),
+                last_output: None,
             },
             StepState {
                 id: "compress".into(),
                 cmd_preview: "[dry-run] gzip dump.sql".into(),
                 status: StepStatus::Running,
                 duration_ms: None,
+                last_output: None,
             },
         ];
         app.footer_log = vec!["[12:00:00] Starting backup/db-full (dry-run)...".into()];
