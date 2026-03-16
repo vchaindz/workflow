@@ -34,6 +34,8 @@ pub struct McpClient {
     peer: rmcp::service::Peer<RoleClient>,
     // Hold the running service to keep the connection alive
     _service: RunningService<RoleClient, ()>,
+    // Keep the runtime alive so background transport tasks aren't cancelled
+    runtime: tokio::runtime::Runtime,
 }
 
 impl McpClient {
@@ -44,10 +46,7 @@ impl McpClient {
     pub fn spawn(command: &str, env: HashMap<String, String>) -> Result<Self> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| DzError::Mcp(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(async { Self::spawn_async(command, env).await })
-    }
 
-    async fn spawn_async(command: &str, env: HashMap<String, String>) -> Result<Self> {
         // Parse command into program + args (shell-style split)
         let parts: Vec<&str> = command.split_whitespace().collect();
         if parts.is_empty() {
@@ -62,29 +61,31 @@ impl McpClient {
             cmd.env(k, v);
         }
 
-        let transport = TokioChildProcess::new(cmd)
-            .map_err(|e| DzError::Mcp(format!("failed to spawn MCP server '{}': {e}", command)))?;
+        let (peer, service) = rt.block_on(async {
+            let transport = TokioChildProcess::new(cmd)
+                .map_err(|e| DzError::Mcp(format!("failed to spawn MCP server '{}': {e}", command)))?;
 
-        let service = ().serve(transport).await.map_err(|e| {
-            DzError::Mcp(format!(
-                "failed to initialize MCP connection to '{}': {e}",
-                command
-            ))
+            let service = ().serve(transport).await.map_err(|e| {
+                DzError::Mcp(format!(
+                    "failed to initialize MCP connection to '{}': {e}",
+                    command
+                ))
+            })?;
+
+            let peer = service.peer().clone();
+            Ok::<_, DzError>((peer, service))
         })?;
-
-        let peer = service.peer().clone();
 
         Ok(McpClient {
             peer,
             _service: service,
+            runtime: rt,
         })
     }
 
     /// List all tools available on the MCP server.
     pub fn list_tools(&self) -> Result<Vec<ToolInfo>> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| DzError::Mcp(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(async {
+        self.runtime.block_on(async {
             let tools = self
                 .peer
                 .list_all_tools()
@@ -99,9 +100,7 @@ impl McpClient {
     /// If the tool returns an error (isError flag), this returns an Err with
     /// the error text. Otherwise returns the concatenated text content.
     pub fn call_tool(&self, tool: &str, args: serde_json::Value) -> Result<String> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| DzError::Mcp(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(async { self.call_tool_async(tool, args).await })
+        self.runtime.block_on(async { self.call_tool_async(tool, args).await })
     }
 
     async fn call_tool_async(&self, tool: &str, args: serde_json::Value) -> Result<String> {
