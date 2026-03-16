@@ -3,6 +3,29 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Reference to an MCP server: either an alias (string) or an inline definition (object).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum McpServerRef {
+    Alias(String),
+    Inline {
+        command: String,
+        #[serde(default)]
+        env: Option<HashMap<String, String>>,
+        #[serde(default)]
+        secrets: Option<Vec<String>>,
+    },
+}
+
+/// Configuration for an MCP step: which server, which tool, and optional arguments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpStepConfig {
+    pub server: McpServerRef,
+    pub tool: String,
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+}
+
 use crate::core::notify::{RateLimitConfig, RetryConfig, Severity};
 
 /// Deserialize a field that can be either a single string or an array of strings.
@@ -221,6 +244,8 @@ pub struct Step {
     pub for_each_parallel: bool,
     #[serde(default)]
     pub for_each_continue_on_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpStepConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -589,5 +614,46 @@ rate_limit:
         };
         let toml_str = toml::to_string(&config).unwrap();
         assert!(!toml_str.contains("rate_limit"));
+    }
+
+    #[test]
+    fn test_mcp_step_config_alias_server() {
+        let json = r#"{
+            "server": "github",
+            "tool": "create_issue",
+            "args": {"repo": "myorg/myapp", "title": "Bug report"}
+        }"#;
+        let config: McpStepConfig = serde_json::from_str(json).unwrap();
+        assert!(matches!(config.server, McpServerRef::Alias(ref s) if s == "github"));
+        assert_eq!(config.tool, "create_issue");
+        let args = config.args.unwrap();
+        assert_eq!(args["repo"], "myorg/myapp");
+        assert_eq!(args["title"], "Bug report");
+    }
+
+    #[test]
+    fn test_mcp_step_config_inline_server() {
+        let json = r#"{
+            "server": {
+                "command": "npx @modelcontextprotocol/server-github",
+                "env": {"GITHUB_TOKEN": "xxx"},
+                "secrets": ["GITHUB_TOKEN"]
+            },
+            "tool": "list_repos",
+            "args": null
+        }"#;
+        let config: McpStepConfig = serde_json::from_str(json).unwrap();
+        match &config.server {
+            McpServerRef::Inline { command, env, secrets } => {
+                assert_eq!(command, "npx @modelcontextprotocol/server-github");
+                let env = env.as_ref().unwrap();
+                assert_eq!(env["GITHUB_TOKEN"], "xxx");
+                let secrets = secrets.as_ref().unwrap();
+                assert_eq!(secrets, &vec!["GITHUB_TOKEN".to_string()]);
+            }
+            McpServerRef::Alias(_) => panic!("Expected Inline variant"),
+        }
+        assert_eq!(config.tool, "list_repos");
+        assert!(config.args.is_none());
     }
 }

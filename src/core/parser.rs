@@ -49,17 +49,17 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, skip_if: None, retry: None, retry_delay: None, interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false }
+                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, skip_if: None, retry: None, retry_delay: None, interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None }
             }
             RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error } => {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error }
+                Step { id, cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error, mcp: None }
             }
             RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error } => {
                 // Explicit id: no implicit chaining, but don't break the chain for others
-                Step { id, cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error }
+                Step { id, cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error, mcp: None }
             }
         };
 
@@ -152,7 +152,7 @@ pub fn parse_shell_task(path: &Path) -> Result<Workflow> {
             skip_if: None,
             retry: None,
             retry_delay: None,
-            interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+            interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
         }],
         env: HashMap::new(),
         secrets: Vec::new(),
@@ -355,7 +355,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "b".into(),
@@ -367,7 +367,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "c".into(),
@@ -379,7 +379,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
         ];
 
@@ -406,7 +406,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "b".into(),
@@ -418,7 +418,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "c".into(),
@@ -430,7 +430,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "d".into(),
@@ -442,7 +442,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
         ];
 
@@ -859,25 +859,25 @@ steps:
                 id: "a".into(), cmd: "echo a".into(), needs: vec![],
                 parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
-                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "b".into(), cmd: "echo b".into(), needs: vec!["a".into()],
                 parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
-                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "c".into(), cmd: "echo c".into(), needs: vec!["a".into()],
                 parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
-                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "d".into(), cmd: "echo d".into(), needs: vec!["b".into(), "c".into()],
                 parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
-                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
         ];
 
