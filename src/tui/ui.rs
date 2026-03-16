@@ -1664,17 +1664,71 @@ fn format_task_preview_styled(task: &crate::core::models::Task) -> Vec<Line<'sta
                 }
                 lines.push(Line::from(spans));
 
-                let sanitized = step.cmd.replace('\t', "  ");
-                let cmd = if sanitized.len() > 120 {
-                    format!("{}...", &sanitized[..117])
+                // Render MCP steps differently from shell commands
+                #[cfg(feature = "mcp")]
+                let is_mcp = step.mcp.is_some();
+                #[cfg(not(feature = "mcp"))]
+                let is_mcp = false;
+
+                if is_mcp {
+                    #[cfg(feature = "mcp")]
+                    if let Some(ref mcp_cfg) = step.mcp {
+                        let server_name = match &mcp_cfg.server {
+                            crate::core::models::McpServerRef::Alias(s) => s.clone(),
+                            crate::core::models::McpServerRef::Inline { command, .. } => {
+                                let truncated = if command.len() > 40 {
+                                    format!("{}...", &command[..37])
+                                } else {
+                                    command.clone()
+                                };
+                                truncated
+                            }
+                        };
+                        let mcp_label = format!("{}/{}", server_name, mcp_cfg.tool);
+                        let mcp_display = if mcp_label.len() > 120 {
+                            format!("{}...", &mcp_label[..117])
+                        } else {
+                            mcp_label
+                        };
+                        lines.push(Line::from(vec![
+                            Span::raw("     "),
+                            Span::styled("mcp: ", Style::default().fg(Color::Magenta)),
+                            Span::styled(mcp_display, Style::default().fg(Color::White)),
+                        ]));
+                        if let Some(ref args) = mcp_cfg.args {
+                            if let Some(obj) = args.as_object() {
+                                for (key, val) in obj {
+                                    let val_str = match val {
+                                        serde_json::Value::String(s) => s.clone(),
+                                        other => other.to_string(),
+                                    };
+                                    let truncated = if val_str.len() > 100 {
+                                        format!("{}...", &val_str[..97])
+                                    } else {
+                                        val_str
+                                    };
+                                    lines.push(Line::from(vec![
+                                        Span::raw("       "),
+                                        Span::styled(format!("{}: ", key), Style::default().fg(Color::Cyan)),
+                                        Span::styled(truncated, Style::default().fg(Color::DarkGray)),
+                                    ]));
+                                }
+                            }
+                        }
+                    }
                 } else {
-                    sanitized
-                };
-                lines.push(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled("$ ", Style::default().fg(Color::Green)),
-                    Span::styled(cmd, Style::default().fg(Color::White)),
-                ]));
+                    let sanitized = step.cmd.replace('\t', "  ");
+                    let cmd = if sanitized.len() > 120 {
+                        format!("{}...", &sanitized[..117])
+                    } else {
+                        sanitized
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw("     "),
+                        Span::styled("$ ", Style::default().fg(Color::Green)),
+                        Span::styled(cmd, Style::default().fg(Color::White)),
+                    ]));
+                }
             }
             lines
         }
