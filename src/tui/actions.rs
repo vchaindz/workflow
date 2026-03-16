@@ -483,6 +483,7 @@ fn launch_workflow(
     let task_ref_for_notify = task_ref.clone();
     let workflows_dir_for_thread = app.config.workflows_dir.clone();
     let secrets_ssh_key = app.config.secrets_ssh_key.as_ref().map(std::path::PathBuf::from);
+    let mcp_servers_for_thread = app.config.mcp.servers.clone();
 
     thread::spawn(move || {
         let workflows_dir = workflows_dir_for_thread;
@@ -501,6 +502,7 @@ fn launch_workflow(
             call_depth: 0,
             max_call_depth: 10,
             secrets_ssh_key,
+            mcp_servers: mcp_servers_for_thread,
         };
 
         match execute_workflow(&workflow, &task_ref, &opts, Some(&tx)) {

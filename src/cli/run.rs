@@ -88,6 +88,7 @@ pub fn cmd_run(
         call_depth: 0,
         max_call_depth: 10,
         secrets_ssh_key: config.secrets_ssh_key.as_ref().map(PathBuf::from),
+        mcp_servers: config.mcp.servers.clone(),
     };
 
     let canonical_ref = format!("{}/{}", task.category, task.name);

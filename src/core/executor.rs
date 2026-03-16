@@ -8,8 +8,9 @@ use chrono::Utc;
 use uuid::Uuid;
 use wait_timeout::ChildExt;
 
+use crate::core::config::McpServerConfig;
 use crate::core::detect;
-use crate::core::models::{ExecutionEvent, ForEachSource, NotifyConfig, RunLog, Step, StepResult, StepStatus, Workflow};
+use crate::core::models::{ExecutionEvent, ForEachSource, McpServerRef, NotifyConfig, RunLog, Step, StepResult, StepStatus, Workflow};
 use crate::core::notify::{Notification, Notifier, RateLimiter, RetryConfig, Severity};
 use crate::core::notify::resolve::resolve_notifier;
 use crate::core::notify::retry::send_with_retry;
@@ -170,6 +171,8 @@ pub struct ExecuteOpts {
     pub max_call_depth: u16,
     /// SSH private key path for decrypting secrets store
     pub secrets_ssh_key: Option<std::path::PathBuf>,
+    /// MCP server alias definitions from config.toml
+    pub mcp_servers: HashMap<String, McpServerConfig>,
 }
 
 impl Default for ExecuteOpts {
@@ -186,6 +189,7 @@ impl Default for ExecuteOpts {
             call_depth: 0,
             max_call_depth: 10,
             secrets_ssh_key: None,
+            mcp_servers: HashMap::new(),
         }
     }
 }
@@ -451,6 +455,273 @@ struct StepOutcome {
     failed: bool,
 }
 
+/// Expand template variables recursively in a serde_json::Value.
+/// String values get expand_template(); non-string values pass through unchanged.
+fn expand_json_templates(
+    value: &serde_json::Value,
+    template_vars: &HashMap<String, String>,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => {
+            serde_json::Value::String(expand_template(s, template_vars))
+        }
+        serde_json::Value::Object(map) => {
+            let expanded: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), expand_json_templates(v, template_vars)))
+                .collect();
+            serde_json::Value::Object(expanded)
+        }
+        serde_json::Value::Array(arr) => {
+            let expanded: Vec<serde_json::Value> = arr
+                .iter()
+                .map(|v| expand_json_templates(v, template_vars))
+                .collect();
+            serde_json::Value::Array(expanded)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Execute an MCP step: resolve server config, spawn client, call tool, capture output.
+#[allow(clippy::too_many_arguments, unused_variables)]
+fn execute_mcp_step(
+    step: &Step,
+    mcp_config: &crate::core::models::McpStepConfig,
+    template_vars: &HashMap<String, String>,
+    env: &HashMap<String, String>,
+    secret_values: &[String],
+    dry_run: bool,
+    event_tx: Option<&mpsc::Sender<ExecutionEvent>>,
+    _failed_steps: &std::collections::HashSet<String>,
+    mcp_servers: &HashMap<String, McpServerConfig>,
+    workflows_dir: Option<&std::path::PathBuf>,
+    secrets_ssh_key: Option<&std::path::PathBuf>,
+    secret_names: &[String],
+) -> StepOutcome {
+    let send = |evt: ExecutionEvent| {
+        if let Some(tx) = event_tx {
+            let _ = tx.send(evt);
+        }
+    };
+
+    // Resolve server config: alias lookup or inline definition
+    let (command, server_env, server_secrets) = match &mcp_config.server {
+        McpServerRef::Alias(alias) => {
+            match mcp_servers.get(alias) {
+                Some(cfg) => (
+                    cfg.command.clone(),
+                    cfg.env.clone().unwrap_or_default(),
+                    cfg.secrets.clone().unwrap_or_default(),
+                ),
+                None => {
+                    let msg = format!("MCP server alias '{}' not found in config.toml [mcp.servers]", alias);
+                    send(ExecutionEvent::StepCompleted {
+                        step_id: step.id.clone(),
+                        status: StepStatus::Failed,
+                        duration_ms: 0,
+                    });
+                    return StepOutcome {
+                        result: StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Failed,
+                            output: msg,
+                            duration_ms: 0,
+                        },
+                        captured_vars: HashMap::new(),
+                        failed: true,
+                    };
+                }
+            }
+        }
+        McpServerRef::Inline { command, env: inline_env, secrets } => (
+            command.clone(),
+            inline_env.clone().unwrap_or_default(),
+            secrets.clone().unwrap_or_default(),
+        ),
+    };
+
+    // Build display name for events
+    let server_display = match &mcp_config.server {
+        McpServerRef::Alias(a) => a.clone(),
+        McpServerRef::Inline { command, .. } => command.clone(),
+    };
+    let cmd_preview = format!("mcp: {}/{}", server_display, mcp_config.tool);
+
+    if dry_run {
+        send(ExecutionEvent::StepStarted {
+            step_id: step.id.clone(),
+            cmd_preview: format!("[dry-run] {cmd_preview}"),
+        });
+        let args_display = mcp_config
+            .args
+            .as_ref()
+            .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
+            .unwrap_or_default();
+        println!("[dry-run] step '{}': {} {}", step.id, cmd_preview, args_display);
+        send(ExecutionEvent::StepCompleted {
+            step_id: step.id.clone(),
+            status: StepStatus::Success,
+            duration_ms: 0,
+        });
+        return StepOutcome {
+            result: StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Success,
+                output: format!("[dry-run] {cmd_preview}"),
+                duration_ms: 0,
+            },
+            captured_vars: HashMap::new(),
+            failed: false,
+        };
+    }
+
+    send(ExecutionEvent::StepStarted {
+        step_id: step.id.clone(),
+        cmd_preview: mask_secrets(&cmd_preview, secret_values),
+    });
+
+    let timer = Instant::now();
+
+    // Build env for MCP server: workflow env + server-specific env + secrets
+    let mut mcp_env: HashMap<String, String> = env.clone();
+    for (k, v) in &server_env {
+        mcp_env.insert(k.clone(), expand_template(v, template_vars));
+    }
+
+    // Inject secrets from the secrets store
+    if !server_secrets.is_empty() {
+        if let (Some(wdir), Some(ssh_key)) = (workflows_dir, secrets_ssh_key) {
+            let secret_env = load_secret_env(&server_secrets, wdir, Some(ssh_key));
+            for (k, v) in secret_env {
+                mcp_env.insert(k, v);
+            }
+        }
+    }
+    // Also inject workflow-level secrets already in env
+    for name in secret_names {
+        if let Some(val) = env.get(name) {
+            mcp_env.entry(name.clone()).or_insert_with(|| val.clone());
+        }
+    }
+
+    // Expand template variables in args
+    let expanded_args = match &mcp_config.args {
+        Some(args) => expand_json_templates(args, template_vars),
+        None => serde_json::Value::Null,
+    };
+
+    // Retry loop (same pattern as cmd steps)
+    let max_attempts = step.retry.unwrap_or(0) + 1;
+    let retry_delay_secs = step.retry_delay.unwrap_or(0);
+    let mut last_output = String::new();
+    #[allow(unused_mut)]
+    let mut step_succeeded = false;
+
+    for attempt in 1..=max_attempts {
+        if attempt > 1 {
+            send(ExecutionEvent::StepRetrying {
+                step_id: step.id.clone(),
+                attempt,
+                max: max_attempts,
+                delay_secs: retry_delay_secs,
+            });
+            if retry_delay_secs > 0 {
+                std::thread::sleep(Duration::from_secs(retry_delay_secs));
+            }
+        }
+
+        // Feature gate: MCP execution requires the mcp feature
+        #[cfg(feature = "mcp")]
+        {
+            match crate::core::mcp::McpClient::spawn(&command, mcp_env.clone()) {
+                Ok(client) => {
+                    match client.call_tool(&mcp_config.tool, expanded_args.clone()) {
+                        Ok(text) => {
+                            last_output = text;
+                            step_succeeded = true;
+                            client.shutdown();
+                        }
+                        Err(e) => {
+                            last_output = format!("{e}");
+                            client.shutdown();
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_output = format!("failed to spawn MCP server '{}': {e}", command);
+                }
+            }
+        }
+
+        #[cfg(not(feature = "mcp"))]
+        {
+            last_output = "MCP steps require the mcp feature. Rebuild with: cargo build --features mcp".to_string();
+            break;
+        }
+
+        #[cfg(feature = "mcp")]
+        if step_succeeded {
+            break;
+        }
+    }
+
+    let duration_ms = timer.elapsed().as_millis() as u64;
+    let masked_output = mask_secrets(&last_output, secret_values);
+    let mut captured_vars = HashMap::new();
+
+    if step_succeeded {
+        // Capture step outputs (same as cmd steps)
+        for out_def in &step.outputs {
+            if let Ok(re) = regex::Regex::new(&out_def.pattern) {
+                if let Some(caps) = re.captures(&last_output) {
+                    if let Some(val) = caps.get(1) {
+                        let key = format!("{}.{}", step.id, out_def.name);
+                        captured_vars.insert(key, val.as_str().to_string());
+                    }
+                }
+            }
+        }
+
+        send(ExecutionEvent::StepCompleted {
+            step_id: step.id.clone(),
+            status: StepStatus::Success,
+            duration_ms,
+        });
+        StepOutcome {
+            result: StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Success,
+                output: masked_output,
+                duration_ms,
+            },
+            captured_vars,
+            failed: false,
+        }
+    } else {
+        send(ExecutionEvent::StepCompleted {
+            step_id: step.id.clone(),
+            status: StepStatus::Failed,
+            duration_ms,
+        });
+        let output = if max_attempts > 1 {
+            format!("{masked_output} (after {max_attempts} attempts)")
+        } else {
+            masked_output
+        };
+        StepOutcome {
+            result: StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Failed,
+                output,
+                duration_ms,
+            },
+            captured_vars,
+            failed: true,
+        }
+    }
+}
+
 /// Execute a single non-interactive step. Used by both sequential and parallel paths.
 #[allow(clippy::too_many_arguments)]
 fn execute_single_step(
@@ -469,6 +740,7 @@ fn execute_single_step(
     max_call_depth: u16,
     secret_names: &[String],
     secrets_ssh_key: Option<&std::path::PathBuf>,
+    mcp_servers: &HashMap<String, McpServerConfig>,
 ) -> StepOutcome {
     let send = |evt: ExecutionEvent| {
         if let Some(tx) = event_tx {
@@ -686,6 +958,7 @@ fn execute_single_step(
                 call_depth: call_depth + 1,
                 max_call_depth,
                 secrets_ssh_key: secrets_ssh_key.map(|p| p.to_path_buf()),
+                mcp_servers: mcp_servers.clone(),
             };
 
             execute_workflow(&sub_wf, call_ref, &sub_opts, event_tx)
@@ -751,6 +1024,14 @@ fn execute_single_step(
                 }
             }
         };
+    }
+
+    // MCP step execution
+    if let Some(ref mcp_config) = step.mcp {
+        return execute_mcp_step(
+            step, mcp_config, template_vars, env, secret_values, dry_run,
+            event_tx, &failed_steps, mcp_servers, workflows_dir, secrets_ssh_key, secret_names,
+        );
     }
 
     // Sudo access warning
@@ -1078,6 +1359,7 @@ fn execute_for_each_step(
     max_call_depth: u16,
     secret_names: &[String],
     secrets_ssh_key: Option<&std::path::PathBuf>,
+    mcp_servers: &HashMap<String, McpServerConfig>,
 ) -> Vec<StepOutcome> {
     let send = |evt: ExecutionEvent| {
         if let Some(tx) = event_tx {
@@ -1118,6 +1400,7 @@ fn execute_for_each_step(
             let step_id = step.id.clone();
             let snames_clone = secret_names.to_vec();
             let sshkey_clone = secrets_ssh_key.map(|p| p.to_path_buf());
+            let mcp_servers_clone = mcp_servers.clone();
 
             handles.push(std::thread::spawn(move || {
                 let outcome = execute_single_step(
@@ -1136,6 +1419,7 @@ fn execute_for_each_step(
                     max_call_depth,
                     &snames_clone,
                     sshkey_clone.as_ref(),
+                    &mcp_servers_clone,
                 );
                 if let Some(ref tx) = tx_clone {
                     let _ = tx.send(ExecutionEvent::ForEachIterationCompleted {
@@ -1181,6 +1465,7 @@ fn execute_for_each_step(
                 max_call_depth,
                 secret_names,
                 secrets_ssh_key,
+                mcp_servers,
             );
 
             send(ExecutionEvent::ForEachIterationCompleted {
@@ -1310,6 +1595,7 @@ pub fn execute_workflow(
                             event_tx, &failed_steps,
                             opts.workflows_dir.as_ref(), opts.call_depth, opts.max_call_depth,
                             &opts.secrets, opts.secrets_ssh_key.as_ref(),
+                            &opts.mcp_servers,
                         );
                         let mut any_failed = false;
                         for outcome in outcomes {
@@ -1342,6 +1628,7 @@ pub fn execute_workflow(
                             event_tx, &failed_steps,
                             opts.workflows_dir.as_ref(), opts.call_depth, opts.max_call_depth,
                             &opts.secrets, opts.secrets_ssh_key.as_ref(),
+                            &opts.mcp_servers,
                         );
                         if outcome.failed {
                             failed_steps.insert(step.id.clone());
@@ -1405,6 +1692,7 @@ pub fn execute_workflow(
                 let max_call_depth = opts.max_call_depth;
                 let snames_clone = opts.secrets.clone();
                 let sshkey_clone = opts.secrets_ssh_key.clone();
+                let mcp_servers_clone = opts.mcp_servers.clone();
 
                 handles.push(std::thread::spawn(move || {
                     // Check for for_each iteration
@@ -1416,6 +1704,7 @@ pub fn execute_workflow(
                                 tx_clone.as_ref(), &failed_clone,
                                 wf_dir_clone.as_ref(), call_depth, max_call_depth,
                                 &snames_clone, sshkey_clone.as_ref(),
+                                &mcp_servers_clone,
                             )
                         }
                         Ok(None) => {
@@ -1425,6 +1714,7 @@ pub fn execute_workflow(
                                 tx_clone.as_ref(), &failed_clone,
                                 wf_dir_clone.as_ref(), call_depth, max_call_depth,
                                 &snames_clone, sshkey_clone.as_ref(),
+                                &mcp_servers_clone,
                             )]
                         }
                         Err(e) => {
