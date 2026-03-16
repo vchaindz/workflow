@@ -197,6 +197,12 @@ pub enum Commands {
         action: TrashAction,
     },
 
+    /// Interact with MCP servers (list tools, call tools, check connectivity)
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+
     /// View run logs
     Logs {
         /// Task reference (omit for all recent)
@@ -293,5 +299,37 @@ pub enum SyncAction {
     Branch {
         /// Branch name to switch to (omit to list all)
         name: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum McpAction {
+    /// List available tools from an MCP server
+    ListTools {
+        /// Server alias (from config.toml) or inline command
+        server: String,
+
+        /// Output full tool list as JSON including input schemas
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Call a tool on an MCP server
+    Call {
+        /// Server alias (from config.toml) or inline command
+        server: String,
+
+        /// Tool name to call
+        tool: String,
+
+        /// Tool arguments as key=value pairs
+        #[arg(long = "arg", value_name = "KEY=VALUE")]
+        args: Vec<String>,
+    },
+
+    /// Check connectivity to an MCP server
+    Check {
+        /// Server alias (from config.toml) or inline command
+        server: String,
     },
 }

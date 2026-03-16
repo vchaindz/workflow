@@ -5,6 +5,8 @@ pub mod export;
 pub mod import;
 pub mod list;
 pub mod logs;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod run;
 pub mod schedule;
 pub mod secrets;
@@ -102,6 +104,20 @@ pub fn dispatch(config: &mut Config, command: Commands) -> Result<i32> {
         Commands::Trash { action } => {
             trash::cmd_trash(config, action)?;
             Ok(0)
+        }
+
+        Commands::Mcp { action } => {
+            #[cfg(feature = "mcp")]
+            {
+                mcp::cmd_mcp(config, action)?;
+                Ok(0)
+            }
+            #[cfg(not(feature = "mcp"))]
+            {
+                let _ = action;
+                eprintln!("MCP commands require the mcp feature. Rebuild with: cargo build --features mcp");
+                Ok(1)
+            }
         }
 
         Commands::Serve { port, bind } => serve::cmd_serve(config, port, &bind),
