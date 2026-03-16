@@ -95,6 +95,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_overdue_reminder(f, app);
     }
 
+    if app.mode == AppMode::GettingStarted {
+        draw_getting_started(f, app);
+    }
+
     if app.mode == AppMode::VariablePrompt {
         draw_variable_prompt(f, app);
     }
@@ -3287,6 +3291,81 @@ fn draw_secrets(f: &mut Frame, app: &App) {
             f.render_widget(footer, layout[1]);
         }
     }
+}
+
+fn draw_getting_started(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let w = 54u16.min(area.width.saturating_sub(4));
+    let h = 14u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" Welcome to Workflow ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(popup);
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    f.render_widget(block, popup);
+
+    let options = ["Add workflow", "Dismiss"];
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(Span::styled(
+        "A file-based workflow orchestrator.",
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::raw(
+        "Organize shell scripts and YAML workflows",
+    )));
+    lines.push(Line::from(Span::raw(
+        "into categories, run them from the TUI or",
+    )));
+    lines.push(Line::from(Span::raw(
+        "CLI, and track results.",
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Get started by creating your first workflow:",
+        Style::default().fg(Color::Gray),
+    )));
+    lines.push(Line::from(""));
+
+    for (i, label) in options.iter().enumerate() {
+        let (bullet, style) = if i == app.getting_started_cursor {
+            (
+                Span::styled(" \u{25cf} ", Style::default().fg(Color::Cyan)),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            (
+                Span::styled(" \u{25cb} ", Style::default().fg(Color::DarkGray)),
+                Style::default().fg(Color::White),
+            )
+        };
+        lines.push(Line::from(vec![bullet, Span::styled(*label, style)]));
+    }
+
+    let content = Paragraph::new(lines).wrap(Wrap { trim: false });
+    f.render_widget(content, layout[0]);
+
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled(" n", Style::default().fg(Color::Cyan)),
+        Span::raw(" add workflow \u{b7} "),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::raw(" dismiss"),
+    ]))
+    .alignment(Alignment::Center);
+    f.render_widget(hint, layout[1]);
 }
 
 #[cfg(test)]

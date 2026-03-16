@@ -38,6 +38,7 @@ pub enum AppMode {
     GitSync,
     EditTask,
     Secrets,
+    GettingStarted,
 }
 
 #[derive(Debug, Clone)]
@@ -408,6 +409,8 @@ pub struct App {
 
     // Secrets modal state
     pub secrets_state: Option<SecretsState>,
+    // Getting started wizard cursor
+    pub getting_started_cursor: usize,
 }
 
 pub struct BackgroundTask {
@@ -507,6 +510,7 @@ impl App {
             branch_list: Vec::new(),
             branch_list_cursor: 0,
             secrets_state: None,
+            getting_started_cursor: 0,
         }
     }
 
@@ -560,6 +564,14 @@ impl App {
                     self.mode = AppMode::OverdueReminder;
                 }
             }
+        }
+    }
+
+    pub fn check_getting_started(&mut self) {
+        let total: usize = self.categories.iter().map(|c| c.tasks.len()).sum();
+        if total == 0 {
+            self.getting_started_cursor = 0;
+            self.mode = AppMode::GettingStarted;
         }
     }
 

@@ -70,6 +70,7 @@ pub fn run_tui(config: Config) -> Result<()> {
         }
     }
     app.check_first_run_sync();
+    app.check_getting_started();
 
     // Setup terminal
     enable_raw_mode()?;

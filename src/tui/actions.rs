@@ -60,6 +60,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         AppMode::Rename => handle_rename_key(app, key),
         AppMode::EditTask => handle_edit_task_key(app, key),
         AppMode::Secrets => handle_secrets_key(app, key),
+        AppMode::GettingStarted => handle_getting_started_key(app, key),
         _ => handle_normal_key(app, key),
     }
 }
@@ -2565,6 +2566,38 @@ fn handle_overdue_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.overdue_tasks.clear();
                 app.mode = AppMode::Normal;
                 app.navigate_to_task(&task_ref);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_getting_started_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Up => {
+            if app.getting_started_cursor > 0 {
+                app.getting_started_cursor -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if app.getting_started_cursor < 1 {
+                app.getting_started_cursor += 1;
+            }
+        }
+        KeyCode::Char('n') => {
+            app.mode = AppMode::Normal;
+            start_new_workflow_menu(app);
+        }
+        KeyCode::Enter => {
+            if app.getting_started_cursor == 0 {
+                app.mode = AppMode::Normal;
+                start_new_workflow_menu(app);
+            } else {
+                app.mode = AppMode::Normal;
             }
         }
         _ => {}
