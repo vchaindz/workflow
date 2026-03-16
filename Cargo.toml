@@ -1,6 +1,6 @@
 [package]
 name = "workflow"
-version = "0.3.4"
+version = "0.5.0"
 edition = "2021"
 description = "A file-based workflow orchestrator with TUI and CLI, designed for humans and AI agents alike"
 license = "MIT"
@@ -20,6 +20,7 @@ email = ["lettre"]
 msteams = ["ureq"]
 gotify = ["ureq"]
 mattermost = ["ureq"]
+mcp = ["dep:rmcp", "dep:tokio"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -50,6 +51,8 @@ zeroize = { version = "1", features = ["derive"] }
 rpassword = "5"
 ureq = { version = "2", features = ["json"], optional = true }
 lettre = { version = "0.11", optional = true }
+rmcp = { version = "0.16", features = ["client", "transport-io", "transport-child-process"], optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process"], optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"

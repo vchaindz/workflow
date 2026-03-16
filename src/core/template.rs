@@ -330,6 +330,50 @@ fn split_pipes(expr: &str) -> Vec<&str> {
     parts
 }
 
+/// Expand `$VAR` and `${VAR}` references in a string.
+///
+/// Checks `extra_env` first, then falls back to real environment variables.
+/// Used for MCP env values and notification URLs.
+pub fn expand_env_vars(input: &str, extra_env: &HashMap<String, String>) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    let lookup = |name: &str| -> Option<String> {
+        extra_env.get(name).cloned().or_else(|| std::env::var(name).ok())
+    };
+
+    while let Some(ch) = chars.next() {
+        if ch == '$' {
+            if chars.peek() == Some(&'{') {
+                chars.next(); // consume '{'
+                let var_name: String = chars.by_ref().take_while(|&c| c != '}').collect();
+                if let Some(val) = lookup(&var_name) {
+                    result.push_str(&val);
+                }
+            } else {
+                let mut var_name = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c.is_alphanumeric() || c == '_' {
+                        var_name.push(c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if var_name.is_empty() {
+                    result.push('$');
+                } else if let Some(val) = lookup(&var_name) {
+                    result.push_str(&val);
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
 fn hostname() -> std::io::Result<String> {
     let output = std::process::Command::new("hostname").output()?;
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -598,5 +642,40 @@ mod tests {
     fn test_split_pipes_no_split_in_quotes() {
         let parts = split_pipes("var | replace \"a|b\" \"c\"");
         assert_eq!(parts.len(), 2);
+    }
+
+    // === expand_env_vars tests ===
+
+    #[test]
+    fn test_expand_env_vars_dollar_syntax() {
+        let mut extra = HashMap::new();
+        extra.insert("MY_VAR".to_string(), "hello".to_string());
+        assert_eq!(expand_env_vars("val=$MY_VAR!", &extra), "val=hello!");
+    }
+
+    #[test]
+    fn test_expand_env_vars_brace_syntax() {
+        let mut extra = HashMap::new();
+        extra.insert("TOKEN".to_string(), "abc".to_string());
+        assert_eq!(expand_env_vars("Bearer ${TOKEN}", &extra), "Bearer abc");
+    }
+
+    #[test]
+    fn test_expand_env_vars_missing_var_removed() {
+        let extra = HashMap::new();
+        // Missing vars are silently removed (same behavior as notify/resolve.rs)
+        assert_eq!(expand_env_vars("prefix-$MISSING-suffix", &extra), "prefix--suffix");
+    }
+
+    #[test]
+    fn test_expand_env_vars_bare_dollar() {
+        let extra = HashMap::new();
+        assert_eq!(expand_env_vars("price is $", &extra), "price is $");
+    }
+
+    #[test]
+    fn test_expand_env_vars_no_vars() {
+        let extra = HashMap::new();
+        assert_eq!(expand_env_vars("plain text", &extra), "plain text");
     }
 }

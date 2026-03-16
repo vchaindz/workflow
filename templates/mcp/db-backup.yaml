@@ -1,0 +1,41 @@
+name: MCP Database Backup
+description: Query a database for table sizes, export results to a file, and notify on completion
+variables:
+  - name: database_url
+    description: Database connection string
+    default: "$DATABASE_URL"
+  - name: backup_dir
+    description: Directory to store backup results
+    default: "/tmp/db-backups"
+  - name: notify_channel
+    description: Slack channel for backup notifications
+    default: "#ops"
+steps:
+  - id: prepare
+    cmd: "mkdir -p {{backup_dir}}"
+  - id: query-sizes
+    needs: [prepare]
+    mcp:
+      server:
+        command: "npx @anthropic/mcp-server-postgres {{database_url}}"
+        secrets: [DATABASE_URL]
+      tool: query
+      args:
+        sql: "SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename)) AS size FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema') ORDER BY pg_total_relation_size(schemaname || '.' || tablename) DESC LIMIT 20"
+    outputs:
+      - name: table_list
+        pattern: "(.+)"
+  - id: save-results
+    needs: [query-sizes]
+    cmd: |
+      echo "Database backup report - {{date}}" > "{{backup_dir}}/db-report-{{date}}.txt"
+      echo "{{query-sizes.table_list}}" >> "{{backup_dir}}/db-report-{{date}}.txt"
+      echo "Report saved to {{backup_dir}}/db-report-{{date}}.txt"
+  - id: notify
+    needs: [save-results]
+    mcp:
+      server: slack
+      tool: send_message
+      args:
+        channel: "{{notify_channel}}"
+        text: "Database backup report generated on {{datetime}} - top 20 tables by size saved to {{backup_dir}}/db-report-{{date}}.txt"

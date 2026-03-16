@@ -7,7 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                  # Build debug binary
 cargo build --release        # Build optimized binary
+cargo build --features mcp   # Build with MCP (Model Context Protocol) support
 cargo test                   # Run all tests (unit + integration)
+cargo test --features mcp    # Run all tests including MCP integration tests
 cargo test core::parser      # Run tests in a specific module
 cargo test test_cycle        # Run a specific test by name
 cargo run                    # Launch TUI (default, no subcommand)
@@ -27,14 +29,15 @@ Test fixtures are in `tests/fixtures/` — integration tests use `assert_cmd` to
 2. **Parsing** (`core/parser.rs`): YAML → `Workflow` with DAG validation + cycle detection (Kahn's algorithm). Shell scripts are wrapped as single-step workflows.
 3. **Template expansion** (`core/template.rs`): `{{date}}`, `{{datetime}}`, `{{hostname}}`, custom vars from env, step output captures (`{{step_id.var}}`)
 4. **Dangerous command check** (`core/executor.rs`): `check_dangerous()` blocks known destructive patterns (rm -rf /, fork bombs, dd to devices, etc.). Bypassed with `--force` flag.
-5. **Execution** (`core/executor.rs`): Topological sort, sequential `bash -c` execution, captures stdout/stderr per step. Failed steps cause dependents to be skipped; independent branches continue. After main steps, `cleanup` steps run unconditionally (failures logged but don't affect exit code). Step outputs are captured via regex patterns and injected as template variables.
-6. **Logging** (`core/logger.rs`): JSON files in `{workflows_dir}/logs/`, auto-rotated by age on startup
-7. **History** (`core/db.rs`): SQLite database (`history.db`) for persistent run tracking, global stats, and overdue task detection
-8. **Notifications** (`core/notify/`): Trait-based notification dispatch via `MultiNotifier`. URL-scheme resolver constructs `Box<dyn Notifier>` from config strings. Native HTTP via `ureq` (no curl dependency). Supports multi-target routing, severity-based channel config, retry with exponential backoff, and per-service rate limiting. Failures are logged but never block execution.
+5. **MCP step dispatch** (`core/mcp.rs`, feature-gated): For `mcp:` steps, resolves server config (alias lookup from `Config.mcp_servers` or inline definition), injects secrets as env vars, spawns `McpClient` (stdio transport via `rmcp`), calls the specified tool, and captures the result text as stdout. MCP steps participate in the same DAG features as `cmd:` steps (retries, timeouts, template vars, output capture).
+6. **Execution** (`core/executor.rs`): Topological sort, sequential `bash -c` execution for `cmd:` steps, MCP client calls for `mcp:` steps. Captures stdout/stderr per step. Failed steps cause dependents to be skipped; independent branches continue. After main steps, `cleanup` steps run unconditionally (failures logged but don't affect exit code). Step outputs are captured via regex patterns and injected as template variables.
+7. **Logging** (`core/logger.rs`): JSON files in `{workflows_dir}/logs/`, auto-rotated by age on startup
+8. **History** (`core/db.rs`): SQLite database (`history.db`) for persistent run tracking, global stats, and overdue task detection
+9. **Notifications** (`core/notify/`): Trait-based notification dispatch via `MultiNotifier`. URL-scheme resolver constructs `Box<dyn Notifier>` from config strings. Native HTTP via `ureq` (no curl dependency). Supports multi-target routing, severity-based channel config, retry with exponential backoff, and per-service rate limiting. Failures are logged but never block execution.
 
 ### Entry point dispatch
 
-`main.rs` parses CLI args (clap derive). With a subcommand (`run`, `list`, `status`, `compare`, `validate`, `export`, `import`, `templates`, `logs`, `ai-update`, `sync`) → dispatches to `cli/mod.rs`. No subcommand → launches TUI via `tui/mod.rs`.
+`main.rs` parses CLI args (clap derive). With a subcommand (`run`, `list`, `status`, `compare`, `validate`, `export`, `import`, `templates`, `logs`, `ai-update`, `sync`, `mcp`) → dispatches to `cli/mod.rs`. No subcommand → launches TUI via `tui/mod.rs`.
 
 ### TUI state machine
 
@@ -68,7 +71,7 @@ Both AiChat and AiUpdate modes support an **AI refinement loop** at the Preview 
 
 ### Template catalog
 
-`core/catalog.rs` embeds bundled templates via `include_str!()` from `templates/` directory (36 bundled: 16 sysadmin, 10 docker, 10 kubectl). Templates are YAML workflows with a `variables` section for substitution. `templates --fetch` downloads community templates from GitHub.
+`core/catalog.rs` embeds bundled templates via `include_str!()` from `templates/` directory (39 bundled: 16 sysadmin, 10 docker, 10 kubectl, 3 mcp). Templates are YAML workflows with a `variables` section for substitution. `templates --fetch` downloads community templates from GitHub.
 
 ### Task references
 
@@ -136,7 +139,9 @@ Config lives in `[sync]` section of `config.toml` via `SyncConfig` in `core/conf
 | `src/cli/mod.rs` | CLI dispatch |
 | `src/cli/ai_update.rs` | CLI handler for `ai-update` subcommand |
 | `src/cli/sync.rs` | CLI handler for `sync` subcommand |
+| `src/cli/mcp.rs` | CLI subcommands: list-tools, call, check (feature-gated) |
 | `src/core/sync.rs` | Git sync operations (init, push, pull, status) |
+| `src/core/mcp.rs` | MCP client: spawn, initialize, list_tools, call_tool, teardown (feature-gated) |
 | `src/core/discovery.rs` | Workflow file discovery |
 | `src/core/parser.rs` | YAML parsing + DAG validation |
 | `src/core/executor.rs` | Step execution engine |
@@ -168,4 +173,6 @@ Config lives in `[sync]` section of `config.toml` via `SyncConfig` in `core/conf
 
 ## Config
 
-Optional `~/.config/workflow/config.toml` with fields: `workflows_dir`, `log_retention_days` (default 30), `editor` (default `$EDITOR`/vi), `hooks` (pre_run/post_run). Falls back to defaults if missing. The `--dir` CLI flag overrides `workflows_dir`.
+Optional `~/.config/workflow/config.toml` with fields: `workflows_dir`, `log_retention_days` (default 30), `editor` (default `$EDITOR`/vi), `hooks` (pre_run/post_run), `[sync]` section for git sync, `[mcp.servers.*]` sections for MCP server aliases. Falls back to defaults if missing. The `--dir` CLI flag overrides `workflows_dir`.
+
+MCP server aliases are defined as `[mcp.servers.<alias>]` TOML tables with fields: `command` (required), `env` (optional HashMap), `secrets` (optional Vec of secret names from the secrets store), `timeout` (optional u64 in seconds). Workflows reference aliases via `server: <alias>` in `mcp:` steps, or use inline `server: { command: "..." }` definitions.

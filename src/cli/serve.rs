@@ -355,6 +355,7 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
                             call_depth: 0,
                             max_call_depth: 10,
                             secrets_ssh_key: None,
+                            mcp_servers: std::collections::HashMap::new(),
                         };
 
                         let run_log = execute_workflow(&workflow, &task_ref_clone, &opts, None)

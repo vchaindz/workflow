@@ -454,6 +454,12 @@ workflow serve --port 9090           # custom port
 workflow logs backup/db-full
 workflow logs --limit 20 --json
 
+# MCP tools (requires --features mcp)
+workflow mcp list-tools github              # list available tools
+workflow mcp list-tools github --json       # full schemas as JSON
+workflow mcp call github create_issue --arg repo=myorg/app --arg title="Bug"
+workflow mcp check github                   # verify server connectivity
+
 # Sync across machines
 workflow sync setup                      # one-time: init + private GitHub repo
 workflow sync push                       # auto-commit and push
@@ -673,6 +679,165 @@ steps:
 
 Precedence: explicit `env:` in YAML > `--env` CLI flag > secrets store > environment variables. Secrets never override values you set explicitly. If the store doesn't exist or a secret isn't found, the workflow falls back to environment variables (existing behavior preserved).
 
+## MCP Integration (Model Context Protocol)
+
+Call any of 16,000+ MCP-compatible tools — GitHub, Slack, databases, cloud providers — directly from workflow steps. No shell glue code, no `curl` pipelines, no API client scripting. MCP steps are a first-class step type alongside `cmd:` and `call:`.
+
+MCP support is opt-in behind a feature flag to keep the base binary small:
+
+```bash
+cargo build --release --features mcp
+cargo install --path . --features mcp
+```
+
+### Configuring MCP servers
+
+Define server aliases in `config.toml` so workflows can reference them by short name:
+
+```toml
+[mcp.servers.github]
+command = "npx -y @modelcontextprotocol/server-github"
+secrets = ["GITHUB_TOKEN"]
+
+[mcp.servers.slack]
+command = "npx -y @modelcontextprotocol/server-slack"
+secrets = ["SLACK_BOT_TOKEN"]
+env = { SLACK_TEAM_ID = "T0123456" }
+
+[mcp.servers.postgres]
+command = "npx -y @modelcontextprotocol/server-postgres"
+secrets = ["DATABASE_URL"]
+timeout = 30
+```
+
+Server fields:
+- `command` — the shell command to spawn the MCP server process (stdio transport)
+- `secrets` — list of secret names resolved from the encrypted secrets store and injected as environment variables
+- `env` — additional environment variables for the server process
+- `timeout` — optional timeout in seconds for tool calls
+
+Credentials are stored in the encrypted secrets store (see above) and injected automatically — no plaintext tokens in config files.
+
+### Writing MCP steps in YAML
+
+Use the `mcp:` field instead of `cmd:` to call an MCP tool:
+
+```yaml
+name: GitHub Release Workflow
+steps:
+  - id: create-release
+    mcp:
+      server: github
+      tool: create_release
+      args:
+        owner: myorg
+        repo: myapp
+        tag: "v{{version}}"
+        body: "Release {{version}} — {{date}}"
+    outputs:
+      - name: url
+        pattern: "(https://github.com/.*releases/.*)"
+
+  - id: notify-slack
+    mcp:
+      server: slack
+      tool: send_message
+      args:
+        channel: "#releases"
+        text: "Released {{version}}: {{create-release.url}}"
+    needs: [create-release]
+```
+
+MCP steps support all the same DAG features as `cmd:` steps: `needs:` dependencies, `run_if`/`skip_if` conditions, `retry`/`retry_delay`, `timeout`, `for_each` loops, output capture via `outputs:`, and template variable expansion (`{{var}}`, `{{date}}`, `{{step_id.output_name}}`).
+
+#### Inline server definitions
+
+For one-off use or workflows shared across machines, define the server inline instead of referencing a config alias:
+
+```yaml
+steps:
+  - id: query
+    mcp:
+      server:
+        command: "npx -y @modelcontextprotocol/server-postgres"
+        env:
+          DATABASE_URL: "postgres://localhost/mydb"
+        secrets: ["DB_PASSWORD"]
+      tool: query
+      args:
+        sql: "SELECT count(*) FROM users WHERE created_at > '{{date_offset -1d}}'"
+```
+
+#### Practical example: database backup with notification
+
+```yaml
+name: DB Backup with MCP
+steps:
+  - id: dump
+    cmd: pg_dump mydb > /tmp/mydb_{{date}}.sql
+    timeout: 300
+
+  - id: record-size
+    cmd: stat --format='%s' /tmp/mydb_{{date}}.sql
+    needs: [dump]
+    outputs:
+      - name: bytes
+        pattern: "^(\\d+)"
+
+  - id: notify
+    mcp:
+      server: slack
+      tool: send_message
+      args:
+        channel: "#ops"
+        text: "Backup complete: {{record-size.bytes}} bytes"
+    needs: [record-size]
+
+cleanup:
+  - id: clean
+    cmd: rm -f /tmp/mydb_{{date}}.sql
+```
+
+### CLI commands
+
+Discover and test MCP servers from the command line:
+
+```bash
+# List all tools available on a server
+workflow mcp list-tools github
+workflow mcp list-tools github --json    # full schemas
+
+# Call a tool directly (ad-hoc testing)
+workflow mcp call github create_issue \
+  --arg repo=myorg/myapp \
+  --arg title="Bug report" \
+  --arg body="Found an issue with..."
+
+# Health check a server (verify connectivity and credentials)
+workflow mcp check github
+```
+
+`list-tools` shows tool names, parameter counts, and descriptions in a formatted table. With `--json`, it outputs full tool schemas including input parameters — useful for scripting or discovering API shapes.
+
+`call` parses `--arg key=value` pairs into a JSON object. Values are auto-typed: `true`/`false` become booleans, numeric strings become numbers, everything else stays a string. Server credentials are injected from the secrets store automatically.
+
+`check` spawns the server, initializes the MCP connection, and lists tools — verifying that the command works, credentials are valid, and the server responds. Useful for debugging setup issues.
+
+### How it works
+
+MCP steps use stdio transport: `workflow` spawns the server as a child process, sends JSON-RPC messages over stdin/stdout, and tears down the process when done. The same protocol used by Claude Code, VS Code, and other MCP hosts.
+
+At execution time:
+1. Server config is resolved (alias lookup in `config.toml` or inline definition)
+2. Secrets are loaded from the encrypted store and injected as environment variables
+3. Template variables (`{{var}}`) are expanded in all `args` string values (recursively through nested objects/arrays)
+4. The MCP server process is spawned and initialized
+5. The tool is called with the expanded args
+6. The result text is captured as stdout (available for `outputs:` regex patterns and downstream `{{step_id.var}}` references)
+7. The server process is shut down
+
+The AI wizard (`a` key in TUI) is MCP-aware: when MCP servers are configured, it prefers generating `mcp:` steps over shell commands for matching services. For example, if you have a `github` server configured and ask "create a release workflow", the AI will use `mcp: { server: github, tool: create_release }` instead of `curl` calls to the GitHub API.
+
 ## Security
 
 Multiple layers of protection are built in:
@@ -697,7 +862,7 @@ cargo build --release
 # Binary: target/release/workflow
 ```
 
-Requires Rust 1.56+ (2021 edition). Single binary. Notification backends use native HTTP (`ureq`) and SMTP (`lettre`) — no `curl` or `mail` needed at runtime.
+Requires Rust 1.56+ (2021 edition). Single binary. Notification backends use native HTTP (`ureq`) and SMTP (`lettre`) — no `curl` or `mail` needed at runtime. For MCP support, add `--features mcp` (pulls in `rmcp` and `tokio`).
 
 ## License
 

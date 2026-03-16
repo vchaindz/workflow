@@ -8,13 +8,14 @@ use chrono::Utc;
 use uuid::Uuid;
 use wait_timeout::ChildExt;
 
+use crate::core::config::McpServerConfig;
 use crate::core::detect;
-use crate::core::models::{ExecutionEvent, ForEachSource, NotifyConfig, RunLog, Step, StepResult, StepStatus, Workflow};
+use crate::core::models::{ExecutionEvent, ForEachSource, McpServerRef, NotifyConfig, RunLog, Step, StepResult, StepStatus, Workflow};
 use crate::core::notify::{Notification, Notifier, RateLimiter, RetryConfig, Severity};
 use crate::core::notify::resolve::resolve_notifier;
 use crate::core::notify::retry::send_with_retry;
 use crate::core::parser::{resolve_env, compute_execution_levels};
-use crate::core::template::expand_template;
+use crate::core::template::{expand_template, expand_env_vars};
 use crate::error::Result;
 
 /// Gracefully terminate a child process: SIGTERM first, wait grace period, then SIGKILL.
@@ -170,6 +171,8 @@ pub struct ExecuteOpts {
     pub max_call_depth: u16,
     /// SSH private key path for decrypting secrets store
     pub secrets_ssh_key: Option<std::path::PathBuf>,
+    /// MCP server alias definitions from config.toml
+    pub mcp_servers: HashMap<String, McpServerConfig>,
 }
 
 impl Default for ExecuteOpts {
@@ -186,6 +189,7 @@ impl Default for ExecuteOpts {
             call_depth: 0,
             max_call_depth: 10,
             secrets_ssh_key: None,
+            mcp_servers: HashMap::new(),
         }
     }
 }
@@ -397,6 +401,47 @@ pub fn load_secret_env(
     env
 }
 
+/// Load secret values from the encrypted secrets store, returning an error for any missing secret.
+///
+/// Unlike `load_secret_env` which silently ignores missing secrets, this function ensures
+/// all requested secrets are present and returns a descriptive error if any are missing.
+pub fn load_secret_env_strict(
+    secret_names: &[String],
+    workflows_dir: &std::path::Path,
+    secrets_ssh_key: Option<&std::path::Path>,
+) -> crate::error::Result<HashMap<String, String>> {
+    let mut env = HashMap::new();
+    if secret_names.is_empty() {
+        return Ok(env);
+    }
+    let ssh_key = secrets_ssh_key.ok_or_else(|| {
+        crate::error::DzError::Config(format!(
+            "secrets requested ({}) but no SSH key configured — set secrets_ssh_key in config.toml or use --ssh-key",
+            secret_names.join(", ")
+        ))
+    })?;
+    let store_path = workflows_dir.join("secrets.age");
+    if !store_path.exists() {
+        return Err(crate::error::DzError::Config(format!(
+            "secrets requested ({}) but secrets store not found — run `workflow secrets init` first",
+            secret_names.join(", ")
+        )));
+    }
+    let store = crate::core::secrets::SecretsStore::load(workflows_dir, ssh_key)?;
+    for name in secret_names {
+        match store.get(name) {
+            Some(val) => { env.insert(name.clone(), val.to_string()); }
+            None => {
+                return Err(crate::error::DzError::Config(format!(
+                    "secret '{}' not found in secrets store — add it with `workflow secrets set {}`",
+                    name, name
+                )));
+            }
+        }
+    }
+    Ok(env)
+}
+
 pub fn send_notifications(
     task_ref: &str,
     run_log: &RunLog,
@@ -451,6 +496,318 @@ struct StepOutcome {
     failed: bool,
 }
 
+/// Expand template variables recursively in a serde_json::Value.
+/// String values get expand_template(); non-string values pass through unchanged.
+fn expand_json_templates(
+    value: &serde_json::Value,
+    template_vars: &HashMap<String, String>,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => {
+            serde_json::Value::String(expand_template(s, template_vars))
+        }
+        serde_json::Value::Object(map) => {
+            let expanded: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), expand_json_templates(v, template_vars)))
+                .collect();
+            serde_json::Value::Object(expanded)
+        }
+        serde_json::Value::Array(arr) => {
+            let expanded: Vec<serde_json::Value> = arr
+                .iter()
+                .map(|v| expand_json_templates(v, template_vars))
+                .collect();
+            serde_json::Value::Array(expanded)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Execute an MCP step: resolve server config, spawn client, call tool, capture output.
+#[allow(clippy::too_many_arguments, unused_variables)]
+fn execute_mcp_step(
+    step: &Step,
+    mcp_config: &crate::core::models::McpStepConfig,
+    template_vars: &HashMap<String, String>,
+    env: &HashMap<String, String>,
+    secret_values: &[String],
+    dry_run: bool,
+    event_tx: Option<&mpsc::Sender<ExecutionEvent>>,
+    _failed_steps: &std::collections::HashSet<String>,
+    mcp_servers: &HashMap<String, McpServerConfig>,
+    workflows_dir: Option<&std::path::PathBuf>,
+    secrets_ssh_key: Option<&std::path::PathBuf>,
+    secret_names: &[String],
+) -> StepOutcome {
+    let send = |evt: ExecutionEvent| {
+        if let Some(tx) = event_tx {
+            let _ = tx.send(evt);
+        }
+    };
+
+    // Resolve server config: alias lookup or inline definition
+    let (command, server_env, server_secrets) = match &mcp_config.server {
+        McpServerRef::Alias(alias) => {
+            match mcp_servers.get(alias) {
+                Some(cfg) => (
+                    cfg.command.clone(),
+                    cfg.env.clone().unwrap_or_default(),
+                    cfg.secrets.clone().unwrap_or_default(),
+                ),
+                None => {
+                    let msg = format!("MCP server alias '{}' not found in config.toml [mcp.servers]", alias);
+                    send(ExecutionEvent::StepCompleted {
+                        step_id: step.id.clone(),
+                        status: StepStatus::Failed,
+                        duration_ms: 0,
+                    });
+                    return StepOutcome {
+                        result: StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Failed,
+                            output: msg,
+                            duration_ms: 0,
+                        },
+                        captured_vars: HashMap::new(),
+                        failed: true,
+                    };
+                }
+            }
+        }
+        McpServerRef::Inline { command, env: inline_env, secrets } => (
+            command.clone(),
+            inline_env.clone().unwrap_or_default(),
+            secrets.clone().unwrap_or_default(),
+        ),
+    };
+
+    // Build display name for events
+    let server_display = match &mcp_config.server {
+        McpServerRef::Alias(a) => a.clone(),
+        McpServerRef::Inline { command, .. } => command.clone(),
+    };
+    let cmd_preview = format!("mcp: {}/{}", server_display, mcp_config.tool);
+
+    if dry_run {
+        send(ExecutionEvent::StepStarted {
+            step_id: step.id.clone(),
+            cmd_preview: format!("[dry-run] {cmd_preview}"),
+        });
+        let args_display = mcp_config
+            .args
+            .as_ref()
+            .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
+            .unwrap_or_default();
+        println!("[dry-run] step '{}': {} {}", step.id, cmd_preview, args_display);
+        send(ExecutionEvent::StepCompleted {
+            step_id: step.id.clone(),
+            status: StepStatus::Success,
+            duration_ms: 0,
+        });
+        return StepOutcome {
+            result: StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Success,
+                output: format!("[dry-run] {cmd_preview}"),
+                duration_ms: 0,
+            },
+            captured_vars: HashMap::new(),
+            failed: false,
+        };
+    }
+
+    send(ExecutionEvent::StepStarted {
+        step_id: step.id.clone(),
+        cmd_preview: mask_secrets(&cmd_preview, secret_values),
+    });
+
+    let timer = Instant::now();
+
+    // Build env for MCP server: workflow env + server-specific env + secrets
+    // Env values support both {{template_var}} and $ENV_VAR expansion.
+    let mut mcp_env: HashMap<String, String> = env.clone();
+    for (k, v) in &server_env {
+        let expanded = expand_template(v, template_vars);
+        let expanded = expand_env_vars(&expanded, env);
+        mcp_env.insert(k.clone(), expanded);
+    }
+
+    // Inject secrets from the secrets store into the MCP server env.
+    // Merge: config.toml secrets + inline YAML secrets (YAML takes precedence).
+    let mut merged_secrets: Vec<String> = server_secrets.clone();
+    // Also inject workflow-level secrets already in env
+    for name in secret_names {
+        if !merged_secrets.contains(&name.to_string()) {
+            merged_secrets.push(name.to_string());
+        }
+    }
+
+    // Collect resolved MCP-specific secret values for masking
+    let mut mcp_secret_values: Vec<String> = Vec::new();
+
+    if !merged_secrets.is_empty() {
+        if let (Some(wdir), Some(ssh_key)) = (workflows_dir, secrets_ssh_key) {
+            match load_secret_env_strict(&merged_secrets, wdir, Some(ssh_key)) {
+                Ok(secret_env) => {
+                    for (k, v) in &secret_env {
+                        mcp_secret_values.push(v.clone());
+                        mcp_env.insert(k.clone(), v.clone());
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("{e}");
+                    send(ExecutionEvent::StepCompleted {
+                        step_id: step.id.clone(),
+                        status: StepStatus::Failed,
+                        duration_ms: 0,
+                    });
+                    return StepOutcome {
+                        result: StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Failed,
+                            output: msg,
+                            duration_ms: 0,
+                        },
+                        captured_vars: HashMap::new(),
+                        failed: true,
+                    };
+                }
+            }
+        } else {
+            // Workflow-level secrets may already be in env (injected by execute_workflow)
+            for name in &merged_secrets {
+                if let Some(val) = env.get(name) {
+                    mcp_env.entry(name.clone()).or_insert_with(|| val.clone());
+                    mcp_secret_values.push(val.clone());
+                }
+            }
+        }
+    }
+
+    // Combine caller's secret values with MCP-resolved secret values for masking
+    let all_secret_values: Vec<String> = secret_values.iter().cloned()
+        .chain(mcp_secret_values.into_iter())
+        .filter(|v| !v.is_empty())
+        .collect();
+
+    // Expand template variables in args
+    let expanded_args = match &mcp_config.args {
+        Some(args) => expand_json_templates(args, template_vars),
+        None => serde_json::Value::Null,
+    };
+
+    // Retry loop (same pattern as cmd steps)
+    let max_attempts = step.retry.unwrap_or(0) + 1;
+    let retry_delay_secs = step.retry_delay.unwrap_or(0);
+    let mut last_output = String::new();
+    #[allow(unused_mut)]
+    let mut step_succeeded = false;
+
+    for attempt in 1..=max_attempts {
+        if attempt > 1 {
+            send(ExecutionEvent::StepRetrying {
+                step_id: step.id.clone(),
+                attempt,
+                max: max_attempts,
+                delay_secs: retry_delay_secs,
+            });
+            if retry_delay_secs > 0 {
+                std::thread::sleep(Duration::from_secs(retry_delay_secs));
+            }
+        }
+
+        // Feature gate: MCP execution requires the mcp feature
+        #[cfg(feature = "mcp")]
+        {
+            match crate::core::mcp::McpClient::spawn(&command, mcp_env.clone()) {
+                Ok(client) => {
+                    match client.call_tool(&mcp_config.tool, expanded_args.clone()) {
+                        Ok(text) => {
+                            last_output = text;
+                            step_succeeded = true;
+                            client.shutdown();
+                        }
+                        Err(e) => {
+                            last_output = format!("{e}");
+                            client.shutdown();
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_output = format!("failed to spawn MCP server '{}': {e}", command);
+                }
+            }
+        }
+
+        #[cfg(not(feature = "mcp"))]
+        {
+            last_output = "MCP steps require the mcp feature. Rebuild with: cargo build --features mcp".to_string();
+            break;
+        }
+
+        #[cfg(feature = "mcp")]
+        if step_succeeded {
+            break;
+        }
+    }
+
+    let duration_ms = timer.elapsed().as_millis() as u64;
+    let masked_output = mask_secrets(&last_output, &all_secret_values);
+    let mut captured_vars = HashMap::new();
+
+    if step_succeeded {
+        // Capture step outputs (same as cmd steps)
+        for out_def in &step.outputs {
+            if let Ok(re) = regex::Regex::new(&out_def.pattern) {
+                if let Some(caps) = re.captures(&last_output) {
+                    if let Some(val) = caps.get(1) {
+                        let key = format!("{}.{}", step.id, out_def.name);
+                        captured_vars.insert(key, val.as_str().to_string());
+                    }
+                }
+            }
+        }
+
+        send(ExecutionEvent::StepCompleted {
+            step_id: step.id.clone(),
+            status: StepStatus::Success,
+            duration_ms,
+        });
+        StepOutcome {
+            result: StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Success,
+                output: masked_output,
+                duration_ms,
+            },
+            captured_vars,
+            failed: false,
+        }
+    } else {
+        send(ExecutionEvent::StepCompleted {
+            step_id: step.id.clone(),
+            status: StepStatus::Failed,
+            duration_ms,
+        });
+        let output = if max_attempts > 1 {
+            format!("{masked_output} (after {max_attempts} attempts)")
+        } else {
+            masked_output
+        };
+        StepOutcome {
+            result: StepResult {
+                id: step.id.clone(),
+                status: StepStatus::Failed,
+                output,
+                duration_ms,
+            },
+            captured_vars,
+            failed: true,
+        }
+    }
+}
+
 /// Execute a single non-interactive step. Used by both sequential and parallel paths.
 #[allow(clippy::too_many_arguments)]
 fn execute_single_step(
@@ -469,6 +826,7 @@ fn execute_single_step(
     max_call_depth: u16,
     secret_names: &[String],
     secrets_ssh_key: Option<&std::path::PathBuf>,
+    mcp_servers: &HashMap<String, McpServerConfig>,
 ) -> StepOutcome {
     let send = |evt: ExecutionEvent| {
         if let Some(tx) = event_tx {
@@ -686,6 +1044,7 @@ fn execute_single_step(
                 call_depth: call_depth + 1,
                 max_call_depth,
                 secrets_ssh_key: secrets_ssh_key.map(|p| p.to_path_buf()),
+                mcp_servers: mcp_servers.clone(),
             };
 
             execute_workflow(&sub_wf, call_ref, &sub_opts, event_tx)
@@ -751,6 +1110,14 @@ fn execute_single_step(
                 }
             }
         };
+    }
+
+    // MCP step execution
+    if let Some(ref mcp_config) = step.mcp {
+        return execute_mcp_step(
+            step, mcp_config, template_vars, env, secret_values, dry_run,
+            event_tx, &failed_steps, mcp_servers, workflows_dir, secrets_ssh_key, secret_names,
+        );
     }
 
     // Sudo access warning
@@ -1078,6 +1445,7 @@ fn execute_for_each_step(
     max_call_depth: u16,
     secret_names: &[String],
     secrets_ssh_key: Option<&std::path::PathBuf>,
+    mcp_servers: &HashMap<String, McpServerConfig>,
 ) -> Vec<StepOutcome> {
     let send = |evt: ExecutionEvent| {
         if let Some(tx) = event_tx {
@@ -1118,6 +1486,7 @@ fn execute_for_each_step(
             let step_id = step.id.clone();
             let snames_clone = secret_names.to_vec();
             let sshkey_clone = secrets_ssh_key.map(|p| p.to_path_buf());
+            let mcp_servers_clone = mcp_servers.clone();
 
             handles.push(std::thread::spawn(move || {
                 let outcome = execute_single_step(
@@ -1136,6 +1505,7 @@ fn execute_for_each_step(
                     max_call_depth,
                     &snames_clone,
                     sshkey_clone.as_ref(),
+                    &mcp_servers_clone,
                 );
                 if let Some(ref tx) = tx_clone {
                     let _ = tx.send(ExecutionEvent::ForEachIterationCompleted {
@@ -1181,6 +1551,7 @@ fn execute_for_each_step(
                 max_call_depth,
                 secret_names,
                 secrets_ssh_key,
+                mcp_servers,
             );
 
             send(ExecutionEvent::ForEachIterationCompleted {
@@ -1310,6 +1681,7 @@ pub fn execute_workflow(
                             event_tx, &failed_steps,
                             opts.workflows_dir.as_ref(), opts.call_depth, opts.max_call_depth,
                             &opts.secrets, opts.secrets_ssh_key.as_ref(),
+                            &opts.mcp_servers,
                         );
                         let mut any_failed = false;
                         for outcome in outcomes {
@@ -1342,6 +1714,7 @@ pub fn execute_workflow(
                             event_tx, &failed_steps,
                             opts.workflows_dir.as_ref(), opts.call_depth, opts.max_call_depth,
                             &opts.secrets, opts.secrets_ssh_key.as_ref(),
+                            &opts.mcp_servers,
                         );
                         if outcome.failed {
                             failed_steps.insert(step.id.clone());
@@ -1405,6 +1778,7 @@ pub fn execute_workflow(
                 let max_call_depth = opts.max_call_depth;
                 let snames_clone = opts.secrets.clone();
                 let sshkey_clone = opts.secrets_ssh_key.clone();
+                let mcp_servers_clone = opts.mcp_servers.clone();
 
                 handles.push(std::thread::spawn(move || {
                     // Check for for_each iteration
@@ -1416,6 +1790,7 @@ pub fn execute_workflow(
                                 tx_clone.as_ref(), &failed_clone,
                                 wf_dir_clone.as_ref(), call_depth, max_call_depth,
                                 &snames_clone, sshkey_clone.as_ref(),
+                                &mcp_servers_clone,
                             )
                         }
                         Ok(None) => {
@@ -1425,6 +1800,7 @@ pub fn execute_workflow(
                                 tx_clone.as_ref(), &failed_clone,
                                 wf_dir_clone.as_ref(), call_depth, max_call_depth,
                                 &snames_clone, sshkey_clone.as_ref(),
+                                &mcp_servers_clone,
                             )]
                         }
                         Err(e) => {
@@ -1813,7 +2189,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
                 Step {
                     id: "s2".into(),
@@ -1825,7 +2201,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
             ],
             env: HashMap::new(),
@@ -1876,7 +2252,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
                 Step {
                     id: "dependent".into(),
@@ -1888,7 +2264,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
                 Step {
                     id: "independent".into(),
@@ -1900,7 +2276,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
             ],
             env: HashMap::new(),
@@ -1936,7 +2312,7 @@ mod tests {
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::from([("MY_VAR".to_string(), EnvValue::Static("original".to_string()))]),
             workdir: None,
@@ -1970,7 +2346,7 @@ mod tests {
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::new(),
             workdir: Some(std::path::PathBuf::from("/tmp")),
@@ -2000,7 +2376,7 @@ mod tests {
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -2031,7 +2407,7 @@ mod tests {
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -2066,7 +2442,7 @@ mod tests {
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -2101,7 +2477,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
                 Step {
                     id: "dependent".into(),
@@ -2113,7 +2489,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
             ],
             env: HashMap::new(),
@@ -2144,7 +2520,7 @@ mod tests {
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -2175,7 +2551,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
                 Step {
                     id: "after".into(),
@@ -2187,7 +2563,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
             ],
             env: HashMap::new(),
@@ -2231,7 +2607,7 @@ mod tests {
                 skip_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -2261,7 +2637,7 @@ mod tests {
                 skip_if: None,
                 retry: Some(2),
                 retry_delay: Some(0),
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -2292,7 +2668,7 @@ mod tests {
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::from([("MY_PASS".to_string(), EnvValue::Static("hunter2".to_string()))]),
             workdir: None,
@@ -2336,7 +2712,7 @@ mod tests {
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -2378,7 +2754,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
                 Step {
                     id: "check".into(),
@@ -2390,7 +2766,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
             ],
             env: HashMap::new(),
@@ -2423,7 +2799,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
                 Step {
                     id: "independent".into(),
@@ -2435,7 +2811,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
                 Step {
                     id: "rollback".into(),
@@ -2447,7 +2823,7 @@ mod tests {
                     skip_if: None,
                     retry: None,
                     retry_delay: None,
-                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                    interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
                 },
             ],
             env: HashMap::new(),
@@ -2482,7 +2858,7 @@ mod tests {
                 skip_if: Some("true".to_string()),
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -2510,7 +2886,7 @@ mod tests {
                 skip_if: Some("false".to_string()),
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             }],
             env: HashMap::new(),
             workdir: None,
@@ -2966,5 +3342,194 @@ mod tests {
         assert_eq!(configs.len(), 2);
         assert_eq!(configs["slack"].max_per_window, 5);
         assert_eq!(configs["discord"].max_per_window, 20);
+    }
+
+    #[test]
+    fn test_mcp_secrets_included_in_env() {
+        // Verify that secrets from config.toml server definition are merged into
+        // the env map that would be passed to McpClient::spawn.
+        // We test the merge logic by constructing the same env-building flow.
+        use crate::core::models::{McpStepConfig, McpServerRef};
+
+        // Inline server with secrets defined
+        let mcp_config = McpStepConfig {
+            server: McpServerRef::Inline {
+                command: "echo".to_string(),
+                env: Some(HashMap::from([("BASE_URL".to_string(), "https://api.example.com".to_string())])),
+                secrets: Some(vec!["API_TOKEN".to_string()]),
+            },
+            tool: "test_tool".to_string(),
+            args: None,
+        };
+
+        // Extract server_secrets from the inline config
+        let server_secrets = match &mcp_config.server {
+            McpServerRef::Inline { secrets, .. } => secrets.clone().unwrap_or_default(),
+            _ => Vec::new(),
+        };
+
+        // Merge with workflow-level secrets (simulating the merge in execute_mcp_step)
+        let workflow_secrets = vec!["DB_PASS".to_string()];
+        let mut merged: Vec<String> = server_secrets.clone();
+        for name in &workflow_secrets {
+            if !merged.contains(name) {
+                merged.push(name.clone());
+            }
+        }
+
+        // Inline secrets + workflow secrets should both be present
+        assert_eq!(merged.len(), 2);
+        assert!(merged.contains(&"API_TOKEN".to_string()));
+        assert!(merged.contains(&"DB_PASS".to_string()));
+
+        // YAML-level secrets should come first (take precedence in env insertion)
+        assert_eq!(merged[0], "API_TOKEN");
+    }
+
+    #[test]
+    fn test_mcp_missing_secret_produces_error() {
+        // load_secret_env_strict should produce a descriptive error for missing secrets.
+        // We can't use a real secrets store in unit tests, but we can verify the error
+        // paths by calling with a nonexistent store.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = load_secret_env_strict(
+            &vec!["MISSING_SECRET".to_string()],
+            tmp.path(),
+            Some(std::path::Path::new("/nonexistent/key")),
+        );
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("MISSING_SECRET") || err_msg.contains("secrets"),
+            "error should mention the secret name or secrets store: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_load_secret_env_strict_no_ssh_key() {
+        // Without an SSH key, load_secret_env_strict should return an error mentioning the key
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = load_secret_env_strict(
+            &vec!["MY_SECRET".to_string()],
+            tmp.path(),
+            None,
+        );
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("SSH key") || err_msg.contains("ssh_key"),
+            "error should mention SSH key: {err_msg}");
+    }
+
+    #[test]
+    fn test_load_secret_env_strict_empty_names() {
+        // Empty secret names list should succeed with empty result
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = load_secret_env_strict(&vec![], tmp.path(), None);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_mcp_secret_values_masked_in_output() {
+        // Verify that secret values resolved for MCP are properly masked
+        let secret_values = vec!["s3cret_token".to_string()];
+        let mcp_extra_secrets = vec!["mcp_api_key_123".to_string()];
+
+        // Combine as execute_mcp_step does
+        let all_secrets: Vec<String> = secret_values.iter().cloned()
+            .chain(mcp_extra_secrets.into_iter())
+            .filter(|v| !v.is_empty())
+            .collect();
+
+        let text = "connecting with s3cret_token and mcp_api_key_123 to server";
+        let masked = mask_secrets(text, &all_secrets);
+        assert!(!masked.contains("s3cret_token"), "workflow secret should be masked");
+        assert!(!masked.contains("mcp_api_key_123"), "MCP secret should be masked");
+        assert_eq!(masked, "connecting with [REDACTED] and [REDACTED] to server");
+    }
+
+    #[test]
+    fn test_expand_json_templates_string_var() {
+        let mut vars = HashMap::new();
+        vars.insert("version".to_string(), "1.2.3".to_string());
+        let args = serde_json::json!({
+            "tag": "v{{version}}",
+            "name": "Release {{version}}"
+        });
+        let expanded = expand_json_templates(&args, &vars);
+        assert_eq!(expanded["tag"], "v1.2.3");
+        assert_eq!(expanded["name"], "Release 1.2.3");
+    }
+
+    #[test]
+    fn test_expand_json_templates_nested_mixed() {
+        let mut vars = HashMap::new();
+        vars.insert("repo".to_string(), "myorg/myapp".to_string());
+        vars.insert("env".to_string(), "prod".to_string());
+        let args = serde_json::json!({
+            "repo": "{{repo}}",
+            "count": 5,
+            "draft": false,
+            "labels": ["bug", "{{env}}"],
+            "config": {
+                "target": "{{env}}-cluster",
+                "retries": 3,
+                "enabled": true
+            }
+        });
+        let expanded = expand_json_templates(&args, &vars);
+        assert_eq!(expanded["repo"], "myorg/myapp");
+        assert_eq!(expanded["count"], 5);
+        assert_eq!(expanded["draft"], false);
+        assert_eq!(expanded["labels"][0], "bug");
+        assert_eq!(expanded["labels"][1], "prod");
+        assert_eq!(expanded["config"]["target"], "prod-cluster");
+        assert_eq!(expanded["config"]["retries"], 3);
+        assert_eq!(expanded["config"]["enabled"], true);
+    }
+
+    #[test]
+    fn test_expand_json_templates_null_passthrough() {
+        let vars = HashMap::new();
+        let args = serde_json::Value::Null;
+        let expanded = expand_json_templates(&args, &vars);
+        assert!(expanded.is_null());
+    }
+
+    #[test]
+    fn test_mcp_env_dollar_var_expansion() {
+        // Simulate $DB_PASSWORD expansion in MCP env values
+        use crate::core::template::expand_env_vars;
+        let mut env = HashMap::new();
+        env.insert("DB_PASSWORD".to_string(), "s3cret".to_string());
+        let input = "postgres://user:$DB_PASSWORD@host/db";
+        let expanded = expand_env_vars(input, &env);
+        assert_eq!(expanded, "postgres://user:s3cret@host/db");
+    }
+
+    #[test]
+    fn test_mcp_env_brace_var_expansion() {
+        use crate::core::template::expand_env_vars;
+        let mut env = HashMap::new();
+        env.insert("TOKEN".to_string(), "abc123".to_string());
+        let input = "Bearer ${TOKEN}";
+        let expanded = expand_env_vars(input, &env);
+        assert_eq!(expanded, "Bearer abc123");
+    }
+
+    #[test]
+    fn test_mcp_env_combined_template_and_dollar() {
+        // Template vars and $VAR expansion work together
+        use crate::core::template::{expand_template, expand_env_vars};
+        let mut template_vars = HashMap::new();
+        template_vars.insert("host".to_string(), "db.example.com".to_string());
+        let mut env = HashMap::new();
+        env.insert("DB_PASSWORD".to_string(), "s3cret".to_string());
+
+        let input = "postgres://user:$DB_PASSWORD@{{host}}/mydb";
+        // Same order as executor: expand_template first, then expand_env_vars
+        let step1 = expand_template(input, &template_vars);
+        let step2 = expand_env_vars(&step1, &env);
+        assert_eq!(step2, "postgres://user:s3cret@db.example.com/mydb");
     }
 }

@@ -18,6 +18,8 @@ pub enum DzError {
     Template(String),
     Sync(String),
     Db(rusqlite::Error),
+    #[cfg(feature = "mcp")]
+    Mcp(String),
     Other(anyhow::Error),
 }
 
@@ -38,6 +40,8 @@ impl fmt::Display for DzError {
             DzError::Template(msg) => write!(f, "template error: {msg}"),
             DzError::Sync(msg) => write!(f, "sync error: {msg}"),
             DzError::Db(e) => write!(f, "database error: {e}"),
+            #[cfg(feature = "mcp")]
+            DzError::Mcp(msg) => write!(f, "MCP error: {msg}"),
             DzError::Other(e) => write!(f, "{e}"),
         }
     }

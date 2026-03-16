@@ -14,3 +14,5 @@ pub mod template;
 pub mod sync;
 pub mod secrets;
 pub mod wizard;
+#[cfg(feature = "mcp")]
+pub mod mcp;

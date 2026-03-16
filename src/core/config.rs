@@ -1,8 +1,28 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::core::models::NotifyConfig;
 use crate::error::{DzError, Result};
+
+/// Configuration for a named MCP server, defined in `[mcp.servers.<alias>]` in config.toml.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpServerConfig {
+    pub command: String,
+    #[serde(default)]
+    pub env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub secrets: Option<Vec<String>>,
+    #[serde(default)]
+    pub timeout: Option<u64>,
+}
+
+/// Wrapper for the `[mcp]` TOML section.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: HashMap<String, McpServerConfig>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -28,6 +48,8 @@ pub struct Config {
     pub sync: SyncConfig,
     #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
     /// Path to SSH private key for secrets encryption/decryption
     #[serde(default, skip_serializing)]
     pub secrets_ssh_key: Option<String>,
@@ -140,6 +162,7 @@ impl Default for Config {
             bookmarks: Vec::new(),
             sync: SyncConfig::default(),
             server: ServerConfig::default(),
+            mcp: McpConfig::default(),
             secrets_ssh_key: None,
         }
     }
@@ -223,5 +246,60 @@ impl Config {
             .map_err(|e| DzError::Config(e.to_string()))?;
         std::fs::write(&config_path, contents)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mcp_config_single_server() {
+        let toml_str = r#"
+[mcp.servers.github]
+command = "npx @modelcontextprotocol/server-github"
+secrets = ["GITHUB_TOKEN"]
+timeout = 30
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.mcp.servers.len(), 1);
+        let github = &config.mcp.servers["github"];
+        assert_eq!(github.command, "npx @modelcontextprotocol/server-github");
+        assert_eq!(github.secrets.as_ref().unwrap(), &vec!["GITHUB_TOKEN".to_string()]);
+        assert_eq!(github.timeout, Some(30));
+        assert!(github.env.is_none());
+    }
+
+    #[test]
+    fn test_mcp_config_multiple_servers() {
+        let toml_str = r#"
+[mcp.servers.github]
+command = "npx @modelcontextprotocol/server-github"
+secrets = ["GITHUB_TOKEN"]
+
+[mcp.servers.slack]
+command = "npx @modelcontextprotocol/server-slack"
+secrets = ["SLACK_TOKEN"]
+timeout = 15
+
+[mcp.servers.filesystem]
+command = "npx @modelcontextprotocol/server-filesystem"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.mcp.servers.len(), 3);
+        assert!(config.mcp.servers.contains_key("github"));
+        assert!(config.mcp.servers.contains_key("slack"));
+        assert!(config.mcp.servers.contains_key("filesystem"));
+        assert_eq!(config.mcp.servers["slack"].timeout, Some(15));
+        assert!(config.mcp.servers["filesystem"].secrets.is_none());
+    }
+
+    #[test]
+    fn test_mcp_config_absent_defaults_to_empty() {
+        let toml_str = r#"
+log_retention_days = 7
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.mcp.servers.is_empty());
     }
 }

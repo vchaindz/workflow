@@ -49,17 +49,17 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, skip_if: None, retry: None, retry_delay: None, interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false }
+                Step { id, cmd, needs, parallel: false, timeout: None, run_if: None, skip_if: None, retry: None, retry_delay: None, interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None }
             }
-            RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error } => {
+            RawStep::CmdMap { id: None, cmd, needs: _, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error, mcp } => {
                 let id = format!("step-{}", i + 1);
                 let needs = prev_auto_id.take().into_iter().collect();
                 prev_auto_id = Some(id.clone());
-                Step { id, cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error }
+                Step { id, cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error, mcp }
             }
-            RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error } => {
+            RawStep::CmdMap { id: Some(id), cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each, for_each_cmd, for_each_parallel, for_each_continue_on_error, mcp } => {
                 // Explicit id: no implicit chaining, but don't break the chain for others
-                Step { id, cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error }
+                Step { id, cmd, needs, parallel, timeout, run_if, skip_if, retry, retry_delay, interactive, outputs, call, for_each: for_each.map(|b| *b), for_each_cmd, for_each_parallel, for_each_continue_on_error, mcp }
             }
         };
 
@@ -69,14 +69,43 @@ fn normalize_steps(raw_steps: Vec<RawStep>) -> Result<Vec<Step>> {
         steps.push(step);
     }
 
-    // Validate mutual exclusion of cmd and call
+    // Validate mutual exclusion of cmd, call, and mcp
     for step in &steps {
-        if step.call.is_some() && !step.cmd.is_empty() {
+        let has_cmd = !step.cmd.is_empty();
+        let has_call = step.call.is_some();
+        let has_mcp = step.mcp.is_some();
+
+        let set_count = has_cmd as u8 + has_call as u8 + has_mcp as u8;
+        if set_count > 1 {
+            let mut fields = Vec::new();
+            if has_cmd { fields.push("cmd"); }
+            if has_call { fields.push("call"); }
+            if has_mcp { fields.push("mcp"); }
             return Err(DzError::Parse(format!(
-                "step '{}' has both 'cmd' and 'call' — these are mutually exclusive",
+                "step '{}' has both '{}' and '{}' — these are mutually exclusive",
+                step.id, fields[0], fields[1]
+            )));
+        }
+
+        // When mcp feature is disabled, reject mcp steps with a helpful error
+        #[cfg(not(feature = "mcp"))]
+        if has_mcp {
+            return Err(DzError::Parse(format!(
+                "step '{}' uses 'mcp' which requires the mcp feature. Rebuild with: cargo build --features mcp",
                 step.id
             )));
         }
+
+        // Validate mcp step has a tool field (enforced by deserialization, but belt-and-suspenders)
+        if let Some(ref mcp) = step.mcp {
+            if mcp.tool.is_empty() {
+                return Err(DzError::Parse(format!(
+                    "step '{}' has 'mcp' but no 'tool' specified",
+                    step.id
+                )));
+            }
+        }
+
         if step.for_each.is_some() && step.for_each_cmd.is_some() {
             return Err(DzError::Parse(format!(
                 "step '{}' has both 'for_each' and 'for_each_cmd' — these are mutually exclusive",
@@ -152,7 +181,7 @@ pub fn parse_shell_task(path: &Path) -> Result<Workflow> {
             skip_if: None,
             retry: None,
             retry_delay: None,
-            interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+            interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
         }],
         env: HashMap::new(),
         secrets: Vec::new(),
@@ -355,7 +384,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "b".into(),
@@ -367,7 +396,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "c".into(),
@@ -379,7 +408,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
         ];
 
@@ -406,7 +435,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "b".into(),
@@ -418,7 +447,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "c".into(),
@@ -430,7 +459,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "d".into(),
@@ -442,7 +471,7 @@ env:
                 skip_if: None,
                 retry: None,
                 retry_delay: None,
-                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                interactive: None, outputs: Vec::new(), call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
         ];
 
@@ -859,25 +888,25 @@ steps:
                 id: "a".into(), cmd: "echo a".into(), needs: vec![],
                 parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
-                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "b".into(), cmd: "echo b".into(), needs: vec!["a".into()],
                 parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
-                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "c".into(), cmd: "echo c".into(), needs: vec!["a".into()],
                 parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
-                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
             Step {
                 id: "d".into(), cmd: "echo d".into(), needs: vec!["b".into(), "c".into()],
                 parallel: false, timeout: None, run_if: None, skip_if: None, retry: None,
                 retry_delay: None, interactive: None, outputs: Vec::new(),
-                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false,
+                call: None, for_each: None, for_each_cmd: None, for_each_parallel: false, for_each_continue_on_error: false, mcp: None,
             },
         ];
 
@@ -991,5 +1020,150 @@ steps:
         assert_eq!(wf.notify.on_failure.len(), 1);
         assert_eq!(wf.notify.on_failure[0], "slack://hooks.slack.com/xxx");
         assert!(wf.notify.on_success.is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "mcp")]
+    fn test_parse_mcp_step_alias_server() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("mcp_alias.yaml");
+        fs::write(
+            &path,
+            r#"
+name: MCP Alias Test
+steps:
+  - id: create-issue
+    mcp:
+      server: github
+      tool: create_issue
+      args:
+        repo: myorg/myapp
+        title: Bug report
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.steps.len(), 1);
+        let mcp = wf.steps[0].mcp.as_ref().expect("mcp field should be set");
+        assert!(matches!(&mcp.server, crate::core::models::McpServerRef::Alias(s) if s == "github"));
+        assert_eq!(mcp.tool, "create_issue");
+        let args = mcp.args.as_ref().unwrap();
+        assert_eq!(args["repo"], "myorg/myapp");
+        assert_eq!(args["title"], "Bug report");
+        // cmd should be empty for mcp-only steps
+        assert!(wf.steps[0].cmd.is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "mcp")]
+    fn test_parse_mcp_step_inline_server() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("mcp_inline.yaml");
+        fs::write(
+            &path,
+            r#"
+name: MCP Inline Test
+steps:
+  - id: list-repos
+    mcp:
+      server:
+        command: "npx @modelcontextprotocol/server-github"
+        env:
+          GITHUB_TOKEN: "xxx"
+        secrets:
+          - GITHUB_TOKEN
+      tool: list_repos
+"#,
+        )
+        .unwrap();
+
+        let wf = parse_workflow(&path).unwrap();
+        assert_eq!(wf.steps.len(), 1);
+        let mcp = wf.steps[0].mcp.as_ref().expect("mcp field should be set");
+        match &mcp.server {
+            crate::core::models::McpServerRef::Inline { command, env, secrets } => {
+                assert_eq!(command, "npx @modelcontextprotocol/server-github");
+                assert_eq!(env.as_ref().unwrap()["GITHUB_TOKEN"], "xxx");
+                assert_eq!(secrets.as_ref().unwrap(), &vec!["GITHUB_TOKEN".to_string()]);
+            }
+            _ => panic!("expected Inline variant"),
+        }
+        assert_eq!(mcp.tool, "list_repos");
+    }
+
+    #[test]
+    fn test_parse_mcp_and_cmd_mutual_exclusion() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("mcp_cmd.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Bad MCP
+steps:
+  - id: both
+    cmd: echo hello
+    mcp:
+      server: github
+      tool: create_issue
+"#,
+        )
+        .unwrap();
+
+        let result = parse_workflow(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("mutually exclusive"), "error was: {err}");
+        assert!(err.contains("cmd"), "error was: {err}");
+        assert!(err.contains("mcp"), "error was: {err}");
+    }
+
+    #[test]
+    #[cfg(feature = "mcp")]
+    fn test_parse_mcp_step_empty_tool_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("mcp_no_tool.yaml");
+        fs::write(
+            &path,
+            r#"
+name: Bad MCP No Tool
+steps:
+  - id: no-tool
+    mcp:
+      server: github
+      tool: ""
+"#,
+        )
+        .unwrap();
+
+        let result = parse_workflow(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("no 'tool'"), "error was: {err}");
+    }
+
+    #[test]
+    #[cfg(not(feature = "mcp"))]
+    fn test_parse_mcp_step_rejected_without_feature() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("mcp_no_feature.yaml");
+        fs::write(
+            &path,
+            r#"
+name: MCP Without Feature
+steps:
+  - id: mcp-step
+    mcp:
+      server: github
+      tool: create_issue
+"#,
+        )
+        .unwrap();
+
+        let result = parse_workflow(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("requires the mcp feature"), "error was: {err}");
+        assert!(err.contains("cargo build --features mcp"), "error was: {err}");
     }
 }
