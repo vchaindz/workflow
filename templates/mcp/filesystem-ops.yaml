@@ -1,0 +1,50 @@
+name: MCP Filesystem Operations
+description: Read, transform, and write files using the filesystem MCP server
+variables:
+  - name: source_dir
+    description: Directory to read files from
+    default: "/tmp/input"
+  - name: dest_dir
+    description: Directory to write results to
+    default: "/tmp/output"
+  - name: file_pattern
+    description: Glob pattern for files to process
+    default: "*.json"
+steps:
+  - id: setup
+    cmd: "mkdir -p {{dest_dir}}"
+  - id: list-files
+    needs: [setup]
+    mcp:
+      server:
+        command: "npx @anthropic/mcp-server-filesystem {{source_dir}} {{dest_dir}}"
+      tool: list_directory
+      args:
+        path: "{{source_dir}}"
+    outputs:
+      - name: file_list
+        pattern: "(.+)"
+  - id: read-source
+    needs: [list-files]
+    mcp:
+      server:
+        command: "npx @anthropic/mcp-server-filesystem {{source_dir}} {{dest_dir}}"
+      tool: read_file
+      args:
+        path: "{{source_dir}}/config.json"
+    outputs:
+      - name: content
+        pattern: "(.+)"
+  - id: transform
+    needs: [read-source]
+    cmd: |
+      echo '{{read-source.content}}' | jq '{updated: ., processed_at: "{{datetime}}", host: "{{hostname}}"}' > "{{dest_dir}}/processed-{{date}}.json"
+      echo "Transformed file written to {{dest_dir}}/processed-{{date}}.json"
+  - id: verify
+    needs: [transform]
+    mcp:
+      server:
+        command: "npx @anthropic/mcp-server-filesystem {{source_dir}} {{dest_dir}}"
+      tool: read_file
+      args:
+        path: "{{dest_dir}}/processed-{{date}}.json"

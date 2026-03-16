@@ -91,6 +91,11 @@ const CRON_AUDIT: &str = include_str!("../../templates/sysadmin/cron-audit.yaml"
 const SSH_KEY_AUDIT: &str = include_str!("../../templates/sysadmin/ssh-key-audit.yaml");
 const FIREWALL_REVIEW: &str = include_str!("../../templates/sysadmin/firewall-review.yaml");
 
+// MCP templates
+const MCP_GITHUB_RELEASE: &str = include_str!("../../templates/mcp/github-release.yaml");
+const MCP_DB_BACKUP: &str = include_str!("../../templates/mcp/db-backup.yaml");
+const MCP_FILESYSTEM_OPS: &str = include_str!("../../templates/mcp/filesystem-ops.yaml");
+
 // Patching templates
 const PATCH_SECURITY: &str = include_str!("../../templates/patching/security-patches.yaml");
 const PATCH_AUDIT: &str = include_str!("../../templates/patching/patch-audit.yaml");
@@ -195,6 +200,9 @@ pub fn bundled_templates() -> Vec<TemplateEntry> {
         ("sysadmin", "smart-disk-health", SMART_DISK_HEALTH),
         ("sysadmin", "ssh-key-audit", SSH_KEY_AUDIT),
         ("sysadmin", "ssl-cert-expiry", SSL_CERT_EXPIRY),
+        ("mcp", "github-release", MCP_GITHUB_RELEASE),
+        ("mcp", "db-backup", MCP_DB_BACKUP),
+        ("mcp", "filesystem-ops", MCP_FILESYSTEM_OPS),
         ("patching", "security-patches", PATCH_SECURITY),
         ("patching", "patch-audit", PATCH_AUDIT),
         ("patching", "kernel-update", PATCH_KERNEL),

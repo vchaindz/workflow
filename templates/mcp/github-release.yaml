@@ -1,0 +1,50 @@
+name: MCP GitHub Release
+description: Create a GitHub release, post to Slack, and close the milestone issue using MCP servers
+variables:
+  - name: repo
+    description: GitHub repository (owner/name)
+    default: ""
+  - name: tag
+    description: Release tag (e.g. v1.0.0)
+    default: "{{version}}"
+  - name: release_title
+    description: Release title
+    default: "Release {{version}}"
+  - name: slack_channel
+    description: Slack channel for release announcement
+    default: "#releases"
+  - name: issue_number
+    description: Milestone issue number to close
+    default: ""
+steps:
+  - id: create-release
+    mcp:
+      server: github
+      tool: create_release
+      args:
+        repo: "{{repo}}"
+        tag: "{{tag}}"
+        name: "{{release_title}}"
+        body: "Released on {{date}}"
+        draft: false
+    outputs:
+      - name: html_url
+        pattern: "(https://github.com/[^\\s]+)"
+  - id: notify-slack
+    needs: [create-release]
+    mcp:
+      server: slack
+      tool: send_message
+      args:
+        channel: "{{slack_channel}}"
+        text: "New release {{tag}} published: {{create-release.html_url}}"
+  - id: close-issue
+    needs: [create-release]
+    mcp:
+      server: github
+      tool: update_issue
+      args:
+        repo: "{{repo}}"
+        issue_number: "{{issue_number}}"
+        state: "closed"
+        comment: "Closed by release {{tag}}"
