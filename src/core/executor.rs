@@ -687,7 +687,7 @@ fn execute_mcp_step(
 
     // Combine caller's secret values with MCP-resolved secret values for masking
     let all_secret_values: Vec<String> = secret_values.iter().cloned()
-        .chain(mcp_secret_values.into_iter())
+        .chain(mcp_secret_values)
         .filter(|v| !v.is_empty())
         .collect();
 
@@ -704,6 +704,12 @@ fn execute_mcp_step(
     #[allow(unused_mut)]
     let mut step_succeeded = false;
 
+    #[cfg(not(feature = "mcp"))]
+    {
+        last_output = "MCP steps require the mcp feature. Rebuild with: cargo build --features mcp".to_string();
+    }
+
+    #[cfg(feature = "mcp")]
     for attempt in 1..=max_attempts {
         if attempt > 1 {
             send(ExecutionEvent::StepRetrying {
@@ -717,36 +723,25 @@ fn execute_mcp_step(
             }
         }
 
-        // Feature gate: MCP execution requires the mcp feature
-        #[cfg(feature = "mcp")]
-        {
-            match crate::core::mcp::McpClient::spawn(&command, mcp_env.clone()) {
-                Ok(client) => {
-                    match client.call_tool(&mcp_config.tool, expanded_args.clone()) {
-                        Ok(text) => {
-                            last_output = text;
-                            step_succeeded = true;
-                            client.shutdown();
-                        }
-                        Err(e) => {
-                            last_output = format!("{e}");
-                            client.shutdown();
-                        }
+        match crate::core::mcp::McpClient::spawn(&command, mcp_env.clone()) {
+            Ok(client) => {
+                match client.call_tool(&mcp_config.tool, expanded_args.clone()) {
+                    Ok(text) => {
+                        last_output = text;
+                        step_succeeded = true;
+                        client.shutdown();
+                    }
+                    Err(e) => {
+                        last_output = format!("{e}");
+                        client.shutdown();
                     }
                 }
-                Err(e) => {
-                    last_output = format!("failed to spawn MCP server '{}': {e}", command);
-                }
+            }
+            Err(e) => {
+                last_output = format!("failed to spawn MCP server '{}': {e}", command);
             }
         }
 
-        #[cfg(not(feature = "mcp"))]
-        {
-            last_output = "MCP steps require the mcp feature. Rebuild with: cargo build --features mcp".to_string();
-            break;
-        }
-
-        #[cfg(feature = "mcp")]
         if step_succeeded {
             break;
         }
@@ -1116,7 +1111,7 @@ fn execute_single_step(
     if let Some(ref mcp_config) = step.mcp {
         return execute_mcp_step(
             step, mcp_config, template_vars, env, secret_values, dry_run,
-            event_tx, &failed_steps, mcp_servers, workflows_dir, secrets_ssh_key, secret_names,
+            event_tx, failed_steps, mcp_servers, workflows_dir, secrets_ssh_key, secret_names,
         );
     }
 

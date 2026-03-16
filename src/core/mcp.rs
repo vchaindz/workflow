@@ -149,9 +149,8 @@ fn extract_text(content: &[Content]) -> String {
     let mut parts = Vec::new();
     for item in content {
         use rmcp::model::RawContent;
-        match &**item {
-            RawContent::Text(t) => parts.push(t.text.clone()),
-            _ => {}
+        if let RawContent::Text(t) = &**item {
+            parts.push(t.text.clone());
         }
     }
     parts.join("\n")
