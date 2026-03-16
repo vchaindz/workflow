@@ -401,6 +401,47 @@ pub fn load_secret_env(
     env
 }
 
+/// Load secret values from the encrypted secrets store, returning an error for any missing secret.
+///
+/// Unlike `load_secret_env` which silently ignores missing secrets, this function ensures
+/// all requested secrets are present and returns a descriptive error if any are missing.
+pub fn load_secret_env_strict(
+    secret_names: &[String],
+    workflows_dir: &std::path::Path,
+    secrets_ssh_key: Option<&std::path::Path>,
+) -> crate::error::Result<HashMap<String, String>> {
+    let mut env = HashMap::new();
+    if secret_names.is_empty() {
+        return Ok(env);
+    }
+    let ssh_key = secrets_ssh_key.ok_or_else(|| {
+        crate::error::DzError::Config(format!(
+            "secrets requested ({}) but no SSH key configured — set secrets_ssh_key in config.toml or use --ssh-key",
+            secret_names.join(", ")
+        ))
+    })?;
+    let store_path = workflows_dir.join("secrets.age");
+    if !store_path.exists() {
+        return Err(crate::error::DzError::Config(format!(
+            "secrets requested ({}) but secrets store not found — run `workflow secrets init` first",
+            secret_names.join(", ")
+        )));
+    }
+    let store = crate::core::secrets::SecretsStore::load(workflows_dir, ssh_key)?;
+    for name in secret_names {
+        match store.get(name) {
+            Some(val) => { env.insert(name.clone(), val.to_string()); }
+            None => {
+                return Err(crate::error::DzError::Config(format!(
+                    "secret '{}' not found in secrets store — add it with `workflow secrets set {}`",
+                    name, name
+                )));
+            }
+        }
+    }
+    Ok(env)
+}
+
 pub fn send_notifications(
     task_ref: &str,
     run_log: &RunLog,
@@ -589,21 +630,63 @@ fn execute_mcp_step(
         mcp_env.insert(k.clone(), expand_template(v, template_vars));
     }
 
-    // Inject secrets from the secrets store
-    if !server_secrets.is_empty() {
+    // Inject secrets from the secrets store into the MCP server env.
+    // Merge: config.toml secrets + inline YAML secrets (YAML takes precedence).
+    let mut merged_secrets: Vec<String> = server_secrets.clone();
+    // Also inject workflow-level secrets already in env
+    for name in secret_names {
+        if !merged_secrets.contains(&name.to_string()) {
+            merged_secrets.push(name.to_string());
+        }
+    }
+
+    // Collect resolved MCP-specific secret values for masking
+    let mut mcp_secret_values: Vec<String> = Vec::new();
+
+    if !merged_secrets.is_empty() {
         if let (Some(wdir), Some(ssh_key)) = (workflows_dir, secrets_ssh_key) {
-            let secret_env = load_secret_env(&server_secrets, wdir, Some(ssh_key));
-            for (k, v) in secret_env {
-                mcp_env.insert(k, v);
+            match load_secret_env_strict(&merged_secrets, wdir, Some(ssh_key)) {
+                Ok(secret_env) => {
+                    for (k, v) in &secret_env {
+                        mcp_secret_values.push(v.clone());
+                        mcp_env.insert(k.clone(), v.clone());
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("{e}");
+                    send(ExecutionEvent::StepCompleted {
+                        step_id: step.id.clone(),
+                        status: StepStatus::Failed,
+                        duration_ms: 0,
+                    });
+                    return StepOutcome {
+                        result: StepResult {
+                            id: step.id.clone(),
+                            status: StepStatus::Failed,
+                            output: msg,
+                            duration_ms: 0,
+                        },
+                        captured_vars: HashMap::new(),
+                        failed: true,
+                    };
+                }
+            }
+        } else {
+            // Workflow-level secrets may already be in env (injected by execute_workflow)
+            for name in &merged_secrets {
+                if let Some(val) = env.get(name) {
+                    mcp_env.entry(name.clone()).or_insert_with(|| val.clone());
+                    mcp_secret_values.push(val.clone());
+                }
             }
         }
     }
-    // Also inject workflow-level secrets already in env
-    for name in secret_names {
-        if let Some(val) = env.get(name) {
-            mcp_env.entry(name.clone()).or_insert_with(|| val.clone());
-        }
-    }
+
+    // Combine caller's secret values with MCP-resolved secret values for masking
+    let all_secret_values: Vec<String> = secret_values.iter().cloned()
+        .chain(mcp_secret_values.into_iter())
+        .filter(|v| !v.is_empty())
+        .collect();
 
     // Expand template variables in args
     let expanded_args = match &mcp_config.args {
@@ -667,7 +750,7 @@ fn execute_mcp_step(
     }
 
     let duration_ms = timer.elapsed().as_millis() as u64;
-    let masked_output = mask_secrets(&last_output, secret_values);
+    let masked_output = mask_secrets(&last_output, &all_secret_values);
     let mut captured_vars = HashMap::new();
 
     if step_succeeded {
@@ -3256,5 +3339,109 @@ mod tests {
         assert_eq!(configs.len(), 2);
         assert_eq!(configs["slack"].max_per_window, 5);
         assert_eq!(configs["discord"].max_per_window, 20);
+    }
+
+    #[test]
+    fn test_mcp_secrets_included_in_env() {
+        // Verify that secrets from config.toml server definition are merged into
+        // the env map that would be passed to McpClient::spawn.
+        // We test the merge logic by constructing the same env-building flow.
+        use crate::core::models::{McpStepConfig, McpServerRef};
+
+        // Inline server with secrets defined
+        let mcp_config = McpStepConfig {
+            server: McpServerRef::Inline {
+                command: "echo".to_string(),
+                env: Some(HashMap::from([("BASE_URL".to_string(), "https://api.example.com".to_string())])),
+                secrets: Some(vec!["API_TOKEN".to_string()]),
+            },
+            tool: "test_tool".to_string(),
+            args: None,
+        };
+
+        // Extract server_secrets from the inline config
+        let server_secrets = match &mcp_config.server {
+            McpServerRef::Inline { secrets, .. } => secrets.clone().unwrap_or_default(),
+            _ => Vec::new(),
+        };
+
+        // Merge with workflow-level secrets (simulating the merge in execute_mcp_step)
+        let workflow_secrets = vec!["DB_PASS".to_string()];
+        let mut merged: Vec<String> = server_secrets.clone();
+        for name in &workflow_secrets {
+            if !merged.contains(name) {
+                merged.push(name.clone());
+            }
+        }
+
+        // Inline secrets + workflow secrets should both be present
+        assert_eq!(merged.len(), 2);
+        assert!(merged.contains(&"API_TOKEN".to_string()));
+        assert!(merged.contains(&"DB_PASS".to_string()));
+
+        // YAML-level secrets should come first (take precedence in env insertion)
+        assert_eq!(merged[0], "API_TOKEN");
+    }
+
+    #[test]
+    fn test_mcp_missing_secret_produces_error() {
+        // load_secret_env_strict should produce a descriptive error for missing secrets.
+        // We can't use a real secrets store in unit tests, but we can verify the error
+        // paths by calling with a nonexistent store.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = load_secret_env_strict(
+            &vec!["MISSING_SECRET".to_string()],
+            tmp.path(),
+            Some(std::path::Path::new("/nonexistent/key")),
+        );
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("MISSING_SECRET") || err_msg.contains("secrets"),
+            "error should mention the secret name or secrets store: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_load_secret_env_strict_no_ssh_key() {
+        // Without an SSH key, load_secret_env_strict should return an error mentioning the key
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = load_secret_env_strict(
+            &vec!["MY_SECRET".to_string()],
+            tmp.path(),
+            None,
+        );
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("SSH key") || err_msg.contains("ssh_key"),
+            "error should mention SSH key: {err_msg}");
+    }
+
+    #[test]
+    fn test_load_secret_env_strict_empty_names() {
+        // Empty secret names list should succeed with empty result
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = load_secret_env_strict(&vec![], tmp.path(), None);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_mcp_secret_values_masked_in_output() {
+        // Verify that secret values resolved for MCP are properly masked
+        let secret_values = vec!["s3cret_token".to_string()];
+        let mcp_extra_secrets = vec!["mcp_api_key_123".to_string()];
+
+        // Combine as execute_mcp_step does
+        let all_secrets: Vec<String> = secret_values.iter().cloned()
+            .chain(mcp_extra_secrets.into_iter())
+            .filter(|v| !v.is_empty())
+            .collect();
+
+        let text = "connecting with s3cret_token and mcp_api_key_123 to server";
+        let masked = mask_secrets(text, &all_secrets);
+        assert!(!masked.contains("s3cret_token"), "workflow secret should be masked");
+        assert!(!masked.contains("mcp_api_key_123"), "MCP secret should be masked");
+        assert_eq!(masked, "connecting with [REDACTED] and [REDACTED] to server");
     }
 }
