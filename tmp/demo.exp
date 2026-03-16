@@ -1,0 +1,86 @@
+#!/usr/bin/expect -f
+# TUI demo for asciinema recording (~30-35 seconds)
+
+set timeout 30
+set binary "/home/dennis/github/workflow/target/release/workflow"
+set workdir "/home/dennis/tmp/workflow"
+
+# Set terminal size for consistent recording
+stty rows 30 columns 100
+
+spawn $binary --dir $workdir
+
+# 1. Pause to show the main screen (categories + task list)
+sleep 2.5
+
+# 2. Navigate sidebar categories: dev → network → sysinfo
+send "j"
+sleep 0.7
+send "j"
+sleep 0.7
+
+# 3. Go back up to network
+send "k"
+sleep 0.7
+
+# 4. Tab to task list, browse tasks
+send "\t"
+sleep 0.7
+send "j"
+sleep 0.6
+
+# 5. Tab to details pane to show task info
+send "\t"
+sleep 1.8
+
+# 6. Tab back to sidebar, navigate to sysinfo
+send "\t"
+sleep 0.3
+send "\t"
+sleep 0.3
+send "j"
+sleep 0.5
+
+# 7. Tab to task list, select memory
+send "\t"
+sleep 0.4
+send "j"
+sleep 0.5
+
+# 8. Run sysinfo/memory (fast task)
+send "r"
+sleep 3.0
+
+# 9. Return from run output
+send "\033"
+sleep 0.7
+
+# 10. Use search to find "connectivity"
+send "/"
+sleep 0.4
+send "conn"
+sleep 1.2
+
+# 11. Press Enter to confirm search, then run the found task
+send "\r"
+sleep 0.7
+send "r"
+sleep 4.0
+
+# 12. Return from run output
+send "\033"
+sleep 0.7
+
+# 13. Show help screen
+send "h"
+sleep 3.0
+
+# 14. Close help
+send "\033"
+sleep 0.7
+
+# 15. Quit
+send "q"
+sleep 0.3
+
+expect eof

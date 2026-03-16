@@ -1,0 +1,10 @@
+{"version": 2, "width": 211, "height": 48, "timestamp": 1773412862, "idle_time_limit": 2.0, "env": {"SHELL": "/usr/bin/zsh", "TERM": "xterm-256color"}, "title": "workflow demo"}
+[0.003392, "o", "Building release binary...\r\n"]
+[0.083985, "o", "Recording TUI demo...\r\n"]
+[0.122974, "o", "\u001b[0;32masciinema: recording asciicast to /home/dennis/github/workflow/tmp/workflow_tui_demo.cast\u001b[0m\r\r\n\u001b[0;32masciinema: exit opened program when you're done\u001b[0m\r\r\n"]
+[0.128621, "o", "spawn /home/dennis/github/workflow/target/release/workflow --dir /home/dennis/tmp/workflow\r\r\r\n"]
+[16.541656, "o", "^C"]
+[16.554509, "o", "\u001b[0;32masciinema: recording finished\u001b[0m\r\r\n"]
+[16.554539, "o", "\u001b[0;32masciinema: asciicast saved to /home/dennis/github/workflow/tmp/workflow_tui_demo.cast\u001b[0m\r\r\n"]
+[16.566872, "o", "\r\n"]
+[16.566938, "o", "Recording saved to: /home/dennis/github/workflow/tmp/workflow_tui_demo.cast\r\nPlay back with: asciinema play /home/dennis/github/workflow/tmp/workflow_tui_demo.cast\r\nUpload with:    asciinema upload /home/dennis/github/workflow/tmp/workflow_tui_demo.cast\r\n"]
