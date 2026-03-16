@@ -460,6 +460,14 @@ workflow mcp list-tools github --json       # full schemas as JSON
 workflow mcp call github create_issue --arg repo=myorg/app --arg title="Bug"
 workflow mcp check github                   # verify server connectivity
 
+# Memory (anomaly detection & trends)
+workflow memory health                          # health scores for all tasks
+workflow memory anomalies                       # recent anomalies
+workflow memory baseline backup/db-full         # statistical baselines
+workflow memory trends backup/db-full           # duration trend (30d)
+workflow memory ack all --task backup/db-full   # acknowledge anomalies
+workflow memory recompute                       # recompute all baselines
+
 # Snapshots (key-value baselines)
 workflow snapshot set backup/db-full baseline '{"hash":"abc123"}'
 workflow snapshot get backup/db-full baseline        # prints value (for shell capture)
@@ -593,6 +601,50 @@ workflow snapshot list --json                      # all snapshots as JSON
 ```
 
 Shell steps can capture `workflow snapshot get` output via `$(...)` since `get` prints the raw value to stdout (exits 1 if not found). The `set` subcommand reads from stdin when `--value` is omitted, so you can pipe content directly: `echo '{"k":"v"}' | workflow snapshot set task key`.
+
+## Workflow memory (anomaly detection & trends)
+
+Every run is automatically profiled. After 5+ executions, `workflow` builds statistical baselines per task and flags anomalies — no configuration needed.
+
+**What it detects:**
+- **Duration spikes** — a step or workflow takes significantly longer than usual (Modified Z-score via MAD)
+- **New failures** — a normally-stable task suddenly fails (success rate monitoring)
+- **Flapping** — alternating pass/fail pattern (≥3 transitions in 6 runs)
+- **Output drift** — step output changed when it was previously stable (FNV-1a fingerprinting)
+- **Metric shifts** — extracted values (MB, %, counts) deviate from baseline
+
+Anomalies appear automatically after `workflow run`:
+
+```text
+success: run logged to database
+  ⚠ 1 anomalies detected: 1 warning
+    [warning] step 'backup' 892ms (baseline 145ms ±23ms, z=3.2)
+```
+
+In the TUI, press `M` on any task to see health scores, baselines, trends, and recent anomalies.
+
+### CLI commands
+
+```bash
+workflow memory health                          # health scores for all tasks
+workflow memory anomalies                       # recent anomalies (all tasks)
+workflow memory anomalies backup/db-full        # anomalies for one task
+workflow memory baseline backup/db-full         # statistical baselines
+workflow memory trends backup/db-full           # duration trend (30 days)
+workflow memory trends backup/db-full --metric "Disk Used:%"  # custom metric
+workflow memory ack all --task backup/db-full   # acknowledge anomalies
+workflow memory recompute                       # recompute all baselines
+```
+
+All commands support `--json` for machine-readable output.
+
+### How it works
+
+- **Short-term memory**: in-process cache in the TUI for instant display
+- **Long-term memory**: four SQLite tables (`memory_baselines`, `memory_metrics`, `memory_anomalies`, `memory_trends`) in the same `history.db`
+- **Baselines** are recomputed from the last 50 runs after every execution using `statrs` for percentiles and standard deviation
+- **Anomaly detection** uses Modified Z-score (MAD-based, robust to outliers) with thresholds: >1.5σ info, >2.0σ warning, >3.0σ critical
+- Memory tables are automatically rotated alongside run history (respects `log_retention_days`)
 
 ## Sync across machines
 

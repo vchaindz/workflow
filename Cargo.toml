@@ -49,6 +49,9 @@ age = { version = "0.11", features = ["ssh"] }
 ssh-key = { version = "0.6", features = ["ed25519"] }
 zeroize = { version = "1", features = ["derive"] }
 rpassword = "5"
+statrs = "0.18"
+watermill = "0.1"
+hdrhistogram = "7"
 ureq = { version = "2", features = ["json"], optional = true }
 lettre = { version = "0.11", optional = true }
 rmcp = { version = "0.16", features = ["client", "transport-io", "transport-child-process"], optional = true }

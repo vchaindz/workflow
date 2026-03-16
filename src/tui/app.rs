@@ -39,6 +39,7 @@ pub enum AppMode {
     EditTask,
     Secrets,
     GettingStarted,
+    MemoryView,
 }
 
 #[derive(Debug, Clone)]
@@ -411,6 +412,9 @@ pub struct App {
     pub secrets_state: Option<SecretsState>,
     // Getting started wizard cursor
     pub getting_started_cursor: usize,
+
+    // Memory view cache
+    pub task_memory_cache: HashMap<String, crate::core::memory::TaskMemory>,
 }
 
 pub struct BackgroundTask {
@@ -511,6 +515,7 @@ impl App {
             branch_list_cursor: 0,
             secrets_state: None,
             getting_started_cursor: 0,
+            task_memory_cache: HashMap::new(),
         }
     }
 
@@ -1113,6 +1118,14 @@ impl App {
                         self.interactive_rx = None;
                         self.streaming_rx = None;
                         return;
+                    }
+                    ExecutionEvent::MemoryAnomaly { count, summary } => {
+                        self.footer_log.push(format!(
+                            "[{}] \u{26a0} Memory: {} anomalies ({})",
+                            chrono::Local::now().format("%H:%M:%S"),
+                            count,
+                            summary,
+                        ));
                     }
                     ExecutionEvent::WorkflowError { message } => {
                         self.footer_log.push(format!(

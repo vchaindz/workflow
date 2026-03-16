@@ -99,6 +99,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_getting_started(f, app);
     }
 
+    if app.mode == AppMode::MemoryView {
+        draw_memory_view(f, app);
+    }
+
     if app.mode == AppMode::VariablePrompt {
         draw_variable_prompt(f, app);
     }
@@ -2116,6 +2120,7 @@ fn draw_help(f: &mut Frame, app: &App) {
             Line::from("  K           Secrets manager"),
             Line::from("  g           Git sync"),
             Line::from("  f           Toggle heat/alpha sort"),
+            Line::from("  M           Memory view (baselines, anomalies, trends)"),
             Line::from("  /           Search tasks"),
             Line::from("  q           Quit / close"),
             Line::from("  Esc         Cancel / dismiss"),
@@ -2471,6 +2476,124 @@ fn draw_recent_runs(f: &mut Frame, app: &App) {
 
     let list = List::new(items).block(block);
     f.render_widget(list, popup);
+}
+
+fn draw_memory_view(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let w = 75.min(area.width.saturating_sub(4));
+    let h = 24.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    f.render_widget(Clear, popup);
+
+    let task_ref = app
+        .selected_task_ref()
+        .map(|t| format!("{}/{}", t.category, t.name))
+        .unwrap_or_default();
+    let block = Block::default()
+        .title(format!(" Memory: {} ", task_ref))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+
+    let tm = app.task_memory_cache.get(&task_ref);
+    let mut lines: Vec<Line> = Vec::new();
+
+    if let Some(tm) = tm {
+        // Health score
+        let health = tm.health_score;
+        let bar_len = (health as usize) / 5;
+        let bar: String = "\u{2588}".repeat(bar_len);
+        let health_color = if health >= 80 { Color::Green } else if health >= 50 { Color::Yellow } else { Color::Red };
+        lines.push(Line::from(vec![
+            Span::styled(" Health: ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{}/100 ", health), Style::default().fg(health_color).add_modifier(Modifier::BOLD)),
+            Span::styled(bar, Style::default().fg(health_color)),
+        ]));
+        lines.push(Line::from(""));
+
+        // Baselines
+        if !tm.baselines.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " Baselines",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  step            metric               mean     median    stddev       p95  samples",
+                Style::default().fg(Color::DarkGray),
+            )));
+            for b in &tm.baselines {
+                let step = if b.step_id.len() > 14 { &b.step_id[..14] } else { &b.step_id };
+                let metric = if b.metric_key.len() > 18 { &b.metric_key[..18] } else { &b.metric_key };
+                lines.push(Line::from(Span::raw(format!(
+                    "  {:<14}  {:<18} {:>8.1} {:>9.1} {:>9.1} {:>9.1} {:>8}",
+                    step, metric, b.mean, b.median, b.stddev, b.p95, b.sample_count
+                ))));
+            }
+            lines.push(Line::from(""));
+        }
+
+        // Duration trend
+        if !tm.duration_trend.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " Duration Trend (30d)",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )));
+            let vals: Vec<&crate::core::memory::TrendPoint> = tm.duration_trend.iter().rev().take(10).collect::<Vec<_>>().into_iter().rev().collect();
+            let trend_str: String = vals
+                .iter()
+                .map(|t| format!("{:.0}ms", t.mean))
+                .collect::<Vec<_>>()
+                .join(" \u{2192} ");
+            lines.push(Line::from(format!("  {}", trend_str)));
+            lines.push(Line::from(""));
+        }
+
+        // Recent anomalies
+        if !tm.recent_anomalies.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " Recent Anomalies",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )));
+            for a in &tm.recent_anomalies {
+                let ts = a.detected.format("%b %d %H:%M");
+                let sev_color = match a.severity {
+                    crate::core::memory::Severity::Critical => Color::Red,
+                    crate::core::memory::Severity::Warning => Color::Yellow,
+                    crate::core::memory::Severity::Info => Color::Blue,
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  [{}] ", ts), Style::default().fg(Color::DarkGray)),
+                    Span::styled(format!("[{}] ", a.severity), Style::default().fg(sev_color)),
+                    Span::raw(&a.description),
+                ]));
+            }
+        } else {
+            lines.push(Line::from(Span::styled(
+                " No anomalies detected.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    } else {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  No memory data yet. Run the task a few times to build baselines.",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " Esc/q to close | \u{2191}\u{2193} to scroll",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let para = Paragraph::new(lines)
+        .block(block)
+        .scroll((app.detail_scroll, 0));
+    f.render_widget(para, popup);
 }
 
 fn draw_overdue_reminder(f: &mut Frame, app: &App) {

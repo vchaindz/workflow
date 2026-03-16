@@ -69,6 +69,16 @@ Both AiChat and AiUpdate modes support an **AI refinement loop** at the Preview 
 
 `core/compare.rs` diffs two `RunLog` entries step-by-step: timing deltas, status changes, output diffs. The `compare` CLI subcommand supports `--ai` for natural-language analysis.
 
+### Workflow memory (anomaly detection & trends)
+
+`core/memory.rs` provides automatic post-run profiling with short-term (in-process cache) and long-term (SQLite) memory. Four tables: `memory_baselines` (rolling statistical baselines per task/step/metric), `memory_metrics` (materialized metric extractions per run), `memory_anomalies` (detected anomaly events), `memory_trends` (daily/weekly rollups).
+
+`analyze_post_run(conn, run_log)` is the core function, called after every execution (TUI, CLI, API). It extracts duration + output metrics via `compare::extract_metrics()`, compares against baselines using Modified Z-score (MAD-based, via `statrs`), detects new failures, flapping, and output drift, stores anomalies, and recomputes baselines from the last 50 runs. Minimum 5 data points before anomaly detection activates.
+
+Detection methods: **DurationSpike** (Modified Z-score >1.5/2.0/3.0σ → Info/Warning/Critical), **NewFailure** (stable task with ≥90% success rate fails), **Flapping** (≥3 pass/fail transitions in 6 runs), **OutputDrift** (FNV-1a hash change on previously stable output), **MetricShift** (extracted values deviate from baseline).
+
+CLI: `workflow memory health|anomalies|baseline|trends|ack|recompute`. TUI: `M` key opens MemoryView modal. Post-run anomalies appear in CLI stderr and TUI footer. Memory tables rotate with `rotate_runs()`.
+
 ### Template catalog
 
 `core/catalog.rs` embeds bundled templates via `include_str!()` from `templates/` directory (39 bundled: 16 sysadmin, 10 docker, 10 kubectl, 3 mcp). Templates are YAML workflows with a `variables` section for substitution. `templates --fetch` downloads community templates from GitHub.
@@ -150,6 +160,8 @@ Config lives in `[sync]` section of `config.toml` via `SyncConfig` in `core/conf
 | `src/core/wizard.rs` | Workflow generation + optimization |
 | `src/core/catalog.rs` | Template catalog (bundled + fetch) |
 | `src/core/compare.rs` | Run comparison |
+| `src/core/memory.rs` | Anomaly detection, baselines, trends, post-run analysis |
+| `src/cli/memory.rs` | CLI handler for `memory` subcommand |
 | `src/core/db.rs` | SQLite history database |
 | `src/core/notify/mod.rs` | Notifier trait, MultiNotifier |
 | `src/core/notify/resolve.rs` | URL-scheme → Notifier resolver |

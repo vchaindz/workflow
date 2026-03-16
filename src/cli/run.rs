@@ -98,6 +98,15 @@ pub fn cmd_run(
     if !dry_run {
         let conn = db::open_db(&config.db_path())?;
         db::insert_run_log_with_source(&conn, &run_log, "cli")?;
+        // Post-run memory analysis
+        if let Ok(analysis) = crate::core::memory::analyze_post_run(&conn, &run_log) {
+            if !analysis.anomalies.is_empty() {
+                eprintln!("  \u{26a0} {} anomalies detected: {}", analysis.anomalies.len(), analysis.summary);
+                for a in &analysis.anomalies {
+                    eprintln!("    [{}] {}", a.severity, a.description);
+                }
+            }
+        }
         if exit_code == 0 {
             eprintln!("success: run logged to database");
         } else {

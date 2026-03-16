@@ -61,6 +61,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         AppMode::EditTask => handle_edit_task_key(app, key),
         AppMode::Secrets => handle_secrets_key(app, key),
         AppMode::GettingStarted => handle_getting_started_key(app, key),
+        AppMode::MemoryView => handle_memory_view_key(app, key),
         _ => handle_normal_key(app, key),
     }
 }
@@ -127,6 +128,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.sync_setup_input.clear();
             app.mode = AppMode::GitSync;
         }
+        KeyCode::Char('M') => open_memory_view(app)?,
         KeyCode::Char('K') => open_secrets(app),
         KeyCode::Char('m') | KeyCode::F(2) => start_rename(app),
         KeyCode::Char('T') => empty_trash(app),
@@ -508,6 +510,15 @@ fn launch_workflow(
                 if !dry_run {
                     if let Ok(conn) = db::open_db(&db_path) {
                         let _ = db::insert_run_log_with_source(&conn, &run_log, "tui");
+                        // Post-run memory analysis
+                        if let Ok(analysis) = crate::core::memory::analyze_post_run(&conn, &run_log) {
+                            if !analysis.anomalies.is_empty() {
+                                let _ = tx.send(ExecutionEvent::MemoryAnomaly {
+                                    count: analysis.anomalies.len(),
+                                    summary: analysis.summary.clone(),
+                                });
+                            }
+                        }
                     }
                 }
                 // Send WorkflowFinished before notifications so the TUI
@@ -2481,6 +2492,18 @@ fn open_recent_runs(app: &mut App) -> Result<()> {
     Ok(())
 }
 
+fn open_memory_view(app: &mut App) -> Result<()> {
+    if let Some(task) = app.selected_task_ref() {
+        let task_ref = format!("{}/{}", task.category, task.name);
+        let conn = db::open_db(&app.config.db_path())?;
+        let tm = crate::core::memory::get_task_memory(&conn, &task_ref)?;
+        app.task_memory_cache.insert(task_ref, tm);
+        app.detail_scroll = 0;
+        app.mode = AppMode::MemoryView;
+    }
+    Ok(())
+}
+
 fn open_saved_tasks(app: &mut App) {
     app.saved_tasks_cursor = 0;
     app.mode = AppMode::SavedTasks;
@@ -2599,6 +2622,24 @@ fn handle_getting_started_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else {
                 app.mode = AppMode::Normal;
             }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_memory_view_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Up => {
+            if app.detail_scroll > 0 {
+                app.detail_scroll -= 1;
+            }
+        }
+        KeyCode::Down => {
+            app.detail_scroll += 1;
         }
         _ => {}
     }

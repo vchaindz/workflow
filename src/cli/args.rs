@@ -209,6 +209,12 @@ pub enum Commands {
         action: SnapshotAction,
     },
 
+    /// Query workflow memory: baselines, anomalies, trends
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
+
     /// View run logs
     Logs {
         /// Task reference (omit for all recent)
@@ -341,6 +347,78 @@ pub enum SnapshotAction {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemoryAction {
+    /// Show detected anomalies
+    Anomalies {
+        /// Task reference (omit for all)
+        task: Option<String>,
+
+        /// Minimum severity: info, warning, critical
+        #[arg(long, default_value = "info")]
+        min_severity: String,
+
+        /// Number of anomalies to show
+        #[arg(long, default_value = "20")]
+        limit: usize,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show statistical baselines for a task
+    Baseline {
+        /// Task reference
+        task: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show metric trends over time
+    Trends {
+        /// Task reference
+        task: String,
+
+        /// Metric key (default: duration_ms)
+        #[arg(long, default_value = "duration_ms")]
+        metric: String,
+
+        /// Time range in days
+        #[arg(long, default_value = "30")]
+        days: u32,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show health scores for all tasks
+    Health {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Acknowledge anomalies (suppress from reports)
+    Ack {
+        /// Anomaly ID or 'all'
+        id: String,
+
+        /// Task reference (required when id=all)
+        #[arg(long)]
+        task: Option<String>,
+    },
+
+    /// Recompute baselines from history
+    Recompute {
+        /// Task reference (omit for all)
+        task: Option<String>,
     },
 }
 

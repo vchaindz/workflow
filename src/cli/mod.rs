@@ -5,6 +5,7 @@ pub mod export;
 pub mod import;
 pub mod list;
 pub mod logs;
+pub mod memory;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod run;
@@ -119,6 +120,11 @@ pub fn dispatch(config: &mut Config, command: Commands) -> Result<i32> {
                 eprintln!("MCP commands require the mcp feature. Rebuild with: cargo build --features mcp");
                 Ok(1)
             }
+        }
+
+        Commands::Memory { action } => {
+            memory::cmd_memory(config, action)?;
+            Ok(0)
         }
 
         Commands::Snapshot { action } => {

@@ -58,6 +58,36 @@ pub fn open_db(db_path: &Path) -> Result<Connection> {
         );",
     )?;
 
+    // Memory system tables for anomaly detection & trend tracking
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS memory_baselines (
+            task_ref TEXT NOT NULL, step_id TEXT NOT NULL,
+            metric_key TEXT NOT NULL, mean REAL, stddev REAL, median REAL,
+            min_val REAL, max_val REAL, p95 REAL, sample_count INTEGER,
+            window_start TEXT, updated TEXT,
+            PRIMARY KEY (task_ref, step_id, metric_key)
+        );
+        CREATE TABLE IF NOT EXISTS memory_metrics (
+            run_id TEXT NOT NULL, task_ref TEXT NOT NULL, step_id TEXT NOT NULL,
+            metric_key TEXT NOT NULL, value REAL, unit TEXT, recorded TEXT,
+            PRIMARY KEY (run_id, step_id, metric_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_metrics_task ON memory_metrics(task_ref, metric_key, recorded);
+        CREATE TABLE IF NOT EXISTS memory_anomalies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT, task_ref TEXT, step_id TEXT,
+            anomaly_type TEXT, severity TEXT, description TEXT,
+            metric_key TEXT, expected_value REAL, actual_value REAL, z_score REAL,
+            detected TEXT, acknowledged INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_anomalies_task ON memory_anomalies(task_ref, detected);
+        CREATE TABLE IF NOT EXISTS memory_trends (
+            task_ref TEXT, metric_key TEXT, period TEXT, period_type TEXT,
+            mean REAL, min_val REAL, max_val REAL, sample_count INTEGER, fail_count INTEGER DEFAULT 0,
+            PRIMARY KEY (task_ref, metric_key, period, period_type)
+        );",
+    )?;
+
     Ok(conn)
 }
 
@@ -396,6 +426,9 @@ pub fn rotate_runs(conn: &Connection, retention_days: u32) -> Result<u32> {
 
     conn.execute("DELETE FROM steps WHERE run_id IN (SELECT id FROM runs WHERE started < ?1)", params![cutoff_str])?;
     let deleted = conn.execute("DELETE FROM runs WHERE started < ?1", params![cutoff_str])?;
+
+    // Also rotate memory tables
+    let _ = crate::core::memory::rotate_memory(conn, retention_days);
 
     Ok(deleted as u32)
 }

@@ -326,6 +326,7 @@ pub enum ExecutionEvent {
     WorkflowFinished { run_log: RunLog },
     StepTimedOut { step_id: String, timeout_secs: u64, duration_ms: u64 },
     WorkflowError { message: String },
+    MemoryAnomaly { count: usize, summary: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
