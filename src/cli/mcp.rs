@@ -190,8 +190,62 @@ fn parse_arg_value(value: &str) -> serde_json::Value {
 }
 
 fn cmd_check(config: &Config, server: &str) -> Result<()> {
-    let _ = (config, server);
-    eprintln!("mcp check: not yet implemented");
+    let (command, mut env) = resolve_server(config, server);
+
+    // Inject secrets from the secrets store if server is a config alias
+    if let Some(srv_cfg) = config.mcp.servers.get(server) {
+        if let Some(ref secrets) = srv_cfg.secrets {
+            let secret_env = crate::core::executor::load_secret_env(
+                secrets,
+                &config.workflows_dir,
+                config.secrets_ssh_key.as_ref().map(std::path::Path::new),
+            );
+            for (k, v) in secret_env {
+                env.insert(k, v);
+            }
+        }
+    }
+
+    // Step 1: Spawn server
+    print!("Spawning server '{}'... ", server);
+    let client = match McpClient::spawn(&command, env) {
+        Ok(c) => {
+            println!("OK");
+            c
+        }
+        Err(e) => {
+            println!("FAILED");
+            eprintln!("  Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Step 2: List tools (validates initialize + tools/list work)
+    print!("Listing tools... ");
+    let tools = match client.list_tools() {
+        Ok(t) => {
+            println!("OK");
+            t
+        }
+        Err(e) => {
+            println!("FAILED");
+            eprintln!("  Error: {}", e);
+            client.shutdown();
+            std::process::exit(1);
+        }
+    };
+
+    client.shutdown();
+
+    // Report results
+    println!("\nServer '{}' is healthy", server);
+    println!("  Tools available: {}", tools.len());
+    if !tools.is_empty() {
+        for tool in &tools {
+            println!("    - {}", tool.name);
+        }
+    }
+
     Ok(())
 }
 
