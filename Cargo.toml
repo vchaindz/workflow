@@ -20,6 +20,7 @@ email = ["lettre"]
 msteams = ["ureq"]
 gotify = ["ureq"]
 mattermost = ["ureq"]
+mcp = ["dep:rmcp", "dep:tokio"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -50,6 +51,8 @@ zeroize = { version = "1", features = ["derive"] }
 rpassword = "5"
 ureq = { version = "2", features = ["json"], optional = true }
 lettre = { version = "0.11", optional = true }
+rmcp = { version = "0.16", features = ["client", "transport-io"], optional = true }
+tokio = { version = "1", features = ["rt", "macros"], optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"
