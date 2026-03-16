@@ -700,13 +700,14 @@ fn execute_mcp_step(
     // Retry loop (same pattern as cmd steps)
     let max_attempts = step.retry.unwrap_or(0) + 1;
     let retry_delay_secs = step.retry_delay.unwrap_or(0);
+    #[allow(unused_assignments)]
     let mut last_output = String::new();
     #[allow(unused_mut)]
     let mut step_succeeded = false;
 
     #[cfg(not(feature = "mcp"))]
     {
-        last_output = "MCP steps require the mcp feature. Rebuild with: cargo build --features mcp".to_string();
+        last_output = "MCP steps require the mcp feature. Rebuild with: cargo build --features mcp".into();
     }
 
     #[cfg(feature = "mcp")]
