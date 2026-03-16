@@ -17,7 +17,7 @@ Drop a `.sh` or `.yaml` file into `~/.config/workflow/` and it's immediately ava
 <!-- ![workflow TUI](https://raw.githubusercontent.com/vchaindz/workflow/main/assets/demo.gif) -->
 
 ```text
- workflow v0.5.0 ── 12 workflows ── 48 runs ── 2 failed
+ workflow v0.4.0 ── 12 workflows ── 48 runs ── 2 failed
 
  Categories  Tasks                    Details
  > backup    ▲ db-full    ✓ 2d [sh]   #!/bin/bash

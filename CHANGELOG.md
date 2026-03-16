@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.0 — MCP Integration
+## v0.4.0 — MCP Integration
 
 ### Added
 
