@@ -1677,8 +1677,9 @@ fn start_ai_fix_from_run(app: &mut App) {
 
     let source_yaml = yaml.clone();
     let prompt_clone = prompt.clone();
+    let mcp_aliases: Vec<String> = app.config.mcp.servers.keys().cloned().collect();
     thread::spawn(move || {
-        let result = ai::invoke_ai_update(tool, &source_yaml, &prompt_clone);
+        let result = ai::invoke_ai_update(tool, &source_yaml, &prompt_clone, &mcp_aliases);
         let _ = tx.send(result);
     });
 
@@ -1778,8 +1779,9 @@ fn start_ai_fix_from_var_prompt(app: &mut App) -> Result<()> {
 
     let source_yaml = yaml.clone();
     let prompt_clone = prompt.clone();
+    let mcp_aliases: Vec<String> = app.config.mcp.servers.keys().cloned().collect();
     thread::spawn(move || {
-        let result = ai::invoke_ai_update(tool, &source_yaml, &prompt_clone);
+        let result = ai::invoke_ai_update(tool, &source_yaml, &prompt_clone, &mcp_aliases);
         let _ = tx.send(result);
     });
 
@@ -1841,15 +1843,16 @@ fn handle_wizard_ai_prompt(app: &mut App, key: KeyEvent) {
                 wiz.ai_tick = 0;
                 wiz.stage = WizardStage::AiThinking;
 
+                let mcp_aliases: Vec<String> = app.config.mcp.servers.keys().cloned().collect();
                 if wiz.mode == WizardMode::AiUpdate {
                     let source_yaml = wiz.ai_source_yaml.clone();
                     thread::spawn(move || {
-                        let result = ai::invoke_ai_update(tool, &source_yaml, &prompt);
+                        let result = ai::invoke_ai_update(tool, &source_yaml, &prompt, &mcp_aliases);
                         let _ = tx.send(result);
                     });
                 } else {
                     thread::spawn(move || {
-                        let result = ai::invoke_ai(tool, &prompt);
+                        let result = ai::invoke_ai(tool, &prompt, &mcp_aliases);
                         let _ = tx.send(result);
                     });
                 }
@@ -2139,8 +2142,9 @@ fn handle_wizard_ai_refine_prompt(app: &mut App, key: KeyEvent) {
                 wiz.ai_tick = 0;
                 wiz.stage = WizardStage::AiThinking;
 
+                let mcp_aliases: Vec<String> = app.config.mcp.servers.keys().cloned().collect();
                 thread::spawn(move || {
-                    let result = ai::invoke_ai_update(tool, &current_yaml, &refine_prompt);
+                    let result = ai::invoke_ai_update(tool, &current_yaml, &refine_prompt, &mcp_aliases);
                     let _ = tx.send(result);
                 });
             }

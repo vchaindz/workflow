@@ -51,9 +51,53 @@ fn which(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Build a prompt section describing configured MCP servers.
+/// Returns empty string if no servers or mcp feature is disabled.
+pub fn build_mcp_prompt_section(server_aliases: &[String]) -> String {
+    if server_aliases.is_empty() || !cfg!(feature = "mcp") {
+        return String::new();
+    }
+
+    let server_list: String = server_aliases
+        .iter()
+        .map(|s| format!("  - {}", s))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "\n\nMCP SERVERS AVAILABLE:\n\
+         The following MCP servers are configured and can be used via mcp: steps instead of shell commands:\n\
+         {}\n\n\
+         When a matching MCP server is available, PREFER using mcp: steps over curl/shell commands.\n\
+         MCP step YAML syntax:\n\
+         ```yaml\n\
+         - id: step-name\n\
+           mcp:\n\
+             server: <server-alias>\n\
+             tool: <tool-name>\n\
+             args:\n\
+               key: value\n\
+         ```\n\
+         Example with template variables:\n\
+         ```yaml\n\
+         - id: create-issue\n\
+           mcp:\n\
+             server: github\n\
+             tool: create_issue\n\
+             args:\n\
+               repo: \"{{{{repo}}}}\"\n\
+               title: \"Release {{{{version}}}}\"\n\
+         ```\n\
+         You may mix mcp: steps and cmd: steps in the same workflow.\n\
+         Each step must have exactly one of: cmd, call, or mcp.",
+        server_list
+    )
+}
+
 /// Invoke AI synchronously. Crafts a system prompt requesting raw shell commands
 /// plus a task name and category, calls `claude -p` or `codex exec`, parses response.
-pub fn invoke_ai(tool: AiTool, user_prompt: &str) -> AiResult {
+pub fn invoke_ai(tool: AiTool, user_prompt: &str, mcp_server_aliases: &[String]) -> AiResult {
+    let mcp_section = build_mcp_prompt_section(mcp_server_aliases);
     let prompt = format!(
         "You are a Linux sysadmin assistant. Generate shell commands for a workflow task.\n\n\
          STRICT OUTPUT FORMAT — follow exactly:\n\
@@ -67,9 +111,9 @@ pub fn invoke_ai(tool: AiTool, user_prompt: &str) -> AiResult {
          - Do NOT describe what commands do in separate lines — use echo statements instead\n\
          - Use echo statements for human-readable output (e.g. echo \"Checking nginx status...\")\n\
          - Every line after TASK_NAME/CATEGORY must be a runnable shell command\n\
-         - No markdown fencing, no line numbers, no commentary\n\n\
+         - No markdown fencing, no line numbers, no commentary{}\n\n\
          User request: {}",
-        user_prompt
+        mcp_section, user_prompt
     );
 
     let output = match tool {
@@ -110,7 +154,8 @@ pub fn invoke_ai(tool: AiTool, user_prompt: &str) -> AiResult {
 }
 
 /// Invoke AI to update an existing workflow YAML based on user instructions.
-pub fn invoke_ai_update(tool: AiTool, existing_yaml: &str, user_prompt: &str) -> AiResult {
+pub fn invoke_ai_update(tool: AiTool, existing_yaml: &str, user_prompt: &str, mcp_server_aliases: &[String]) -> AiResult {
+    let mcp_section = build_mcp_prompt_section(mcp_server_aliases);
     let prompt = format!(
         "You are a Linux sysadmin assistant. You will receive an existing workflow YAML \
          and instructions to update it.\n\n\
@@ -120,12 +165,12 @@ pub fn invoke_ai_update(tool: AiTool, existing_yaml: &str, user_prompt: &str) ->
          - Preserve the `name:` and `steps:` structure\n\
          - Do NOT include markdown fencing, explanations, or commentary\n\
          - Do NOT include ```yaml or ``` markers\n\
-         - Each step must have `id:` and `cmd:` fields\n\
+         - Each step must have `id:` and `cmd:` or `mcp:` fields\n\
          - Preserve existing step IDs where possible\n\
-         - You may add, remove, reorder, or modify steps as requested\n\n\
+         - You may add, remove, reorder, or modify steps as requested{}\n\n\
          EXISTING WORKFLOW:\n{}\n\n\
          UPDATE INSTRUCTIONS: {}",
-        existing_yaml, user_prompt
+        mcp_section, existing_yaml, user_prompt
     );
 
     let output = match tool {
@@ -606,5 +651,29 @@ mod tests {
         assert_eq!(resp.commands[0], "echo '=== Checking Nginx ==='");
         assert_eq!(resp.commands[1], "systemctl status nginx");
         assert_eq!(resp.commands[2], "echo 'Status check complete'");
+    }
+
+    #[test]
+    fn test_build_mcp_prompt_section_with_servers() {
+        let servers = vec!["github".to_string(), "slack".to_string(), "postgres".to_string()];
+        let section = build_mcp_prompt_section(&servers);
+        if cfg!(feature = "mcp") {
+            assert!(section.contains("MCP SERVERS AVAILABLE"));
+            assert!(section.contains("  - github"));
+            assert!(section.contains("  - slack"));
+            assert!(section.contains("  - postgres"));
+            assert!(section.contains("PREFER using mcp: steps"));
+            assert!(section.contains("server: <server-alias>"));
+            assert!(section.contains("tool: <tool-name>"));
+        } else {
+            assert!(section.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_build_mcp_prompt_section_no_servers() {
+        let servers: Vec<String> = vec![];
+        let section = build_mcp_prompt_section(&servers);
+        assert!(section.is_empty());
     }
 }

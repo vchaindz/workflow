@@ -25,7 +25,8 @@ pub fn cmd_ai_update(
     eprintln!("Using {} to update {}", tool.name(), task_ref);
     eprintln!("Prompt: {}", prompt);
 
-    let result = ai::invoke_ai_update(tool, &yaml, prompt);
+    let mcp_aliases: Vec<String> = config.mcp.servers.keys().cloned().collect();
+    let result = ai::invoke_ai_update(tool, &yaml, prompt, &mcp_aliases);
 
     let updated_yaml = match result {
         ai::AiResult::Yaml(y) => y,
