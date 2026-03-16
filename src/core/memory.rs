@@ -30,7 +30,7 @@ impl AnomalyType {
             Self::Flapping => "flapping",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "duration_spike" => Self::DurationSpike,
             "new_failure" => Self::NewFailure,
@@ -57,7 +57,7 @@ impl Severity {
             Self::Critical => "critical",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "warning" => Self::Warning,
             "critical" => Self::Critical,
@@ -387,8 +387,8 @@ fn row_to_anomaly(row: &rusqlite::Row) -> rusqlite::Result<Anomaly> {
         run_id: row.get(0)?,
         task_ref: row.get(1)?,
         step_id: row.get(2)?,
-        anomaly_type: AnomalyType::from_str(&row.get::<_, String>(3)?),
-        severity: Severity::from_str(&row.get::<_, String>(4)?),
+        anomaly_type: AnomalyType::parse(&row.get::<_, String>(3)?),
+        severity: Severity::parse(&row.get::<_, String>(4)?),
         description: row.get(5)?,
         metric_key: row.get(6)?,
         expected: row.get(7)?,
@@ -446,7 +446,7 @@ pub fn get_health_scores(conn: &Connection) -> Result<HashMap<String, u8>> {
     let mut scores: HashMap<String, i32> = HashMap::new();
     for r in rows {
         let (task_ref, sev, count) = r?;
-        let penalty = match Severity::from_str(&sev) {
+        let penalty = match Severity::parse(&sev) {
             Severity::Critical => 25,
             Severity::Warning => 10,
             Severity::Info => 2,
@@ -454,7 +454,7 @@ pub fn get_health_scores(conn: &Connection) -> Result<HashMap<String, u8>> {
         *scores.entry(task_ref).or_insert(100) -= penalty * count as i32;
     }
 
-    Ok(scores.into_iter().map(|(k, v)| (k, v.max(0).min(100) as u8)).collect())
+    Ok(scores.into_iter().map(|(k, v)| (k, v.clamp(0, 100) as u8)).collect())
 }
 
 pub fn get_task_memory(conn: &Connection, task_ref: &str) -> Result<TaskMemory> {

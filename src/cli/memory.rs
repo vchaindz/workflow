@@ -9,7 +9,7 @@ pub fn cmd_memory(config: &Config, action: MemoryAction) -> Result<()> {
 
     match action {
         MemoryAction::Anomalies { task, min_severity, limit, json } => {
-            let sev = memory::Severity::from_str(&min_severity);
+            let sev = memory::Severity::parse(&min_severity);
             let anomalies = memory::get_anomalies(&conn, task.as_deref(), sev, limit)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&anomalies)?);
