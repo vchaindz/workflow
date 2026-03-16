@@ -121,6 +121,8 @@ pub(crate) enum RawStep {
         for_each_parallel: bool,
         #[serde(default)]
         for_each_continue_on_error: bool,
+        #[serde(default)]
+        mcp: Option<McpStepConfig>,
     },
 }
 
