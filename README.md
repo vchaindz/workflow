@@ -7,14 +7,16 @@
 
 **Think n8n, but for the command line.** An AI-native workflow orchestrator that lives in your terminal.
 
+![AI-powered workflow creation demo](assets/aiadd.gif)
+
+> *Create a workflow with AI and run it — all from the terminal.*
+
 **Stop losing one-liners to shell history. Stop rewriting the same maintenance scripts on every box.**
 
 `workflow` is a file-based workflow orchestrator for Linux built for the AI age. Like n8n gives you visual workflow automation in the browser, `workflow` gives you the same power in the terminal — parallel DAGs, sub-workflows, for-each loops, conditional branching, expression filters, a webhook REST API, step retries and timeouts, encrypted secrets, native notifications to 9 services — but with a TUI you can browse over SSH, a headless CLI for cron, and first-class integration with Claude Code, OpenAI Codex CLI, and Google Gemini CLI to generate, fix, and refine workflows using natural language. No web server to maintain. No Docker stack. Just a single binary.
 
 Drop a `.sh` or `.yaml` file into `~/.config/workflow/` and it's immediately available to run, schedule, and track. No daemon. No database to set up. No YAML-hell configuration. Or skip the file entirely — describe what you need in English and let AI write it for you.
 
-<!-- Replace with a real screenshot or demo GIF: -->
-<!-- ![workflow TUI](https://raw.githubusercontent.com/vchaindz/workflow/main/assets/demo.gif) -->
 
 ```text
  workflow v0.4.0 ── 12 workflows ── 48 runs ── 2 failed

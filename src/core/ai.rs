@@ -111,7 +111,10 @@ pub fn invoke_ai(tool: AiTool, user_prompt: &str, mcp_server_aliases: &[String])
          - Do NOT describe what commands do in separate lines — use echo statements instead\n\
          - Use echo statements for human-readable output (e.g. echo \"Checking nginx status...\")\n\
          - Every line after TASK_NAME/CATEGORY must be a runnable shell command\n\
-         - No markdown fencing, no line numbers, no commentary{}\n\n\
+         - No markdown fencing, no line numbers, no commentary\n\
+         - IMPORTANT: Scripts may run under `set -e`. Never use `[ ... ] && cmd` or `test ... && cmd` \
+           patterns — when the test is false, `[` returns exit code 1 which kills the script under set -e. \
+           Always use `if [ ... ]; then cmd; fi` instead{}\n\n\
          User request: {}",
         mcp_section, user_prompt
     );
@@ -167,7 +170,10 @@ pub fn invoke_ai_update(tool: AiTool, existing_yaml: &str, user_prompt: &str, mc
          - Do NOT include ```yaml or ``` markers\n\
          - Each step must have `id:` and `cmd:` or `mcp:` fields\n\
          - Preserve existing step IDs where possible\n\
-         - You may add, remove, reorder, or modify steps as requested{}\n\n\
+         - You may add, remove, reorder, or modify steps as requested\n\
+         - IMPORTANT: Scripts may run under `set -e`. Never use `[ ... ] && cmd` or `test ... && cmd` \
+           patterns — when the test is false, `[` returns exit code 1 which kills the script under set -e. \
+           Always use `if [ ... ]; then cmd; fi` instead{}\n\n\
          EXISTING WORKFLOW:\n{}\n\n\
          UPDATE INSTRUCTIONS: {}",
         mcp_section, existing_yaml, user_prompt

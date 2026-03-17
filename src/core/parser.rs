@@ -166,6 +166,12 @@ pub fn parse_shell_task(path: &Path) -> Result<Workflow> {
         .unwrap_or("script")
         .to_string();
 
+    // Lint the shell script for common pitfalls (set -e + test-and, etc.)
+    let warnings = crate::core::safety::lint_shell_script(path);
+    for (line_no, msg) in &warnings {
+        eprintln!("LINT [{}:{}]: {}", path.display(), line_no, msg);
+    }
+
     let cmd = format!("bash '{}'", path.display().to_string().replace('\'', "'\\''"));
 
     Ok(Workflow {
