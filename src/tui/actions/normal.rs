@@ -43,6 +43,12 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Down => app.move_down(),
         KeyCode::Up => app.move_up(),
+        KeyCode::PageUp if app.focus == Focus::Details => {
+            app.detail_scroll = app.detail_scroll.saturating_sub(20);
+        }
+        KeyCode::PageDown if app.focus == Focus::Details => {
+            app.detail_scroll = app.detail_scroll.saturating_add(20);
+        }
         KeyCode::Tab | KeyCode::Right if app.focus != Focus::Details => app.focus_next(),
         KeyCode::BackTab | KeyCode::Left if app.focus != Focus::Sidebar => app.focus_prev(),
         KeyCode::Char('/') => app.start_search(),
@@ -52,6 +58,68 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('l') if app.focus == Focus::Details => {
             // scroll down in details
             app.detail_scroll = app.detail_scroll.saturating_add(1);
+        }
+        KeyCode::Char('-') if app.focus == Focus::Details => {
+            // Collapse JSON block at current scroll position
+            let line = app.detail_scroll;
+            if !app.detail_folded_lines.contains(&line) {
+                if let Some(content) = app.detail_content_lines.get(line as usize) {
+                    let trimmed = content.trim();
+                    if trimmed.ends_with('{') || trimmed.ends_with('[')
+                        || trimmed == "{" || trimmed == "["
+                    {
+                        app.detail_folded_lines.insert(line);
+                    }
+                }
+            }
+        }
+        KeyCode::Char('+') if app.focus == Focus::Details => {
+            // Expand JSON block at current scroll position
+            app.detail_folded_lines.remove(&app.detail_scroll);
+        }
+        KeyCode::Char('Z') if app.focus == Focus::Details => {
+            // Toggle all folds
+            if app.detail_folded_lines.is_empty() {
+                // Fold all blocks
+                for (i, content) in app.detail_content_lines.iter().enumerate() {
+                    let trimmed = content.trim();
+                    if trimmed.ends_with('{') || trimmed.ends_with('[')
+                        || trimmed == "{" || trimmed == "["
+                    {
+                        app.detail_folded_lines.insert(i as u16);
+                    }
+                }
+            } else {
+                app.detail_folded_lines.clear();
+            }
+        }
+        KeyCode::Char('}') if app.focus == Focus::Details => {
+            // Jump to next JSON block boundary
+            let start = app.detail_scroll as usize + 1;
+            for i in start..app.detail_content_lines.len() {
+                let trimmed = app.detail_content_lines[i].trim();
+                if trimmed.ends_with('{') || trimmed.ends_with('[')
+                    || trimmed == "{" || trimmed == "["
+                    || trimmed.starts_with('}') || trimmed.starts_with(']')
+                {
+                    app.detail_scroll = i as u16;
+                    break;
+                }
+            }
+        }
+        KeyCode::Char('{') if app.focus == Focus::Details => {
+            // Jump to previous JSON block boundary
+            let start = (app.detail_scroll as usize).saturating_sub(1);
+            for i in (0..=start).rev() {
+                let trimmed = app.detail_content_lines[i].trim();
+                if trimmed.ends_with('{') || trimmed.ends_with('[')
+                    || trimmed == "{" || trimmed == "["
+                    || trimmed.starts_with('}') || trimmed.starts_with(']')
+                {
+                    app.detail_scroll = i as u16;
+                    break;
+                }
+            }
         }
         KeyCode::Char('B') => app.view_background_result(),
         KeyCode::Char('L') => view_logs(app)?,

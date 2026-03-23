@@ -205,7 +205,8 @@ pub(super) fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 }
                 Focus::Details => {
                     hints.extend_from_slice(&[
-                        "r:run", "d:dry-run", "e:edit",
+                        "↑↓:scroll", "PgUp/Dn:page",
+                        "-:collapse", "+:expand", "Z:all", "{/}:jump",
                     ]);
                     if has_ai && has_failed_run {
                         hints.push("a:ai-fix");
@@ -213,13 +214,18 @@ pub(super) fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     if has_ai {
                         hints.push("A:ai-update");
                     }
-                    hints.extend_from_slice(&["n:new", "l:scroll"]);
                 }
+            }
+
+            // Category/task management hints (not relevant in Details)
+            if app.focus != Focus::Details {
+                hints.extend_from_slice(&[
+                    sort_label, &filter_label, "K:secrets", "g:sync",
+                ]);
             }
 
             // Global hints always at end
             hints.extend_from_slice(&[
-                sort_label, &filter_label, "K:secrets", "g:sync",
                 "R:recent", "s:saved", "/:search", "h:help", "q:quit",
             ]);
 

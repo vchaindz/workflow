@@ -47,6 +47,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
                 KeyCode::Up => app.detail_scroll = app.detail_scroll.saturating_sub(1),
                 KeyCode::Down => app.detail_scroll = app.detail_scroll.saturating_add(1),
+                KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(20),
+                KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(20),
                 _ => {}
             }
             Ok(())

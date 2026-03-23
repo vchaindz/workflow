@@ -20,7 +20,7 @@ email = ["lettre"]
 msteams = ["ureq"]
 gotify = ["ureq"]
 mattermost = ["ureq"]
-mcp = ["dep:rmcp", "dep:tokio"]
+mcp = ["dep:rmcp", "dep:tokio", "dep:shlex", "dep:reqwest"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -54,8 +54,10 @@ watermill = "0.1"
 hdrhistogram = "7"
 ureq = { version = "2", features = ["json"], optional = true }
 lettre = { version = "0.11", optional = true }
-rmcp = { version = "0.16", features = ["client", "transport-io", "transport-child-process"], optional = true }
+rmcp = { version = "1.2", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest-native-tls"], optional = true }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process"], optional = true }
+shlex = { version = "1", optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"], optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"

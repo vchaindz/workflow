@@ -213,6 +213,15 @@ pub(super) fn format_task_preview_styled(task: &crate::core::models::Task) -> Ve
                     if let Some(ref mcp_cfg) = step.mcp {
                         let server_name = match &mcp_cfg.server {
                             crate::core::models::McpServerRef::Alias(s) => s.clone(),
+                            crate::core::models::McpServerRef::InlineHttp { url, .. } => {
+                                let truncated = if url.len() > 40 {
+                                    let end = url.char_indices().map(|(i,_)|i).take_while(|&i| i<=37).last().unwrap_or(0);
+                                    format!("{}...", &url[..end])
+                                } else {
+                                    url.clone()
+                                };
+                                truncated
+                            }
                             crate::core::models::McpServerRef::Inline { command, .. } => {
                                 let truncated = if command.len() > 40 {
                                     let end = command.char_indices().map(|(i,_)|i).take_while(|&i| i<=37).last().unwrap_or(0);
@@ -386,11 +395,25 @@ pub(super) fn format_run_log_styled(log: &RunLog) -> Vec<Line<'static>> {
             Span::styled(format!(" ({}ms)", step.duration_ms), Style::default().fg(Color::DarkGray)),
         ]));
         if !step.output.is_empty() {
-            for out_line in step.output.trim().lines() {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    colorize_output_line(&out_line.replace('\t', "  ")),
-                ]));
+            let output_text = step.output.trim();
+            let is_json = detect_json(output_text);
+            let display_output = if is_json {
+                format_json_pretty(output_text)
+            } else {
+                output_text.to_string()
+            };
+            for out_line in display_output.lines() {
+                let cleaned = out_line.replace('\t', "  ");
+                if is_json {
+                    let mut spans = vec![Span::raw("  ")];
+                    spans.extend(colorize_json_line(&cleaned));
+                    lines.push(Line::from(spans));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        colorize_output_line(&cleaned),
+                    ]));
+                }
             }
         }
     }
@@ -469,6 +492,135 @@ pub(super) fn colorize_output_line(line: &str) -> Span<'static> {
         return Span::styled(line.to_string(), Style::default().fg(Color::Green));
     }
     Span::styled(line.to_string(), Style::default().fg(Color::White))
+}
+
+/// Detect if output looks like JSON (starts with `{` or `[`).
+pub(super) fn detect_json(output: &str) -> bool {
+    let trimmed = output.trim();
+    (trimmed.starts_with('{') || trimmed.starts_with('['))
+        && (trimmed.ends_with('}') || trimmed.ends_with(']'))
+}
+
+/// Pretty-print JSON if compact; pass through if already formatted or invalid.
+pub(super) fn format_json_pretty(raw: &str) -> String {
+    let trimmed = raw.trim();
+    // Only reformat if it looks like a single-line or lightly-formatted blob
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| raw.to_string())
+    } else {
+        raw.to_string()
+    }
+}
+
+/// Colorize a single line of pretty-printed JSON with syntax highlighting.
+/// Uses a simple state machine to identify keys, string values, numbers, booleans, and structural chars.
+pub(super) fn colorize_json_line(line: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let trimmed = line.trim_start();
+    let indent = &line[..line.len() - trimmed.len()];
+
+    if !indent.is_empty() {
+        spans.push(Span::raw(indent.to_string()));
+    }
+
+    if trimmed.is_empty() {
+        return spans;
+    }
+
+    let brace_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+    let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let string_style = Style::default().fg(Color::Green);
+    let number_style = Style::default().fg(Color::Yellow);
+    let bool_style = Style::default().fg(Color::Magenta);
+    let punct_style = Style::default().fg(Color::DarkGray);
+
+    let chars: Vec<char> = trimmed.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        let ch = chars[i];
+        match ch {
+            '{' | '}' | '[' | ']' => {
+                spans.push(Span::styled(ch.to_string(), brace_style));
+                i += 1;
+            }
+            ',' => {
+                spans.push(Span::styled(",", punct_style));
+                i += 1;
+            }
+            ':' => {
+                spans.push(Span::styled(": ", punct_style));
+                i += 1;
+                // Skip whitespace after colon
+                while i < len && chars[i] == ' ' {
+                    i += 1;
+                }
+            }
+            '"' => {
+                // Collect the full string (handling escapes)
+                let start = i;
+                i += 1; // skip opening quote
+                while i < len && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        i += 1; // skip escaped char
+                    }
+                    i += 1;
+                }
+                if i < len {
+                    i += 1; // skip closing quote
+                }
+                let s: String = chars[start..i].iter().collect();
+
+                // Determine if this is a key (followed by ':') or a value
+                let mut peek = i;
+                while peek < len && chars[peek] == ' ' {
+                    peek += 1;
+                }
+                let is_key = peek < len && chars[peek] == ':';
+
+                if is_key {
+                    spans.push(Span::styled(s, key_style));
+                } else {
+                    spans.push(Span::styled(s, string_style));
+                }
+            }
+            _ if ch == 't' || ch == 'f' || ch == 'n' => {
+                // true, false, null
+                let start = i;
+                while i < len && chars[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                let word: String = chars[start..i].iter().collect();
+                spans.push(Span::styled(word, bool_style));
+            }
+            _ if ch.is_ascii_digit() || ch == '-' => {
+                // Numbers
+                let start = i;
+                i += 1;
+                while i < len && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == 'e' || chars[i] == 'E' || chars[i] == '+' || chars[i] == '-') {
+                    i += 1;
+                }
+                let num: String = chars[start..i].iter().collect();
+                spans.push(Span::styled(num, number_style));
+            }
+            ' ' => {
+                // Whitespace between tokens
+                let start = i;
+                while i < len && chars[i] == ' ' {
+                    i += 1;
+                }
+                let ws: String = chars[start..i].iter().collect();
+                spans.push(Span::raw(ws));
+            }
+            _ => {
+                spans.push(Span::raw(ch.to_string()));
+                i += 1;
+            }
+        }
+    }
+
+    spans
 }
 
 /// Colorize a comparison output line based on diff-like patterns.

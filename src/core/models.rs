@@ -4,10 +4,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Reference to an MCP server: either an alias (string) or an inline definition (object).
+/// Supports stdio (command) and HTTP (url) inline definitions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum McpServerRef {
     Alias(String),
+    InlineHttp {
+        url: String,
+        #[serde(default)]
+        auth_header: Option<String>,
+        #[serde(default)]
+        headers: Option<HashMap<String, String>>,
+    },
     Inline {
         command: String,
         #[serde(default)]
@@ -24,6 +32,22 @@ pub struct McpStepConfig {
     pub tool: String,
     #[serde(default)]
     pub args: Option<serde_json::Value>,
+}
+
+/// Transport configuration for connecting to an MCP server.
+#[derive(Debug, Clone)]
+pub enum McpTransportConfig {
+    /// Spawn a child process (stdio transport)
+    Stdio {
+        command: String,
+        env: HashMap<String, String>,
+    },
+    /// Connect via Streamable HTTP transport
+    Http {
+        url: String,
+        auth_header: Option<String>,
+        headers: HashMap<String, String>,
+    },
 }
 
 use crate::core::notify::{RateLimitConfig, RetryConfig, Severity};
@@ -654,7 +678,7 @@ rate_limit:
                 let secrets = secrets.as_ref().unwrap();
                 assert_eq!(secrets, &vec!["GITHUB_TOKEN".to_string()]);
             }
-            McpServerRef::Alias(_) => panic!("Expected Inline variant"),
+            other => panic!("Expected Inline variant, got {:?}", other),
         }
         assert_eq!(config.tool, "list_repos");
         assert!(config.args.is_none());

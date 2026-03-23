@@ -797,6 +797,7 @@ cargo install --path . --features mcp
 Define server aliases in `config.toml` so workflows can reference them by short name:
 
 ```toml
+# Stdio transport — spawns a child process
 [mcp.servers.github]
 command = "npx -y @modelcontextprotocol/server-github"
 secrets = ["GITHUB_TOKEN"]
@@ -806,16 +807,23 @@ command = "npx -y @modelcontextprotocol/server-slack"
 secrets = ["SLACK_BOT_TOKEN"]
 env = { SLACK_TEAM_ID = "T0123456" }
 
-[mcp.servers.postgres]
-command = "npx -y @modelcontextprotocol/server-postgres"
-secrets = ["DATABASE_URL"]
-timeout = 30
+# HTTP transport — connects directly to a remote MCP endpoint
+[mcp.servers.cpanel-whm]
+url = "https://myserver.example.com:2087/mcp"
+auth_header = "whm root:APITOKEN"
+timeout = 60
 ```
 
-Server fields:
-- `command` — the shell command to spawn the MCP server process (stdio transport)
+Server fields (stdio transport):
+- `command` — the shell command to spawn the MCP server process
 - `secrets` — list of secret names resolved from the encrypted secrets store and injected as environment variables
 - `env` — additional environment variables for the server process
+- `timeout` — optional timeout in seconds for tool calls
+
+Server fields (HTTP transport):
+- `url` — the HTTP/HTTPS endpoint URL for the MCP server
+- `auth_header` — the raw `Authorization` header value (supports any scheme: Bearer, Basic, WHM, etc.)
+- `headers` — optional table of custom HTTP headers
 - `timeout` — optional timeout in seconds for tool calls
 
 Credentials are stored in the encrypted secrets store (see above) and injected automatically — no plaintext tokens in config files.
@@ -927,16 +935,36 @@ workflow mcp check github
 
 ### How it works
 
-MCP steps use stdio transport: `workflow` spawns the server as a child process, sends JSON-RPC messages over stdin/stdout, and tears down the process when done. The same protocol used by Claude Code, VS Code, and other MCP hosts.
+MCP steps support two transports:
+- **Stdio** — spawns the server as a child process, communicates via JSON-RPC over stdin/stdout. The same protocol used by Claude Code, VS Code, and other MCP hosts.
+- **HTTP** — connects directly to a remote MCP endpoint via Streamable HTTP transport. No proxy needed — talk to cPanel/WHM, remote APIs, or any HTTP-based MCP server natively.
 
 At execution time:
 1. Server config is resolved (alias lookup in `config.toml` or inline definition)
-2. Secrets are loaded from the encrypted store and injected as environment variables
+2. For stdio: secrets are loaded from the encrypted store and injected as environment variables. For HTTP: auth header is attached to requests.
 3. Template variables (`{{var}}`) are expanded in all `args` string values (recursively through nested objects/arrays)
-4. The MCP server process is spawned and initialized
+4. The MCP connection is established (child process spawn or HTTP handshake)
 5. The tool is called with the expanded args
 6. The result text is captured as stdout (available for `outputs:` regex patterns and downstream `{{step_id.var}}` references)
-7. The server process is shut down
+7. The connection is shut down
+
+### JSON output in the TUI
+
+MCP tools typically return JSON data. The detail pane automatically detects JSON output and enhances the display:
+
+- **Pretty-printing** — compact JSON is reformatted with indentation
+- **Syntax highlighting** — keys (cyan), strings (green), numbers (yellow), booleans (magenta), braces (white bold)
+- **Collapsible sections** — navigate and fold JSON blocks directly in the TUI
+
+Detail pane keybindings (when focused):
+
+| Key | Action |
+|-----|--------|
+| `-` | Collapse JSON block at current line |
+| `+` | Expand collapsed JSON block |
+| `Z` | Fold all / unfold all |
+| `{` / `}` | Jump to previous / next JSON block |
+| `PgUp` / `PgDn` | Scroll by 20 lines |
 
 The AI wizard (`a` key in TUI) is MCP-aware: when MCP servers are configured, it prefers generating `mcp:` steps over shell commands for matching services. For example, if you have a `github` server configured and ask "create a release workflow", the AI will use `mcp: { server: github, tool: create_release }` instead of `curl` calls to the GitHub API.
 
@@ -964,7 +992,7 @@ cargo build --release
 # Binary: target/release/workflow
 ```
 
-Requires Rust 1.56+ (2021 edition). Single binary. Notification backends use native HTTP (`ureq`) and SMTP (`lettre`) — no `curl` or `mail` needed at runtime. For MCP support, add `--features mcp` (pulls in `rmcp` and `tokio`).
+Requires Rust 1.56+ (2021 edition). Single binary. Notification backends use native HTTP (`ureq`) and SMTP (`lettre`) — no `curl` or `mail` needed at runtime. For MCP support, add `--features mcp` (pulls in `rmcp` v1.2, `tokio`, and `reqwest` for HTTP transport).
 
 ## License
 

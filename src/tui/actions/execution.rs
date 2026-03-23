@@ -164,6 +164,12 @@ pub(super) fn handle_memory_view_key(app: &mut App, key: KeyEvent) -> Result<()>
         KeyCode::Down => {
             app.detail_scroll += 1;
         }
+        KeyCode::PageUp => {
+            app.detail_scroll = app.detail_scroll.saturating_sub(20);
+        }
+        KeyCode::PageDown => {
+            app.detail_scroll = app.detail_scroll.saturating_add(20);
+        }
         _ => {}
     }
     Ok(())

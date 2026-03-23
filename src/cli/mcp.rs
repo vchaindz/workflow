@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::cli::args::McpAction;
 use crate::core::config::Config;
-use crate::core::mcp::McpClient;
+use crate::core::mcp::{McpClient, McpTransportConfig};
 use crate::error::{DzError, Result};
 
 pub fn cmd_mcp(config: &Config, action: McpAction) -> Result<()> {
@@ -19,24 +19,52 @@ pub fn cmd_mcp(config: &Config, action: McpAction) -> Result<()> {
     }
 }
 
-/// Resolve a server reference: if it matches a config alias, use that config's command and env.
-/// Otherwise treat the string as an inline command.
-fn resolve_server(config: &Config, server: &str) -> (String, HashMap<String, String>) {
+/// Resolve a server reference to a transport config.
+/// If it matches a config alias, use that config. Otherwise treat as an inline command.
+fn resolve_server(config: &Config, server: &str) -> Result<McpTransportConfig> {
     if let Some(srv_cfg) = config.mcp.servers.get(server) {
-        let env = srv_cfg.env.clone().unwrap_or_default();
-        (srv_cfg.command.clone(), env)
+        if let Some(ref url) = srv_cfg.url {
+            Ok(McpTransportConfig::Http {
+                url: url.clone(),
+                auth_header: srv_cfg.auth_header.clone(),
+                headers: srv_cfg.headers.clone().unwrap_or_default(),
+            })
+        } else if let Some(ref command) = srv_cfg.command {
+            let mut env = srv_cfg.env.clone().unwrap_or_default();
+            // Inject secrets from the secrets store
+            if let Some(ref secrets) = srv_cfg.secrets {
+                let secret_env = crate::core::executor::load_secret_env(
+                    secrets,
+                    &config.workflows_dir,
+                    config.secrets_ssh_key.as_ref().map(std::path::Path::new),
+                );
+                for (k, v) in secret_env {
+                    env.insert(k, v);
+                }
+            }
+            Ok(McpTransportConfig::Stdio {
+                command: command.clone(),
+                env,
+            })
+        } else {
+            Err(DzError::Mcp(format!(
+                "MCP server '{}' has neither 'command' nor 'url' configured",
+                server
+            )))
+        }
     } else {
         // Treat as inline command string
-        (server.to_string(), HashMap::new())
+        Ok(McpTransportConfig::Stdio {
+            command: server.to_string(),
+            env: HashMap::new(),
+        })
     }
 }
 
 fn cmd_list_tools(config: &Config, server: &str, json: bool) -> Result<()> {
-    let (command, env) = resolve_server(config, server);
+    let transport = resolve_server(config, server)?;
 
-    let client = McpClient::spawn(&command, env)?;
-    let tools = client.list_tools()?;
-    client.shutdown();
+    let tools = McpClient::connect_and_list_tools(&transport)?;
 
     if json {
         // Full JSON output with schemas
@@ -109,28 +137,12 @@ fn cmd_list_tools(config: &Config, server: &str, json: bool) -> Result<()> {
 }
 
 fn cmd_call(config: &Config, server: &str, tool: &str, args: &[String]) -> Result<()> {
-    let (command, mut env) = resolve_server(config, server);
-
-    // Inject secrets from the secrets store if server is a config alias
-    if let Some(srv_cfg) = config.mcp.servers.get(server) {
-        if let Some(ref secrets) = srv_cfg.secrets {
-            let secret_env = crate::core::executor::load_secret_env(
-                secrets,
-                &config.workflows_dir,
-                config.secrets_ssh_key.as_ref().map(std::path::Path::new),
-            );
-            for (k, v) in secret_env {
-                env.insert(k, v);
-            }
-        }
-    }
+    let transport = resolve_server(config, server)?;
 
     // Parse --arg key=value pairs into a JSON object
     let json_args = parse_args_to_json(args)?;
 
-    let client = McpClient::spawn(&command, env)?;
-    let result = client.call_tool(tool, json_args);
-    client.shutdown();
+    let result = McpClient::connect_and_call(&transport, tool, json_args);
 
     match result {
         Ok(text) => {
@@ -190,39 +202,10 @@ fn parse_arg_value(value: &str) -> serde_json::Value {
 }
 
 fn cmd_check(config: &Config, server: &str) -> Result<()> {
-    let (command, mut env) = resolve_server(config, server);
+    let transport = resolve_server(config, server)?;
 
-    // Inject secrets from the secrets store if server is a config alias
-    if let Some(srv_cfg) = config.mcp.servers.get(server) {
-        if let Some(ref secrets) = srv_cfg.secrets {
-            let secret_env = crate::core::executor::load_secret_env(
-                secrets,
-                &config.workflows_dir,
-                config.secrets_ssh_key.as_ref().map(std::path::Path::new),
-            );
-            for (k, v) in secret_env {
-                env.insert(k, v);
-            }
-        }
-    }
-
-    // Step 1: Spawn server
-    print!("Spawning server '{}'... ", server);
-    let client = match McpClient::spawn(&command, env) {
-        Ok(c) => {
-            println!("OK");
-            c
-        }
-        Err(e) => {
-            println!("FAILED");
-            eprintln!("  Error: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    // Step 2: List tools (validates initialize + tools/list work)
-    print!("Listing tools... ");
-    let tools = match client.list_tools() {
+    print!("Connecting to server '{}'... ", server);
+    let tools = match McpClient::connect_and_list_tools(&transport) {
         Ok(t) => {
             println!("OK");
             t
@@ -230,12 +213,9 @@ fn cmd_check(config: &Config, server: &str) -> Result<()> {
         Err(e) => {
             println!("FAILED");
             eprintln!("  Error: {}", e);
-            client.shutdown();
             std::process::exit(1);
         }
     };
-
-    client.shutdown();
 
     // Report results
     println!("\nServer '{}' is healthy", server);

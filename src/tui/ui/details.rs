@@ -1,5 +1,5 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, LineGauge, Paragraph, Wrap};
 use ratatui::Frame;
@@ -14,7 +14,7 @@ use super::helpers::{
     format_run_log_styled, format_task_preview_styled,
 };
 
-pub(super) fn draw_details(f: &mut Frame, app: &App, area: Rect) {
+pub(super) fn draw_details(f: &mut Frame, app: &mut App, area: Rect) {
     let style = if app.focus == Focus::Details {
         Style::default().fg(Color::Yellow)
     } else {
@@ -58,6 +58,14 @@ pub(super) fn draw_details(f: &mut Frame, app: &App, area: Rect) {
     } else {
         vec![Line::from(Span::styled("Select a task to preview", Style::default().fg(Color::DarkGray)))]
     };
+
+    // Cache plain-text content lines for fold navigation keybindings
+    app.detail_content_lines = lines.iter().map(|l| {
+        l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+    }).collect();
+
+    // Apply folding: replace folded regions with summary lines
+    let lines = apply_folds(lines, &app.detail_folded_lines, &app.detail_content_lines);
 
     let text = Text::from(lines);
 
@@ -122,4 +130,63 @@ pub(super) fn draw_details(f: &mut Frame, app: &App, area: Rect) {
         .scroll((scroll, 0));
 
     f.render_widget(para, area);
+}
+
+/// Apply JSON folding: for each folded line that opens a `{` or `[`,
+/// skip all lines until the matching close, and insert a summary line.
+fn apply_folds(
+    lines: Vec<Line<'static>>,
+    folded_lines: &std::collections::HashSet<u16>,
+    content_lines: &[String],
+) -> Vec<Line<'static>> {
+    if folded_lines.is_empty() {
+        return lines;
+    }
+
+    let mut result = Vec::with_capacity(lines.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        if folded_lines.contains(&(i as u16)) {
+            // Find the matching close brace/bracket
+            let trimmed = content_lines.get(i).map(|s| s.trim().to_string()).unwrap_or_default();
+            let open_char = if trimmed.contains('{') { '{' } else { '[' };
+            let close_char = if open_char == '{' { '}' } else { ']' };
+
+            // Count nesting to find the matching close
+            let mut depth = 0i32;
+            let fold_start = i;
+            let mut fold_end = i;
+            for j in i..content_lines.len() {
+                let line = content_lines[j].trim();
+                for ch in line.chars() {
+                    if ch == open_char { depth += 1; }
+                    if ch == close_char { depth -= 1; }
+                }
+                if depth <= 0 {
+                    fold_end = j;
+                    break;
+                }
+                if j == content_lines.len() - 1 {
+                    fold_end = j;
+                }
+            }
+
+            let hidden = fold_end.saturating_sub(fold_start);
+            // Show the original line + fold indicator
+            result.push(lines[i].clone());
+            let fold_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+            result.push(Line::from(Span::styled(
+                format!("  ... {} lines folded ...", hidden),
+                fold_style,
+            )));
+
+            i = fold_end + 1;
+        } else {
+            result.push(lines[i].clone());
+            i += 1;
+        }
+    }
+
+    result
 }

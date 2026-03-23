@@ -303,6 +303,8 @@ pub struct App {
 
     // Details state
     pub detail_scroll: u16,
+    pub detail_folded_lines: std::collections::HashSet<u16>,  // folded JSON block start lines
+    pub detail_content_lines: Vec<String>,  // cached rendered content for fold navigation
 
     // Search
     pub search_query: String,
@@ -457,6 +459,8 @@ impl App {
             selected_category: 0,
             selected_task: 0,
             detail_scroll: 0,
+            detail_folded_lines: std::collections::HashSet::new(),
+            detail_content_lines: Vec::new(),
             search_query: String::new(),
             filtered_indices: None,
             run_output: None,
@@ -819,6 +823,7 @@ impl App {
                     self.selected_task -= 1;
                     self.run_output = None;
                     self.detail_scroll = 0;
+                    self.detail_folded_lines.clear();
                 }
             }
             Focus::Details => {
@@ -840,6 +845,7 @@ impl App {
                     self.selected_task += 1;
                     self.run_output = None;
                     self.detail_scroll = 0;
+                    self.detail_folded_lines.clear();
                 }
             }
             Focus::Details => {
@@ -916,6 +922,7 @@ impl App {
                     self.focus = Focus::TaskList;
                     self.run_output = None;
                     self.detail_scroll = 0;
+                    self.detail_folded_lines.clear();
                     return true;
                 }
             }
@@ -1113,6 +1120,7 @@ impl App {
                         }
                         self.focus = Focus::TaskList;
                         self.detail_scroll = 0;
+                    self.detail_folded_lines.clear();
                         self.is_executing = false;
                         self.event_rx = None;
                         self.interactive_rx = None;

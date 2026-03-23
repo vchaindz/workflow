@@ -208,14 +208,50 @@ fn execute_mcp_step(
     };
 
     // Resolve server config: alias lookup or inline definition
-    let (command, server_env, server_secrets) = match &mcp_config.server {
+    // Returns (transport_config, server_env_for_stdio, server_secrets)
+    let (transport_config, server_env, server_secrets) = match &mcp_config.server {
         McpServerRef::Alias(alias) => {
             match mcp_servers.get(alias) {
-                Some(cfg) => (
-                    cfg.command.clone(),
-                    cfg.env.clone().unwrap_or_default(),
-                    cfg.secrets.clone().unwrap_or_default(),
-                ),
+                Some(cfg) => {
+                    if let Some(ref url) = cfg.url {
+                        // HTTP transport — no env/secrets needed (auth via header)
+                        (
+                            crate::core::models::McpTransportConfig::Http {
+                                url: url.clone(),
+                                auth_header: cfg.auth_header.clone(),
+                                headers: cfg.headers.clone().unwrap_or_default(),
+                            },
+                            HashMap::new(),
+                            Vec::new(),
+                        )
+                    } else if let Some(ref command) = cfg.command {
+                        (
+                            crate::core::models::McpTransportConfig::Stdio {
+                                command: command.clone(),
+                                env: HashMap::new(), // populated below
+                            },
+                            cfg.env.clone().unwrap_or_default(),
+                            cfg.secrets.clone().unwrap_or_default(),
+                        )
+                    } else {
+                        let msg = format!("MCP server '{}' has neither 'command' nor 'url' configured", alias);
+                        send(ExecutionEvent::StepCompleted {
+                            step_id: step.id.clone(),
+                            status: StepStatus::Failed,
+                            duration_ms: 0,
+                        });
+                        return StepOutcome {
+                            result: StepResult {
+                                id: step.id.clone(),
+                                status: StepStatus::Failed,
+                                output: msg,
+                                duration_ms: 0,
+                            },
+                            captured_vars: HashMap::new(),
+                            failed: true,
+                        };
+                    }
+                }
                 None => {
                     let msg = format!("MCP server alias '{}' not found in config.toml [mcp.servers]", alias);
                     send(ExecutionEvent::StepCompleted {
@@ -236,8 +272,20 @@ fn execute_mcp_step(
                 }
             }
         }
+        McpServerRef::InlineHttp { url, auth_header, headers } => (
+            crate::core::models::McpTransportConfig::Http {
+                url: url.clone(),
+                auth_header: auth_header.clone(),
+                headers: headers.clone().unwrap_or_default(),
+            },
+            HashMap::new(),
+            Vec::new(),
+        ),
         McpServerRef::Inline { command, env: inline_env, secrets } => (
-            command.clone(),
+            crate::core::models::McpTransportConfig::Stdio {
+                command: command.clone(),
+                env: HashMap::new(), // populated below
+            },
             inline_env.clone().unwrap_or_default(),
             secrets.clone().unwrap_or_default(),
         ),
@@ -246,6 +294,7 @@ fn execute_mcp_step(
     // Build display name for events
     let server_display = match &mcp_config.server {
         McpServerRef::Alias(a) => a.clone(),
+        McpServerRef::InlineHttp { url, .. } => url.clone(),
         McpServerRef::Inline { command, .. } => command.clone(),
     };
     let cmd_preview = format!("mcp: {}/{}", server_display, mcp_config.tool);
@@ -371,6 +420,18 @@ fn execute_mcp_step(
         last_output = "MCP steps require the mcp feature. Rebuild with: cargo build --features mcp".into();
     }
 
+    // Build final transport config with resolved env (for stdio transport)
+    #[cfg(feature = "mcp")]
+    let final_transport = match transport_config {
+        crate::core::models::McpTransportConfig::Stdio { command, .. } => {
+            crate::core::models::McpTransportConfig::Stdio {
+                command,
+                env: mcp_env.clone(),
+            }
+        }
+        http @ crate::core::models::McpTransportConfig::Http { .. } => http,
+    };
+
     #[cfg(feature = "mcp")]
     for attempt in 1..=max_attempts {
         if attempt > 1 {
@@ -385,22 +446,17 @@ fn execute_mcp_step(
             }
         }
 
-        match crate::core::mcp::McpClient::spawn(&command, mcp_env.clone()) {
-            Ok(client) => {
-                match client.call_tool(&mcp_config.tool, expanded_args.clone()) {
-                    Ok(text) => {
-                        last_output = text;
-                        step_succeeded = true;
-                        client.shutdown();
-                    }
-                    Err(e) => {
-                        last_output = format!("{e}");
-                        client.shutdown();
-                    }
-                }
+        match crate::core::mcp::McpClient::connect_and_call(
+            &final_transport,
+            &mcp_config.tool,
+            expanded_args.clone(),
+        ) {
+            Ok(text) => {
+                last_output = text;
+                step_succeeded = true;
             }
             Err(e) => {
-                last_output = format!("failed to spawn MCP server '{}': {e}", command);
+                last_output = format!("{e}");
             }
         }
 

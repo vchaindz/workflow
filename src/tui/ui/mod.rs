@@ -22,7 +22,7 @@ use sidebar::draw_sidebar;
 use task_list::draw_task_list;
 use wizard::{draw_confirm_delete, draw_rename, draw_variable_prompt, draw_wizard};
 
-pub fn draw(f: &mut Frame, app: &app::App) {
+pub fn draw(f: &mut Frame, app: &mut app::App) {
     let has_footer = !app.footer_log.is_empty();
 
     let chunks = if has_footer {
@@ -136,7 +136,7 @@ mod tests {
     use std::io::Write as IoWrite;
     use tempfile::TempDir;
 
-    fn render_app(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    fn render_app(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, app)).unwrap();
@@ -225,8 +225,8 @@ steps:
     #[test]
     fn test_render_categories_in_sidebar() {
         let tmp = TempDir::new().unwrap();
-        let app = make_render_app(&tmp);
-        let buf = render_app(&app, 120, 30);
+        let mut app = make_render_app(&tmp);
+        let buf = render_app(&mut app, 120, 30);
         let text = buffer_text(&buf);
 
         assert!(text.contains("backup"), "sidebar should show 'backup' category");
@@ -238,8 +238,8 @@ steps:
     #[test]
     fn test_render_task_list() {
         let tmp = TempDir::new().unwrap();
-        let app = make_render_app(&tmp);
-        let buf = render_app(&app, 120, 30);
+        let mut app = make_render_app(&tmp);
+        let buf = render_app(&mut app, 120, 30);
         let text = buffer_text(&buf);
 
         assert!(text.contains("db-full"), "task list should show 'db-full'");
@@ -251,9 +251,9 @@ steps:
     #[test]
     fn test_render_details_env_vars() {
         let tmp = TempDir::new().unwrap();
-        let app = make_render_app(&tmp);
+        let mut app = make_render_app(&tmp);
         // Default selection is first task (db-full.yaml) which has 2 env vars
-        let buf = render_app(&app, 120, 30);
+        let buf = render_app(&mut app, 120, 30);
         let text = buffer_text(&buf);
 
         assert!(text.contains("Env vars: 2"), "details should show 'Env vars: 2'");
@@ -262,8 +262,8 @@ steps:
     #[test]
     fn test_render_details_workdir() {
         let tmp = TempDir::new().unwrap();
-        let app = make_render_app(&tmp);
-        let buf = render_app(&app, 120, 30);
+        let mut app = make_render_app(&tmp);
+        let buf = render_app(&mut app, 120, 30);
         let text = buffer_text(&buf);
 
         assert!(
@@ -275,8 +275,8 @@ steps:
     #[test]
     fn test_render_details_steps() {
         let tmp = TempDir::new().unwrap();
-        let app = make_render_app(&tmp);
-        let buf = render_app(&app, 120, 30);
+        let mut app = make_render_app(&tmp);
+        let buf = render_app(&mut app, 120, 30);
         let text = buffer_text(&buf);
 
         assert!(text.contains("dump"), "details should show step id 'dump'");
@@ -298,7 +298,7 @@ steps:
         app.mode = AppMode::Search;
         app.search_query = "db".into();
 
-        let buf = render_app(&app, 120, 30);
+        let buf = render_app(&mut app, 120, 30);
         let text = buffer_text(&buf);
 
         assert!(
@@ -313,7 +313,7 @@ steps:
         let mut app = make_render_app(&tmp);
         app.mode = AppMode::Help;
 
-        let buf = render_app(&app, 120, 36);
+        let buf = render_app(&mut app, 120, 36);
         let text = buffer_text(&buf);
 
         assert!(
@@ -355,7 +355,7 @@ steps:
         ];
         app.footer_log = vec!["[12:00:00] Starting backup/db-full (dry-run)...".into()];
 
-        let buf = render_app(&app, 120, 30);
+        let buf = render_app(&mut app, 120, 30);
         let text = buffer_text(&buf);
 
         assert!(
@@ -377,7 +377,7 @@ steps:
             "[12:00:01] ✓ dump (150ms)".into(),
         ];
 
-        let buf = render_app(&app, 120, 30);
+        let buf = render_app(&mut app, 120, 30);
         let text = buffer_text(&buf);
 
         assert!(

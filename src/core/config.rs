@@ -6,9 +6,23 @@ use crate::core::models::NotifyConfig;
 use crate::error::{DzError, Result};
 
 /// Configuration for a named MCP server, defined in `[mcp.servers.<alias>]` in config.toml.
+/// Supports two transport modes:
+/// - Stdio: set `command` to spawn a child process
+/// - HTTP: set `url` to connect via Streamable HTTP transport
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct McpServerConfig {
-    pub command: String,
+    /// Command to spawn an MCP server process (stdio transport)
+    #[serde(default)]
+    pub command: Option<String>,
+    /// HTTP endpoint URL for Streamable HTTP transport
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Authorization header value (for HTTP transport)
+    #[serde(default)]
+    pub auth_header: Option<String>,
+    /// Custom HTTP headers (for HTTP transport)
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
     #[serde(default)]
@@ -264,7 +278,7 @@ timeout = 30
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.mcp.servers.len(), 1);
         let github = &config.mcp.servers["github"];
-        assert_eq!(github.command, "npx @modelcontextprotocol/server-github");
+        assert_eq!(github.command.as_deref(), Some("npx @modelcontextprotocol/server-github"));
         assert_eq!(github.secrets.as_ref().unwrap(), &vec!["GITHUB_TOKEN".to_string()]);
         assert_eq!(github.timeout, Some(30));
         assert!(github.env.is_none());
