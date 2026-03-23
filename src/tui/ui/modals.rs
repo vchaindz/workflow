@@ -309,8 +309,10 @@ pub(super) fn draw_memory_view(f: &mut Frame, app: &App) {
                 Style::default().fg(Color::DarkGray),
             )));
             for b in &tm.baselines {
-                let step = if b.step_id.len() > 14 { &b.step_id[..14] } else { &b.step_id };
-                let metric = if b.metric_key.len() > 18 { &b.metric_key[..18] } else { &b.metric_key };
+                let step_end = if b.step_id.len() > 14 { b.step_id.char_indices().map(|(i,_)|i).take_while(|&i| i<=14).last().unwrap_or(0) } else { b.step_id.len() };
+                let step = &b.step_id[..step_end];
+                let metric_end = if b.metric_key.len() > 18 { b.metric_key.char_indices().map(|(i,_)|i).take_while(|&i| i<=18).last().unwrap_or(0) } else { b.metric_key.len() };
+                let metric = &b.metric_key[..metric_end];
                 lines.push(Line::from(Span::raw(format!(
                     "  {:<14}  {:<18} {:>8.1} {:>9.1} {:>9.1} {:>9.1} {:>8}",
                     step, metric, b.mean, b.median, b.stddev, b.p95, b.sample_count
@@ -557,7 +559,8 @@ pub(super) fn draw_git_sync(f: &mut Frame, app: &App) {
             ]));
         }
         if let Some(ref url) = info.remote_url {
-            let display_url = if url.len() > 40 { &url[..40] } else { url.as_str() };
+            let url_end = if url.len() > 40 { url.char_indices().map(|(i,_)|i).take_while(|&i| i<=40).last().unwrap_or(0) } else { url.len() };
+            let display_url = &url[..url_end];
             lines.push(Line::from(vec![
                 Span::styled("  Remote: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(display_url, Style::default().fg(Color::White)),

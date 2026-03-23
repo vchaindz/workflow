@@ -215,7 +215,8 @@ pub(super) fn format_task_preview_styled(task: &crate::core::models::Task) -> Ve
                             crate::core::models::McpServerRef::Alias(s) => s.clone(),
                             crate::core::models::McpServerRef::Inline { command, .. } => {
                                 let truncated = if command.len() > 40 {
-                                    format!("{}...", &command[..37])
+                                    let end = command.char_indices().map(|(i,_)|i).take_while(|&i| i<=37).last().unwrap_or(0);
+                                    format!("{}...", &command[..end])
                                 } else {
                                     command.clone()
                                 };
@@ -224,7 +225,8 @@ pub(super) fn format_task_preview_styled(task: &crate::core::models::Task) -> Ve
                         };
                         let mcp_label = format!("{}/{}", server_name, mcp_cfg.tool);
                         let mcp_display = if mcp_label.len() > 120 {
-                            format!("{}...", &mcp_label[..117])
+                            let end = mcp_label.char_indices().map(|(i,_)|i).take_while(|&i| i<=117).last().unwrap_or(0);
+                            format!("{}...", &mcp_label[..end])
                         } else {
                             mcp_label
                         };
@@ -241,7 +243,8 @@ pub(super) fn format_task_preview_styled(task: &crate::core::models::Task) -> Ve
                                         other => other.to_string(),
                                     };
                                     let truncated = if val_str.len() > 100 {
-                                        format!("{}...", &val_str[..97])
+                                        let end = val_str.char_indices().map(|(i,_)|i).take_while(|&i| i<=97).last().unwrap_or(0);
+                                        format!("{}...", &val_str[..end])
                                     } else {
                                         val_str
                                     };
@@ -257,7 +260,12 @@ pub(super) fn format_task_preview_styled(task: &crate::core::models::Task) -> Ve
                 } else {
                     let sanitized = step.cmd.replace('\t', "  ");
                     let cmd = if sanitized.len() > 120 {
-                        format!("{}...", &sanitized[..117])
+                        let end = sanitized.char_indices()
+                            .map(|(i, _)| i)
+                            .take_while(|&i| i <= 117)
+                            .last()
+                            .unwrap_or(0);
+                        format!("{}...", &sanitized[..end])
                     } else {
                         sanitized
                     };

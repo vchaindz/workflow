@@ -310,7 +310,8 @@ pub fn derive_task_name(cmd: &str) -> String {
     };
 
     if name.len() > 30 {
-        name[..30].to_string()
+        let end = name.char_indices().map(|(i,_)|i).take_while(|&i| i<=30).last().unwrap_or(0);
+        name[..end].to_string()
     } else {
         name
     }
