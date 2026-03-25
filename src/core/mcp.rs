@@ -249,13 +249,13 @@ impl McpClient {
     }
 }
 
-/// Extract text content from MCP result content array.
+/// Extract text content from MCP result content array, stripping ANSI escapes.
 fn extract_text_content(content: &[Content]) -> String {
     let texts: Vec<&str> = content
         .iter()
         .filter_map(|item| item.as_text().map(|t| t.text.as_str()))
         .collect();
-    texts.join("\n")
+    crate::core::executor::strip_ansi_codes(&texts.join("\n"))
 }
 
 #[cfg(test)]

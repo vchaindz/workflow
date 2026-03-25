@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read as IoRead};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{LazyLock, mpsc};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -21,6 +21,19 @@ pub use crate::core::secret_env::{mask_secrets, load_secret_env, load_secret_env
 pub use crate::core::safety::check_dangerous;
 
 use crate::core::foreach::{resolve_for_each_items, execute_for_each_step};
+
+/// Regex for stripping ANSI escape sequences from command output.
+/// Matches CSI sequences (`\x1b[...X`), OSC sequences (`\x1b]...BEL/ST`),
+/// and simple two-byte escapes (`\x1bX`).
+static ANSI_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b\][^\x1b]*\x1b\\|\x1b[^\[\]]")
+        .expect("valid ANSI regex")
+});
+
+/// Strip ANSI escape sequences from a string so TUI rendering is not corrupted.
+pub(crate) fn strip_ansi_codes(s: &str) -> String {
+    ANSI_RE.replace_all(s, "").into_owned()
+}
 
 /// Gracefully terminate a child process: SIGTERM first, wait grace period, then SIGKILL.
 #[cfg(unix)]
@@ -452,7 +465,7 @@ fn execute_mcp_step(
             expanded_args.clone(),
         ) {
             Ok(text) => {
-                last_output = text;
+                last_output = strip_ansi_codes(&text);
                 step_succeeded = true;
             }
             Err(e) => {
@@ -954,7 +967,7 @@ pub(crate) fn execute_single_step(
                             if let Some(mut err) = child.stderr.take() {
                                 let _ = err.read_to_string(&mut stderr_buf);
                             }
-                            last_output = format!("{stdout_buf}{stderr_buf}");
+                            last_output = strip_ansi_codes(&format!("{stdout_buf}{stderr_buf}"));
                             if status.success() {
                                 step_succeeded = true;
                             } else {
@@ -978,7 +991,7 @@ pub(crate) fn execute_single_step(
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    last_output = format!("{stdout}{stderr}");
+                    last_output = strip_ansi_codes(&format!("{stdout}{stderr}"));
                     if output.status.success() {
                         step_succeeded = true;
                     } else {
@@ -1406,7 +1419,7 @@ pub fn execute_workflow(
                                     match line {
                                         Ok(l) => {
                                             if let Some(ref tx) = txc {
-                                                let l_masked = mask_secrets(&l, &secrets_clone);
+                                                let l_masked = strip_ansi_codes(&mask_secrets(&l, &secrets_clone));
                                                 let _ = tx.send(ExecutionEvent::StepOutput {
                                                     step_id: sid.clone(),
                                                     line: l_masked,
@@ -1429,7 +1442,7 @@ pub fn execute_workflow(
                                     match line {
                                         Ok(l) => {
                                             if let Some(ref tx) = txc {
-                                                let l_masked = mask_secrets(&l, &secrets_clone);
+                                                let l_masked = strip_ansi_codes(&mask_secrets(&l, &secrets_clone));
                                                 let _ = tx.send(ExecutionEvent::StepOutput {
                                                     step_id: sid.clone(),
                                                     line: l_masked,
@@ -1624,7 +1637,7 @@ pub fn execute_workflow(
                 let duration_ms = timer.elapsed().as_millis() as u64;
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                let combined = format!("{stdout}{stderr}");
+                let combined = strip_ansi_codes(&format!("{stdout}{stderr}"));
                 let status = if output.status.success() {
                     StepStatus::Success
                 } else {

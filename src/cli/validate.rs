@@ -77,6 +77,13 @@ fn validate_one(
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
+    // Run lint checks on shell scripts
+    if kind == TaskKind::ShellScript {
+        for (line_no, msg) in crate::core::safety::lint_shell_script(path) {
+            warnings.push(format!("line {}: {}", line_no, msg));
+        }
+    }
+
     let parse_result = match kind {
         TaskKind::ShellScript => parse_shell_task(path),
         TaskKind::YamlWorkflow => parse_workflow(path),
