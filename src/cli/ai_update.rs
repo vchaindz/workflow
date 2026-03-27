@@ -1,6 +1,6 @@
 use crate::core::ai;
 use crate::core::config::Config;
-use crate::core::discovery::{resolve_task_ref, scan_workflows};
+use crate::core::discovery::{resolve_task_ref, scan_all_workflows};
 use crate::core::parser::parse_workflow;
 use crate::core::wizard;
 use crate::error::{DzError, Result};
@@ -16,7 +16,7 @@ pub fn cmd_ai_update(
         DzError::Execution("No AI tool found. Install `claude`, `codex`, or `gemini`.".to_string())
     })?;
 
-    let categories = scan_workflows(&config.workflows_dir)?;
+    let categories = scan_all_workflows(&config.workflows_dir)?;
     let task = resolve_task_ref(&categories, task_ref)?;
     let task_path = task.path.clone();
 

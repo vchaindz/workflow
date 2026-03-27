@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::core::config::Config;
 use crate::core::db;
-use crate::core::discovery::{resolve_task_ref, scan_workflows};
+use crate::core::discovery::{resolve_task_ref, scan_all_workflows};
 use crate::core::executor::{execute_workflow, load_secret_env, send_notifications, ExecuteOpts};
 use crate::core::models::{StepStatus, TaskKind};
 use crate::core::parser::{parse_shell_task, parse_workflow};
@@ -43,7 +43,7 @@ pub fn cmd_run(
         return Ok(0);
     }
 
-    let categories = scan_workflows(&config.workflows_dir)?;
+    let categories = scan_all_workflows(&config.workflows_dir)?;
     let task = resolve_task_ref(&categories, task_ref)?;
 
     let workflow = match task.kind {

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::config::Config;
-use crate::core::discovery::{resolve_task_ref, scan_workflows};
+use crate::core::discovery::{resolve_task_ref, scan_all_workflows};
 use crate::error::{DzError, Result};
 
 /// Reject strings containing shell metacharacters to prevent injection.
@@ -51,7 +51,7 @@ pub fn cmd_schedule(
     validate_shell_safe(task_ref, "task reference")?;
 
     // Validate task exists
-    let categories = scan_workflows(&config.workflows_dir)?;
+    let categories = scan_all_workflows(&config.workflows_dir)?;
     let task = resolve_task_ref(&categories, task_ref)?;
     let canonical_ref = format!("{}/{}", task.category, task.name);
 

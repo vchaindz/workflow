@@ -224,7 +224,7 @@ pub(super) fn handle_git_sync_key(app: &mut App, key: KeyEvent) -> Result<()> {
                                 app.sync_message = Some((msg, false));
 
                                 // Rescan workflows for new branch content
-                                if let Ok(cats) = crate::core::discovery::scan_workflows(&dir) {
+                                if let Ok(cats) = crate::core::discovery::scan_all_workflows(&dir) {
                                     app.categories = cats;
                                     app.selected_category = 0;
                                     app.selected_task = 0;

@@ -15,6 +15,61 @@ struct WorkflowMeta {
 
 const DEFAULT_CATEGORY: &str = "_default";
 
+/// Scan both the global workflows directory and any `.workflow/` directory in the CWD.
+/// CWD workflows are categorised as `cwd-<foldername>` (or `cwd-<foldername>/<subcat>`).
+pub fn scan_all_workflows(workflows_dir: &Path) -> Result<Vec<Category>> {
+    let mut categories = scan_workflows(workflows_dir)?;
+
+    if let Ok(cwd) = std::env::current_dir() {
+        merge_cwd_workflows(&mut categories, workflows_dir, &cwd);
+    }
+
+    Ok(categories)
+}
+
+/// Merge workflows from `cwd/.workflow/` into `categories`, prefixed with `cwd-<dirname>`.
+/// Skips silently if `.workflow/` does not exist or if CWD equals workflows_dir.
+fn merge_cwd_workflows(categories: &mut Vec<Category>, workflows_dir: &Path, cwd: &Path) {
+    let cwd_workflow_dir = cwd.join(".workflow");
+
+    if !cwd_workflow_dir.is_dir() {
+        return;
+    }
+
+    // Avoid duplication when CWD is the workflows directory itself
+    let same_dir = workflows_dir
+        .canonicalize()
+        .ok()
+        .zip(cwd.canonicalize().ok())
+        .map(|(a, b)| a == b)
+        .unwrap_or(false);
+    if same_dir {
+        return;
+    }
+
+    let folder_name = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("local");
+    let prefix = format!("cwd-{folder_name}");
+
+    let Ok(cwd_cats) = scan_workflows(&cwd_workflow_dir) else {
+        return;
+    };
+
+    for mut cat in cwd_cats {
+        if cat.name == DEFAULT_CATEGORY {
+            cat.name = prefix.clone();
+        } else {
+            cat.name = format!("{prefix}/{}", cat.name);
+        }
+        for task in &mut cat.tasks {
+            task.category.clone_from(&cat.name);
+        }
+        categories.push(cat);
+    }
+}
+
 pub fn scan_workflows(root: &Path) -> Result<Vec<Category>> {
     if !root.exists() {
         return Err(DzError::Discovery(format!(
@@ -294,5 +349,73 @@ mod tests {
         let dir = setup_test_dir();
         let cats = scan_workflows(dir.path()).unwrap();
         assert!(resolve_task_ref(&cats, "nonexistent/task").is_err());
+    }
+
+    #[test]
+    fn test_merge_cwd_workflows_adds_cwd_category() {
+        let global_dir = setup_test_dir();
+        let cwd = TempDir::new().unwrap();
+        let dot_wf = cwd.path().join(".workflow");
+        fs::create_dir_all(&dot_wf).unwrap();
+        fs::write(dot_wf.join("deploy.sh"), "#!/bin/bash\necho deploy").unwrap();
+
+        let mut cats = scan_workflows(global_dir.path()).unwrap();
+        merge_cwd_workflows(&mut cats, global_dir.path(), cwd.path());
+
+        let folder = cwd.path().file_name().unwrap().to_str().unwrap();
+        let expected_cat = format!("cwd-{folder}");
+        let cwd_cat = cats.iter().find(|c| c.name == expected_cat);
+        assert!(cwd_cat.is_some(), "expected category {expected_cat}");
+        assert!(cwd_cat.unwrap().tasks.iter().any(|t| t.name == "deploy"));
+    }
+
+    #[test]
+    fn test_merge_cwd_workflows_remaps_subcategories() {
+        let global_dir = setup_test_dir();
+        let cwd = TempDir::new().unwrap();
+        let dot_wf = cwd.path().join(".workflow");
+        fs::create_dir_all(dot_wf.join("infra")).unwrap();
+        fs::write(dot_wf.join("infra/provision.yaml"), "name: prov\nsteps:\n  - id: s1\n    cmd: echo hi\n").unwrap();
+        // Also a root-level file
+        fs::write(dot_wf.join("check.sh"), "#!/bin/bash\necho check").unwrap();
+
+        let mut cats = scan_workflows(global_dir.path()).unwrap();
+        merge_cwd_workflows(&mut cats, global_dir.path(), cwd.path());
+
+        let folder = cwd.path().file_name().unwrap().to_str().unwrap();
+        // Root file → cwd-<folder>
+        assert!(cats.iter().any(|c| c.name == format!("cwd-{folder}")));
+        // Subdir → cwd-<folder>/infra
+        let sub_cat = cats.iter().find(|c| c.name == format!("cwd-{folder}/infra"));
+        assert!(sub_cat.is_some());
+        let task = &sub_cat.unwrap().tasks[0];
+        assert_eq!(task.name, "provision");
+        assert_eq!(task.category, format!("cwd-{folder}/infra"));
+    }
+
+    #[test]
+    fn test_merge_cwd_workflows_no_dot_workflow_dir() {
+        let global_dir = setup_test_dir();
+        let cwd = TempDir::new().unwrap();
+        // No .workflow/ created
+
+        let mut cats = scan_workflows(global_dir.path()).unwrap();
+        let count_before = cats.len();
+        merge_cwd_workflows(&mut cats, global_dir.path(), cwd.path());
+        assert_eq!(cats.len(), count_before, "no categories should be added");
+    }
+
+    #[test]
+    fn test_merge_cwd_workflows_skips_when_cwd_is_workflows_dir() {
+        let global_dir = setup_test_dir();
+        // Place .workflow inside the global dir itself (simulating CWD == workflows_dir)
+        let dot_wf = global_dir.path().join(".workflow");
+        fs::create_dir_all(&dot_wf).unwrap();
+        fs::write(dot_wf.join("extra.sh"), "#!/bin/bash\necho extra").unwrap();
+
+        let mut cats = scan_workflows(global_dir.path()).unwrap();
+        let count_before = cats.len();
+        merge_cwd_workflows(&mut cats, global_dir.path(), global_dir.path());
+        assert_eq!(cats.len(), count_before, "should not duplicate when CWD == workflows_dir");
     }
 }

@@ -740,12 +740,12 @@ pub(crate) fn execute_single_step(
 
         let timer = Instant::now();
 
-        use crate::core::discovery::{scan_workflows, resolve_task_ref};
+        use crate::core::discovery::{scan_all_workflows, resolve_task_ref};
         use crate::core::parser::{parse_workflow, parse_shell_task};
         use crate::core::models::TaskKind;
 
         let sub_result = (|| -> crate::error::Result<RunLog> {
-            let categories = scan_workflows(wf_dir)?;
+            let categories = scan_all_workflows(wf_dir)?;
             let task = resolve_task_ref(&categories, call_ref)?;
             let sub_wf = match task.kind {
                 TaskKind::ShellScript => parse_shell_task(&task.path)?,

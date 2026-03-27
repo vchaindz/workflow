@@ -16,7 +16,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::core::config::Config;
-use crate::core::discovery::scan_workflows;
+use crate::core::discovery::scan_all_workflows;
 use crate::error::Result;
 
 use app::App;
@@ -26,7 +26,7 @@ const TICK_RATE: Duration = Duration::from_millis(250);
 const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn run_tui(config: Config) -> Result<()> {
-    let categories = scan_workflows(&config.workflows_dir)?;
+    let categories = scan_all_workflows(&config.workflows_dir)?;
     let mut app = App::new(categories, config);
     app.refresh_stats();
     app.load_heat_data();
@@ -50,7 +50,7 @@ pub fn run_tui(config: Config) -> Result<()> {
                             chrono::Local::now().format("%H:%M:%S"),
                         ));
                         // Re-scan workflows after pull
-                        if let Ok(cats) = scan_workflows(&app.config.workflows_dir) {
+                        if let Ok(cats) = scan_all_workflows(&app.config.workflows_dir) {
                             app.categories = cats;
                             app.load_heat_data();
                             app.load_last_run_data();
@@ -137,7 +137,7 @@ fn run_app(
 
 /// Rescan workflows directory and update categories, preserving selection.
 fn rescan(app: &mut App) {
-    let Ok(new_categories) = scan_workflows(&app.config.workflows_dir) else {
+    let Ok(new_categories) = scan_all_workflows(&app.config.workflows_dir) else {
         return;
     };
     if categories_equal(&app.categories, &new_categories) {

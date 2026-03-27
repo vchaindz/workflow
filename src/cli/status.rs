@@ -1,10 +1,10 @@
 use crate::core::config::Config;
 use crate::core::db;
-use crate::core::discovery::{resolve_task_ref, scan_workflows};
+use crate::core::discovery::{resolve_task_ref, scan_all_workflows};
 use crate::error::Result;
 
 pub fn cmd_status(config: &Config, task_ref: &str, json: bool) -> Result<()> {
-    let categories = scan_workflows(&config.workflows_dir)?;
+    let categories = scan_all_workflows(&config.workflows_dir)?;
     let task = resolve_task_ref(&categories, task_ref)?;
     let canonical_ref = format!("{}/{}", task.category, task.name);
 

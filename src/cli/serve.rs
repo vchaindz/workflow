@@ -6,7 +6,7 @@ use std::sync::{
 
 use crate::core::config::Config;
 use crate::core::db;
-use crate::core::discovery::{resolve_task_ref, scan_workflows};
+use crate::core::discovery::{resolve_task_ref, scan_all_workflows};
 use crate::core::executor::{execute_workflow, ExecuteOpts};
 use crate::core::models::TaskKind;
 use crate::core::parser::{parse_shell_task, parse_workflow};
@@ -121,7 +121,7 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
             }
 
             ("GET", ["tasks"]) => {
-                match scan_workflows(&workflows_dir) {
+                match scan_all_workflows(&workflows_dir) {
                     Ok(categories) => {
                         let tasks: Vec<serde_json::Value> = categories
                             .iter()
@@ -257,7 +257,7 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
                 };
 
                 // Resolve workflow
-                let categories = match scan_workflows(&workflows_dir) {
+                let categories = match scan_all_workflows(&workflows_dir) {
                     Ok(c) => c,
                     Err(e) => {
                         let body = serde_json::json!({ "error": e.to_string() }).to_string();

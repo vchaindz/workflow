@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::core::config::Config;
-use crate::core::discovery::{resolve_task_ref, scan_workflows};
+use crate::core::discovery::{resolve_task_ref, scan_all_workflows};
 use crate::core::models::TaskKind;
 use crate::core::parser::{parse_shell_task, parse_workflow};
 use crate::error::Result;
@@ -17,7 +17,7 @@ struct ValidationResult {
 }
 
 pub fn cmd_validate(config: &Config, task: Option<&str>, json: bool) -> Result<i32> {
-    let categories = scan_workflows(&config.workflows_dir)?;
+    let categories = scan_all_workflows(&config.workflows_dir)?;
     let mut results: Vec<ValidationResult> = Vec::new();
 
     if let Some(task_ref) = task {
