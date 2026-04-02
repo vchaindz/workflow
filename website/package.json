@@ -1,0 +1,13 @@
+{
+  "name": "workflow-docs",
+  "private": true,
+  "scripts": {
+    "docs:dev": "vitepress dev",
+    "docs:build": "vitepress build",
+    "docs:preview": "vitepress preview",
+    "docs:gen-templates": "bash scripts/generate-template-catalog.sh > reference/templates.md"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.0"
+  }
+}

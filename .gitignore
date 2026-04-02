@@ -30,3 +30,8 @@ CLAUDE.md
 
 # Logs and databases (local dev)
 *.log
+
+# VitePress docs site
+website/node_modules/
+website/.vitepress/cache/
+website/.vitepress/dist/
