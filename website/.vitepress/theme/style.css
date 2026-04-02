@@ -21,16 +21,24 @@
   line-height: 1.1 !important;
 }
 
-.VPHero .image-container .image-bg {
-  display: none;
+.hero-demo {
+  max-width: 720px;
+  margin: 0 auto 3rem;
+  text-align: center;
 }
 
-.VPHero .image-container img {
-  max-width: 320px;
+.hero-demo img {
+  width: 100%;
   border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
 }
 
-.dark .VPHero .image-container img {
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+.dark .hero-demo img {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
+
+.hero-demo p {
+  margin-top: 0.75rem;
+  color: var(--vp-c-text-2);
+  font-style: italic;
 }

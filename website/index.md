@@ -5,9 +5,6 @@ hero:
   name: workflow
   text: Think n8n, but for the command line
   tagline: An AI-native workflow orchestrator that lives in your terminal. Single binary. No daemon. No Docker.
-  image:
-    src: /aiadd.gif
-    alt: AI-powered workflow creation demo
   actions:
     - theme: brand
       text: Get Started
@@ -36,3 +33,8 @@ features:
     title: MCP Integration
     details: Call 16,000+ MCP-compatible tools — GitHub, Slack, databases, cloud providers — as first-class workflow steps.
 ---
+
+<div class="hero-demo">
+  <img src="/aiadd.gif" alt="AI-powered workflow creation demo" />
+  <p>Create a workflow with AI and run it — all from the terminal.</p>
+</div>
