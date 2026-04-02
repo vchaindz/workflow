@@ -23,18 +23,27 @@ features:
   - icon: "\U0001F4E6"
     title: 56 Bundled Templates
     details: Ready-made templates for sysadmin, Docker, Kubernetes, patching, security, and monitoring tasks. Browse and customize.
-  - icon: "\U0001F514"
-    title: 9 Notification Services
-    details: Slack, Discord, Telegram, Teams, ntfy, Gotify, Mattermost, webhooks, and email — native HTTP, no curl needed.
-  - icon: "\U0001F5A5"
-    title: TUI + CLI
-    details: Interactive terminal UI for browsing over SSH, plus a headless CLI for cron jobs, CI pipelines, and scripting.
-  - icon: "\U0001F517"
-    title: MCP Integration
-    details: Call 16,000+ MCP-compatible tools — GitHub, Slack, databases, cloud providers — as first-class workflow steps.
 ---
 
 <div class="hero-demo">
   <img src="/aiadd.gif" alt="AI-powered workflow creation demo" />
   <p>Create a workflow with AI and run it — all from the terminal.</p>
+</div>
+
+<div class="custom-features">
+  <div class="feature-card">
+    <div class="icon">&#x1F514;</div>
+    <h3>9 Notification Services</h3>
+    <p>Slack, Discord, Telegram, Teams, ntfy, Gotify, Mattermost, webhooks, and email — native HTTP, no curl needed.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">&#x1F5A5;</div>
+    <h3>TUI + CLI</h3>
+    <p>Interactive terminal UI for browsing over SSH, plus a headless CLI for cron jobs, CI pipelines, and scripting.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">&#x1F517;</div>
+    <h3>MCP Integration</h3>
+    <p>Call 16,000+ MCP-compatible tools — GitHub, Slack, databases, cloud providers — as first-class workflow steps.</p>
+  </div>
 </div>

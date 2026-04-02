@@ -21,15 +21,17 @@
   line-height: 1.1 !important;
 }
 
+/* Demo gif between feature rows */
 .hero-demo {
   max-width: 720px;
-  margin: 0 auto 3rem;
+  margin: 0 auto 2rem;
+  padding: 0 24px;
   text-align: center;
 }
 
 .hero-demo img {
   width: 100%;
-  border-radius: 8px;
+  border-radius: 12px;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
 }
 
@@ -41,4 +43,53 @@
   margin-top: 0.75rem;
   color: var(--vp-c-text-2);
   font-style: italic;
+  font-size: 14px;
+}
+
+/* Second row of feature cards (custom, matching VitePress style) */
+.custom-features {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  max-width: 1152px;
+  margin: 0 auto 4rem;
+  padding: 0 24px;
+}
+
+@media (max-width: 768px) {
+  .custom-features {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 959px) {
+  .custom-features {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.custom-features .feature-card {
+  border: 1px solid var(--vp-c-bg-soft);
+  border-radius: 12px;
+  padding: 24px;
+  background: var(--vp-c-bg-soft);
+}
+
+.custom-features .feature-card .icon {
+  font-size: 24px;
+  margin-bottom: 8px;
+}
+
+.custom-features .feature-card h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  color: var(--vp-c-text-1);
+}
+
+.custom-features .feature-card p {
+  font-size: 14px;
+  color: var(--vp-c-text-2);
+  line-height: 1.6;
+  margin: 0;
 }
