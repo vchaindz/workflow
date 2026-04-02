@@ -1,6 +1,6 @@
 [package]
 name = "workflow"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "A file-based workflow orchestrator with TUI and CLI, designed for humans and AI agents alike"
 license = "MIT"
@@ -24,8 +24,8 @@ mcp = ["dep:rmcp", "dep:tokio", "dep:shlex", "dep:reqwest"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-ratatui = "0.28"
-crossterm = "0.28"
+ratatui = "0.30"
+crossterm = "0.29"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"
@@ -42,7 +42,7 @@ is-terminal = "0.4"
 wait-timeout = "0.2"
 hostname = "0.4"
 libc = "0.2"
-tar = "0.4"
+tar = "0.4.45"
 flate2 = "1"
 tiny_http = "0.12"
 age = { version = "0.11", features = ["ssh"] }

@@ -19,7 +19,7 @@ Drop a `.sh` or `.yaml` file into `~/.config/workflow/` and it's immediately ava
 
 
 ```text
- workflow v0.4.0 ── 12 workflows ── 48 runs ── 2 failed
+ workflow v0.4.2 ── 12 workflows ── 48 runs ── 2 failed
 
  Categories  Tasks                    Details
  > backup    ▲ db-full    ✓ 2d [sh]   #!/bin/bash
@@ -68,6 +68,23 @@ workflow
 ```
 
 That's it. No init command, no project file, no configuration. Every `.sh` and `.yaml` file in `~/.config/workflow/` is automatically discovered and organized by folder.
+
+### Project-local workflows
+
+Drop a `.workflow/` directory into any project and its workflows are discovered alongside your global ones when you run `workflow` from that directory:
+
+```
+myproject/
+├── .workflow/
+│   ├── ci/
+│   │   └── build.yaml
+│   └── dev/
+│       └── seed-db.sh
+├── src/
+└── ...
+```
+
+Project-local workflows appear in the TUI and CLI just like global ones — no flags needed. This lets you version-control project-specific automation alongside the code it operates on.
 
 ## What makes it useful
 
@@ -992,7 +1009,7 @@ cargo build --release
 # Binary: target/release/workflow
 ```
 
-Requires Rust 1.56+ (2021 edition). Single binary. Notification backends use native HTTP (`ureq`) and SMTP (`lettre`) — no `curl` or `mail` needed at runtime. For MCP support, add `--features mcp` (pulls in `rmcp` v1.2, `tokio`, and `reqwest` for HTTP transport).
+Requires Rust 1.56+ (2021 edition). Single binary. Notification backends use native HTTP (`ureq`) and SMTP (`lettre`) — no `curl` or `mail` needed at runtime. For MCP support, add `--features mcp` (pulls in `rmcp` v1.2, `tokio`, and `reqwest` for HTTP transport). Project-local workflows in `.workflow/` are also discovered automatically from the current working directory.
 
 ## License
 
