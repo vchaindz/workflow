@@ -5,12 +5,16 @@ export default defineConfig({
   description: 'A file-based workflow orchestrator with TUI and CLI',
   base: '/workflow/',
 
-  vue: {
-    template: {
-      compilerOptions: {
-        // workflow uses {{ }} template syntax heavily in documentation.
-        // Treat all custom delimiters as plain text, not Vue expressions.
-        delimiters: ['${vue{', '}vue}$'],
+  markdown: {
+    config(md) {
+      // Wrap inline code containing {{ }} with v-pre to prevent Vue parsing.
+      const defaultCodeInline = md.renderer.rules.code_inline!
+      md.renderer.rules.code_inline = (tokens, idx, options, env, self) => {
+        const token = tokens[idx]
+        if (token.content.includes('{{')) {
+          return `<code v-pre>${md.utils.escapeHtml(token.content)}</code>`
+        }
+        return defaultCodeInline(tokens, idx, options, env, self)
       }
     }
   },
@@ -86,7 +90,19 @@ export default defineConfig({
       { icon: 'github', link: 'https://github.com/vchaindz/workflow' }
     ],
 
-    search: { provider: 'local' },
+    search: {
+      provider: 'local',
+      options: {
+        translations: {
+          button: { buttonText: 'Search', buttonAriaLabel: 'Search' },
+          modal: {
+            noResultsText: 'No results for',
+            resetButtonTitle: 'Reset search',
+            footer: { selectText: 'to select', navigateText: 'to navigate', closeText: 'to close' }
+          }
+        }
+      }
+    },
 
     editLink: {
       pattern: 'https://github.com/vchaindz/workflow/edit/main/website/:path',

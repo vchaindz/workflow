@@ -20,3 +20,17 @@
   font-size: 48px !important;
   line-height: 1.1 !important;
 }
+
+.VPHero .image-container .image-bg {
+  display: none;
+}
+
+.VPHero .image-container img {
+  max-width: 320px;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.dark .VPHero .image-container img {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}

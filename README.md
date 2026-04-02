@@ -1,5 +1,6 @@
 [![CI](https://github.com/vchaindz/workflow/actions/workflows/ci.yml/badge.svg)](https://github.com/vchaindz/workflow/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/vchaindz/workflow)](https://github.com/vchaindz/workflow/releases)
+[![Docs](https://img.shields.io/badge/docs-vchaindz.github.io%2Fworkflow-5b8def)](https://vchaindz.github.io/workflow/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.56-blue.svg)]()
 
@@ -16,6 +17,8 @@
 `workflow` is a file-based workflow orchestrator for Linux built for the AI age. Like n8n gives you visual workflow automation in the browser, `workflow` gives you the same power in the terminal — parallel DAGs, sub-workflows, for-each loops, conditional branching, expression filters, a webhook REST API, step retries and timeouts, encrypted secrets, native notifications to 9 services — but with a TUI you can browse over SSH, a headless CLI for cron, and first-class integration with Claude Code, OpenAI Codex CLI, and Google Gemini CLI to generate, fix, and refine workflows using natural language. No web server to maintain. No Docker stack. Just a single binary.
 
 Drop a `.sh` or `.yaml` file into `~/.config/workflow/` and it's immediately available to run, schedule, and track. No daemon. No database to set up. No YAML-hell configuration. Or skip the file entirely — describe what you need in English and let AI write it for you.
+
+**[Full documentation](https://vchaindz.github.io/workflow/)** — installation, YAML reference, CLI commands, template catalog, and more.
 
 
 ```text
