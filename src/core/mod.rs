@@ -7,6 +7,7 @@ pub mod detect;
 pub mod discovery;
 pub mod executor;
 pub mod foreach;
+pub mod hooks;
 pub mod history;
 pub mod models;
 pub mod notify;

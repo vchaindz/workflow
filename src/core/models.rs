@@ -301,6 +301,11 @@ pub struct RunLog {
     pub ended: Option<DateTime<Utc>>,
     pub steps: Vec<StepResult>,
     pub exit_code: i32,
+    /// Template variables captured by steps during execution (via `outputs:` regex).
+    /// In-memory only — not persisted to JSON logs or SQLite. Used to propagate
+    /// captured values from a called sub-workflow back to the caller's scope.
+    #[serde(skip, default)]
+    pub captured_vars: std::collections::HashMap<String, String>,
 }
 
 /// A notification channel with severity-based routing.

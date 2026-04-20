@@ -257,6 +257,7 @@ fn rows_to_run_logs(conn: &Connection, stmt: &mut rusqlite::Statement, p: &[&dyn
             ended,
             steps,
             exit_code,
+            captured_vars: std::collections::HashMap::new(),
         });
     }
     Ok(logs)
@@ -526,6 +527,7 @@ mod tests {
                 duration_ms: 150,
             }],
             exit_code: 0,
+            captured_vars: std::collections::HashMap::new(),
         }
     }
 
@@ -600,6 +602,7 @@ mod tests {
             ended: Some(old_time),
             steps: vec![],
             exit_code: 0,
+            captured_vars: std::collections::HashMap::new(),
         };
         insert_run_log(&conn, &log).unwrap();
         insert_run_log(&conn, &sample_log()).unwrap();

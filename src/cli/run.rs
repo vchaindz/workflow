@@ -92,8 +92,17 @@ pub fn cmd_run(
     };
 
     let canonical_ref = format!("{}/{}", task.category, task.name);
+
+    if !dry_run {
+        crate::core::hooks::run_pre(&config.hooks, &canonical_ref);
+    }
+
     let run_log = execute_workflow(&workflow, &canonical_ref, &opts, None)?;
     let exit_code = run_log.exit_code;
+
+    if !dry_run {
+        crate::core::hooks::run_post(&config.hooks, &canonical_ref, exit_code);
+    }
 
     if !dry_run {
         let conn = db::open_db(&config.db_path())?;

@@ -23,6 +23,31 @@ use search::handle_search_key;
 use streaming::{handle_streaming_key, handle_variable_prompt_key};
 use wizard::handle_wizard_key;
 
+fn run_compare_ai(app: &mut App) {
+    let (base, current) = match (app.compare_base.as_ref(), app.compare_current.as_ref()) {
+        (Some(b), Some(c)) => (b.clone(), c.clone()),
+        _ => return,
+    };
+    let Some(result) = app.compare_result.as_mut() else { return };
+
+    match crate::core::ai::detect_ai_tool() {
+        Some(tool) => {
+            let prompt = crate::core::compare::build_ai_prompt(&base, &current);
+            match crate::core::ai::invoke_ai_raw(tool, &prompt) {
+                Ok(analysis) => result.ai_analysis = Some(analysis),
+                Err(msg) => {
+                    result.ai_analysis = Some(format!("AI analysis failed: {msg}"));
+                }
+            }
+        }
+        None => {
+            result.ai_analysis = Some(
+                "No AI tool found (install `claude`, `codex`, or `gemini`).".to_string(),
+            );
+        }
+    }
+}
+
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.mode {
         AppMode::Search => handle_search_key(app, key),
@@ -43,7 +68,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     app.compare_result = None;
+                    app.compare_base = None;
+                    app.compare_current = None;
                     app.mode = AppMode::Normal;
+                }
+                KeyCode::Char('a') => {
+                    run_compare_ai(app);
                 }
                 KeyCode::Up => app.detail_scroll = app.detail_scroll.saturating_sub(1),
                 KeyCode::Down => app.detail_scroll = app.detail_scroll.saturating_add(1),

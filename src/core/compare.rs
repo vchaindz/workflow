@@ -373,6 +373,7 @@ mod tests {
             ended: Some(Utc::now()),
             steps,
             exit_code: exit,
+            captured_vars: std::collections::HashMap::new(),
         }
     }
 

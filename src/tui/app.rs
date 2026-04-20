@@ -342,6 +342,8 @@ pub struct App {
 
     // Compare state
     pub compare_result: Option<CompareResult>,
+    pub compare_base: Option<crate::core::models::RunLog>,
+    pub compare_current: Option<crate::core::models::RunLog>,
 
     // Wizard state
     pub wizard: Option<WizardState>,
@@ -482,6 +484,8 @@ impl App {
             streaming_cmd: None,
             streaming_kill_tx: None,
             compare_result: None,
+            compare_base: None,
+            compare_current: None,
             wizard: None,
             delete_state: None,
             rename_state: None,

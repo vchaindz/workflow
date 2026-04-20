@@ -388,6 +388,7 @@ mod tests {
                     duration_ms: 0,
                 },
             ],
+            captured_vars: std::collections::HashMap::new(),
         }
     }
 

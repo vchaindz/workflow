@@ -546,7 +546,7 @@ pub(super) fn draw_wizard(f: &mut Frame, app: &App) {
             }
 
             push_wizard_footer(&mut lines, inner.height, &[
-                ("Enter", "Select"), ("Up/Down", "Navigate"), ("Type", "Filter"), ("Esc", "Cancel"),
+                ("Enter", "Select"), ("Up/Down", "Navigate"), ("Type", "Filter"), ("F5", "Fetch"), ("Esc", "Cancel"),
             ]);
         }
 

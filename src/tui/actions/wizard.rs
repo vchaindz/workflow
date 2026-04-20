@@ -987,6 +987,28 @@ fn handle_wizard_preview(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 fn handle_wizard_template_browse(app: &mut App, key: KeyEvent) {
+    // F5 refreshes the catalog from the default remote and reloads entries.
+    if matches!(key.code, KeyCode::F(5)) {
+        let cache_dir = app.config.workflows_dir.join(".template-cache");
+        let repo = crate::cli::templates::DEFAULT_REPO;
+        let msg = match catalog::fetch_templates(&cache_dir, repo) {
+            Ok(n) => format!("fetched {n} template(s) from remote"),
+            Err(e) => format!("fetch failed: {e}"),
+        };
+        let entries = catalog::all_templates(&cache_dir);
+        let filtered: Vec<usize> = (0..entries.len()).collect();
+        let wiz = app.wizard.as_mut().unwrap();
+        wiz.template_entries = entries;
+        wiz.template_filtered = filtered;
+        wiz.template_cursor = 0;
+        wiz.template_scroll_offset = 0;
+        app.footer_log.push(format!(
+            "[{}] ● templates: {msg}",
+            chrono::Local::now().format("%H:%M:%S"),
+        ));
+        return;
+    }
+
     let wiz = app.wizard.as_mut().unwrap();
 
     match key.code {

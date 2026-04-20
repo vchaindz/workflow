@@ -803,6 +803,11 @@ pub(crate) fn execute_single_step(
                         }
                     }
                 }
+                // Re-export sub-workflow captured vars under the call step's id,
+                // so parents can reference `{{call_step.inner_step.var}}`.
+                for (sub_key, sub_val) in &run_log.captured_vars {
+                    captured.insert(format!("{}.{}", step.id, sub_key), sub_val.clone());
+                }
 
                 let failed = exit_code != 0;
                 let status = if failed { StepStatus::Failed } else { StepStatus::Success };
@@ -1157,6 +1162,10 @@ pub fn execute_workflow(
     let mut template_vars: HashMap<String, String> = env.clone();
     template_vars.insert("task_ref".to_string(), task_ref.to_string());
 
+    // Variables captured by step `outputs:` — tracked separately from env so
+    // they can be propagated to a calling workflow via RunLog.captured_vars.
+    let mut captured_vars: HashMap<String, String> = HashMap::new();
+
     let step_map: HashMap<&str, &Step> = workflow
         .steps
         .iter()
@@ -1222,7 +1231,8 @@ pub fn execute_workflow(
                                 _ => "unknown",
                             };
                             template_vars.insert(format!("{}.status", outcome.result.id), status_str.to_string());
-                            template_vars.extend(outcome.captured_vars);
+                            template_vars.extend(outcome.captured_vars.clone());
+                            captured_vars.extend(outcome.captured_vars);
                             step_results.push(outcome.result);
                         }
                         if any_failed {
@@ -1253,7 +1263,8 @@ pub fn execute_workflow(
                             _ => "unknown",
                         };
                         template_vars.insert(format!("{}.status", outcome.result.id), status_str.to_string());
-                        template_vars.extend(outcome.captured_vars);
+                        template_vars.extend(outcome.captured_vars.clone());
+                        captured_vars.extend(outcome.captured_vars);
                         step_results.push(outcome.result);
                     }
                     Err(e) => {
@@ -1366,7 +1377,8 @@ pub fn execute_workflow(
                         _ => "unknown",
                     };
                     template_vars.insert(format!("{}.status", outcome.result.id), status_str.to_string());
-                    template_vars.extend(outcome.captured_vars);
+                    template_vars.extend(outcome.captured_vars.clone());
+                    captured_vars.extend(outcome.captured_vars);
                     step_results.push(outcome.result);
                 }
             }
@@ -1680,6 +1692,7 @@ pub fn execute_workflow(
         ended: Some(Utc::now()),
         steps: step_results,
         exit_code: overall_exit,
+        captured_vars,
     })
 }
 
@@ -2436,6 +2449,7 @@ mod tests {
                 StepResult { id: "deploy".into(), status: StepStatus::Failed, output: String::new(), duration_ms: 200 },
             ],
             exit_code: 1,
+            captured_vars: HashMap::new(),
         };
         let notif = build_notification("infra/deploy", &run_log, "Deploy Prod");
 
@@ -2464,6 +2478,7 @@ mod tests {
                 StepResult { id: "restart".into(), status: StepStatus::Success, output: String::new(), duration_ms: 50 },
             ],
             exit_code: 0,
+            captured_vars: HashMap::new(),
         };
         let notif = build_notification("ops/restart", &run_log, "Restart");
 
@@ -2486,6 +2501,7 @@ mod tests {
                 StepResult { id: "build".into(), status: StepStatus::Success, output: String::new(), duration_ms: 100 },
             ],
             exit_code: 1,
+            captured_vars: HashMap::new(),
         };
         let notif = build_notification("ci/build", &run_log, "CI Build");
         let failed = notif.fields.get("failed_steps").unwrap();

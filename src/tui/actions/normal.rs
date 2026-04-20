@@ -272,6 +272,7 @@ pub(super) fn launch_workflow(
     let workflows_dir_for_thread = app.config.workflows_dir.clone();
     let secrets_ssh_key = app.config.secrets_ssh_key.as_ref().map(std::path::PathBuf::from);
     let mcp_servers_for_thread = app.config.mcp.servers.clone();
+    let hooks_for_thread = app.config.hooks.clone();
 
     thread::spawn(move || {
         let workflows_dir = workflows_dir_for_thread;
@@ -292,6 +293,10 @@ pub(super) fn launch_workflow(
             secrets_ssh_key,
             mcp_servers: mcp_servers_for_thread,
         };
+
+        if !dry_run {
+            crate::core::hooks::run_pre(&hooks_for_thread, &task_ref);
+        }
 
         match execute_workflow(&workflow, &task_ref, &opts, Some(&tx)) {
             Ok(run_log) => {
@@ -320,6 +325,7 @@ pub(super) fn launch_workflow(
                         ssh_key_clone.as_deref(),
                     );
                     send_notifications(&task_ref_for_notify, &run_log, &wf_name, &wf_notify, &cfg_notify, &secret_env);
+                    crate::core::hooks::run_post(&hooks_for_thread, &task_ref, run_log.exit_code);
                 }
             }
             Err(e) => {
@@ -396,6 +402,8 @@ fn compare_selected(app: &mut App) -> Result<()> {
     // history is newest-first
     let result = compare::compare_runs(&history[1], &history[0]);
     app.compare_result = Some(result);
+    app.compare_base = Some(history[1].clone());
+    app.compare_current = Some(history[0].clone());
     app.mode = AppMode::Comparing;
     app.focus = Focus::Details;
     app.detail_scroll = 0;

@@ -2,7 +2,7 @@ use crate::core::catalog;
 use crate::core::config::Config;
 use crate::error::Result;
 
-const DEFAULT_REPO: &str = "https://github.com/denniszielke/dzworkflows";
+pub const DEFAULT_REPO: &str = "https://github.com/denniszielke/dzworkflows";
 
 pub fn cmd_templates(config: &Config, fetch: bool, json: bool) -> Result<()> {
     let cache_dir = config.workflows_dir.join(".template-cache");

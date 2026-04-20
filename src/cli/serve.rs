@@ -64,6 +64,7 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
     let max_concurrent = config.server.max_concurrent_runs;
     let workflows_dir = config.workflows_dir.clone();
     let db_path = config.db_path();
+    let hooks = config.hooks.clone();
 
     loop {
         let mut request = match server.recv() {
@@ -329,6 +330,7 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
                 let task_ref_clone = task_ref;
                 let db_path_clone = db_path.clone();
                 let wf_dir_clone = workflows_dir.clone();
+                let hooks_clone = hooks.clone();
 
                 active_clone.fetch_add(1, Ordering::Relaxed);
 
@@ -358,6 +360,8 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
                             mcp_servers: std::collections::HashMap::new(),
                         };
 
+                        crate::core::hooks::run_pre(&hooks_clone, &task_ref_clone);
+
                         let run_log = execute_workflow(&workflow, &task_ref_clone, &opts, None)
                             .map_err(|e| e.to_string())?;
 
@@ -365,6 +369,8 @@ pub fn cmd_serve(config: &Config, port: u16, bind: &str) -> Result<i32> {
                         if let Ok(conn) = db::open_db(&db_path_clone) {
                             let _ = db::insert_run_log_with_source(&conn, &run_log, "api");
                         }
+
+                        crate::core::hooks::run_post(&hooks_clone, &task_ref_clone, run_log.exit_code);
 
                         Ok(run_log)
                     })();

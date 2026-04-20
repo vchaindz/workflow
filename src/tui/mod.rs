@@ -95,6 +95,7 @@ fn run_app(
     app: &mut App,
 ) -> Result<()> {
     let mut last_rescan = Instant::now();
+    let mut last_sync_pull = Instant::now();
 
     loop {
         // Check for streaming output requests from executor
@@ -126,11 +127,48 @@ fn run_app(
                     rescan(app);
                     last_rescan = Instant::now();
                 }
+                if let Some(mins) = app.config.sync.sync_interval_minutes {
+                    if app.config.sync.enabled && mins > 0
+                        && last_sync_pull.elapsed() >= Duration::from_secs(mins as u64 * 60)
+                    {
+                        periodic_sync_pull(app);
+                        last_sync_pull = Instant::now();
+                    }
+                }
             }
         }
 
         if app.should_quit {
             return Ok(());
+        }
+    }
+}
+
+/// Pull from the sync remote on the configured interval. Blocks the UI briefly;
+/// scheduled sparsely (minimum every minute), so this is acceptable.
+fn periodic_sync_pull(app: &mut App) {
+    let branch = app.config.sync.branch.clone();
+    let dir = app.config.workflows_dir.clone();
+    match crate::core::sync::pull(&dir, &branch) {
+        Ok(crate::core::sync::PullResult::Updated(n)) if n > 0 => {
+            app.footer_log.push(format!(
+                "[{}] ● sync: pulled {n} update(s)",
+                chrono::Local::now().format("%H:%M:%S"),
+            ));
+            if let Ok(cats) = scan_all_workflows(&dir) {
+                app.categories = cats;
+                app.load_heat_data();
+                app.load_last_run_data();
+                app.build_step_cmd_cache();
+            }
+            app.refresh_sync_status();
+        }
+        Ok(_) => {}
+        Err(e) => {
+            app.footer_log.push(format!(
+                "[{}] ⚠ sync pull: {e}",
+                chrono::Local::now().format("%H:%M:%S"),
+            ));
         }
     }
 }

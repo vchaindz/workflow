@@ -157,7 +157,7 @@ pub(super) fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         }
         AppMode::Running => "Running... b:background  (output in footer below)".to_string(),
         AppMode::StreamingOutput => "Streaming output — Esc/q to close".to_string(),
-        AppMode::Comparing => "c:compare | ESC:back | Up/Down:scroll".to_string(),
+        AppMode::Comparing => "a:AI analysis | ESC:back | Up/Down:scroll".to_string(),
         AppMode::Wizard => " New Task Wizard ".to_string(),
         _ => {
             let sort_label = if app.sort_by_heat { "o:α-sort" } else { "o:heat-sort" };
